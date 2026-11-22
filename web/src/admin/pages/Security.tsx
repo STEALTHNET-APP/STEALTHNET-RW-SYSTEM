@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useState } from 'react';
 import { api, ApiError } from '../../lib/api';
 import { BrandMark } from '../../lib/brand';
+import { Icon } from '../../lib/icons';
 import { QrCode } from '../../lib/qr';
 import { useSession } from '../session';
 import '../form.css';
@@ -265,7 +266,7 @@ function TwoFactor({ info, onChange }: { info: SecurityInfo; onChange: () => voi
 }
 
 export function Security() {
-  const { me } = useSession();
+  const { me, logout } = useSession();
   const [info, setInfo] = useState<SecurityInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -325,6 +326,20 @@ export function Security() {
               <span className="cap">Загружаем…</span>
             </div>
           )}
+        </section>
+        <section className="sec" aria-labelledby="session-h">
+          <div className="sec-head">
+            <h2 id="session-h" className="section-title">
+              Сеанс
+            </h2>
+            <span className="muted">Завершить текущий вход в админку. Для возврата понадобится снова ввести пароль.</span>
+          </div>
+          <div className="row">
+            <button type="button" className="btn-line sec-out hov" onClick={() => void logout()}>
+              <Icon name="logout" size={18} />
+              Выйти
+            </button>
+          </div>
         </section>
       </div>
     </>
