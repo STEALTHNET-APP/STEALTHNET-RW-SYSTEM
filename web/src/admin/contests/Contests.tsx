@@ -75,6 +75,9 @@ function entriesText(item: ListItem): string {
 }
 
 function prizeLine(item: ListItem): string {
+  if (item.prize.kind === 'tiered') {
+    return `Призы по местам · ${count(item.winners, 'победитель', 'победителя', 'победителей')}`;
+  }
   return item.winners > 1 ? `${item.prize_label} × ${item.winners}` : item.prize_label;
 }
 

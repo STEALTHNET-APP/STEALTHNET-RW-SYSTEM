@@ -15,6 +15,8 @@ import {
   type DraftErrors,
   type MessageDraft,
   type Options,
+  type PrizeFields,
+  type TierDraft,
 } from './model';
 
 type Props = {
@@ -60,6 +62,131 @@ function described(id: string, error?: string): string {
   return error ? `${id}-err` : `${id}-hint`;
 }
 
+type PrizeInputsProps = {
+  idPrefix: string;
+  fields: PrizeFields;
+  onChange: (patch: Partial<PrizeFields>) => void;
+  currency: Currency;
+  unit: string;
+  phone: boolean;
+  promoOff: boolean;
+  error?: string;
+};
+
+function PrizeInputs({ idPrefix, fields, onChange, currency, unit, phone, promoOff, error }: PrizeInputsProps) {
+  const kindId = `${idPrefix}-kind`;
+  const valueId = `${idPrefix}-value`;
+  const validId = `${idPrefix}-valid`;
+  const titleId = `${idPrefix}-custom-title`;
+  const descId = `${idPrefix}-custom-desc`;
+  return (
+    <>
+      <div className="pf-field ct-kind">
+        <span className="pf-label" id={kindId}>
+          Что получит победитель
+        </span>
+        <div role="group" aria-labelledby={kindId} className={phone ? 'pf-psegs' : 'segs'}>
+          {PRIZE_KINDS.map(([key, label]) => (
+            <button key={key} type="button" aria-pressed={fields.prizeKind === key} onClick={() => onChange({ prizeKind: key })}>
+              {label}
+            </button>
+          ))}
+        </div>
+        {fields.prizeKind === 'promo' && promoOff ? (
+          <span className="err">Промокод сработает при оплате, только если включён модуль «Промокоды».</span>
+        ) : null}
+      </div>
+      <div className="pf-grid pf-three">
+        {fields.prizeKind === 'days' ? (
+          <Field id={valueId} label="Сколько дней" error={error} hint="Добавятся к действующей подписке победителя">
+            <span className="pf-unit">
+              <input
+                id={valueId}
+                className="field num"
+                inputMode="numeric"
+                value={fields.days}
+                onChange={(e) => onChange({ days: e.target.value })}
+                maxLength={3}
+                aria-invalid={error ? true : undefined}
+                aria-describedby={described(valueId, error)}
+              />
+              <span className="muted">дней</span>
+            </span>
+          </Field>
+        ) : null}
+        {fields.prizeKind === 'balance' ? (
+          <Field id={valueId} label="Сумма на баланс" error={error} hint="Зачислится победителю автоматически">
+            <span className="pf-unit">
+              {currency === 'USD' ? <span className="muted">{unit}</span> : null}
+              <input
+                id={valueId}
+                className="field num"
+                inputMode={currency === 'USD' ? 'decimal' : 'numeric'}
+                value={fields.amount}
+                onChange={(e) => onChange({ amount: e.target.value })}
+                maxLength={10}
+                aria-invalid={error ? true : undefined}
+                aria-describedby={described(valueId, error)}
+              />
+              {currency === 'RUB' ? <span className="muted">{unit}</span> : null}
+            </span>
+          </Field>
+        ) : null}
+        {fields.prizeKind === 'promo' ? (
+          <>
+            <Field id={valueId} label="Скидка" error={error} hint="Личный одноразовый код для каждого победителя">
+              <span className="pf-unit">
+                <input
+                  id={valueId}
+                  className="field num"
+                  inputMode="numeric"
+                  value={fields.percent}
+                  onChange={(e) => onChange({ percent: e.target.value })}
+                  maxLength={3}
+                  aria-invalid={error ? true : undefined}
+                  aria-describedby={described(valueId, error)}
+                />
+                <span className="muted">%</span>
+              </span>
+            </Field>
+            <Field id={validId} label="Код действует" hint="Дней с момента выдачи">
+              <span className="pf-unit">
+                <input id={validId} className="field num" inputMode="numeric" value={fields.validDays} onChange={(e) => onChange({ validDays: e.target.value })} maxLength={3} />
+                <span className="muted">дней</span>
+              </span>
+            </Field>
+          </>
+        ) : null}
+        {fields.prizeKind === 'custom' ? (
+          <>
+            <Field id={titleId} label="Название приза" error={error} hint="Например, Telegram Premium на год">
+              <input
+                id={titleId}
+                className="field"
+                value={fields.customTitle}
+                onChange={(e) => onChange({ customTitle: e.target.value })}
+                maxLength={100}
+                aria-invalid={error ? true : undefined}
+                aria-describedby={described(titleId, error)}
+              />
+            </Field>
+            <Field id={descId} label="Инструкция по получению" hint="Необязательно. Победитель увидит её вместе с призом" className="ct-wide">
+              <textarea
+                id={descId}
+                className="field ct-area"
+                rows={2}
+                value={fields.customDescription}
+                onChange={(e) => onChange({ customDescription: e.target.value })}
+                maxLength={500}
+              />
+            </Field>
+          </>
+        ) : null}
+      </div>
+    </>
+  );
+}
+
 export function ContestForm({ phone, currency, options, initial, contest, onCancel, onSaved }: Props) {
   const base = useId();
   const [draft, setDraft] = useState<Draft>(initial);
@@ -83,6 +210,43 @@ export function ContestForm({ phone, currency, options, initial, contest, onCanc
       ...d,
       messages: [...(d.messages ?? []), { key: messageKey(), id: null, audience: 'participants', onlyEligible: false, sendAt: '', text: '', locked: false }],
     }));
+  };
+
+  const setTier = (key: string, patch: Partial<TierDraft>) => {
+    setDraft((d) => ({ ...d, tiers: d.tiers.map((t) => (t.key === key ? { ...t, ...patch } : t)) }));
+    setErrors((e) => ({ ...e, tiers: undefined }));
+  };
+
+  const addTier = () => {
+    setDraft((d) => {
+      const last = d.tiers[d.tiers.length - 1];
+      const from = last ? (Number.parseInt(last.toPlace, 10) || 0) + 1 : 1;
+      return {
+        ...d,
+        prizeMode: 'tiered',
+        tiers: [
+          ...d.tiers,
+          {
+            key: messageKey(),
+            fromPlace: String(from),
+            toPlace: String(from),
+            prizeKind: 'days',
+            days: '30',
+            amount: '',
+            percent: '20',
+            validDays: '14',
+            customTitle: '',
+            customDescription: '',
+          },
+        ],
+      };
+    });
+    setErrors((e) => ({ ...e, tiers: undefined }));
+  };
+
+  const removeTier = (key: string) => {
+    setDraft((d) => ({ ...d, tiers: d.tiers.filter((t) => t.key !== key) }));
+    setErrors((e) => ({ ...e, tiers: undefined }));
   };
 
   const submit = async () => {
@@ -164,95 +328,117 @@ export function ContestForm({ phone, currency, options, initial, contest, onCanc
       <fieldset className="ct-block" disabled={busy || locked}>
         <legend className="ct-legend">Приз</legend>
         {locked ? <p className="cap ct-lock">Конкурс уже идёт: приз, победителей и условия менять нельзя — так честнее для участников.</p> : null}
-        <div className="pf-field ct-kind">
-          <span className="pf-label" id={`${base}-kind`}>
-            Что получат победители
+        <div className="pf-field">
+          <span className="pf-label" id={`${base}-mode`}>
+            Режим призов
           </span>
-          <div role="group" aria-labelledby={`${base}-kind`} className={phone ? 'pf-psegs' : 'segs'}>
-            {PRIZE_KINDS.map(([key, label]) => (
-              <button key={key} type="button" aria-pressed={draft.prizeKind === key} onClick={() => set('prizeKind', key)}>
-                {label}
-              </button>
-            ))}
+          <div role="group" aria-labelledby={`${base}-mode`} className={phone ? 'pf-psegs' : 'segs'}>
+            <button type="button" aria-pressed={draft.prizeMode === 'single'} onClick={() => set('prizeMode', 'single')}>
+              Один приз на всех
+            </button>
+            <button
+              type="button"
+              aria-pressed={draft.prizeMode === 'tiered'}
+              onClick={() => {
+                set('prizeMode', 'tiered');
+                if (!draft.tiers.length) {
+                  addTier();
+                }
+              }}
+            >
+              Призы по местам
+            </button>
           </div>
-          {draft.prizeKind === 'promo' && options && !options.promo_enabled ? (
-            <span className="err">Промокод сработает при оплате, только если включён модуль «Промокоды».</span>
-          ) : null}
         </div>
-        <div className="pf-grid pf-three">
-          {draft.prizeKind === 'days' ? (
-            <Field id={ids.value} label="Сколько дней" error={errors.value} hint="Добавятся к действующей подписке победителя">
-              <span className="pf-unit">
+        {draft.prizeMode === 'single' ? (
+          <>
+            <PrizeInputs
+              idPrefix={base}
+              fields={draft}
+              onChange={(patch) => {
+                setDraft((d) => ({ ...d, ...patch }));
+                setErrors((e) => ({ ...e, value: undefined }));
+              }}
+              currency={currency}
+              unit={unit}
+              phone={phone}
+              promoOff={!!options && !options.promo_enabled}
+              error={errors.value}
+            />
+            <div className="pf-grid pf-three">
+              <Field id={ids.winners} label="Победителей" error={errors.winners} hint={`От 1 до ${options?.winners_max ?? 100}`}>
                 <input
-                  id={ids.value}
+                  id={ids.winners}
                   className="field num"
                   inputMode="numeric"
-                  value={draft.days}
-                  onChange={(e) => set('days', e.target.value)}
+                  value={draft.winners}
+                  onChange={(e) => set('winners', e.target.value)}
                   maxLength={3}
-                  aria-invalid={errors.value ? true : undefined}
-                  aria-describedby={described(ids.value, errors.value)}
+                  aria-invalid={errors.winners ? true : undefined}
+                  aria-describedby={described(ids.winners, errors.winners)}
                 />
-                <span className="muted">дней</span>
-              </span>
-            </Field>
-          ) : null}
-          {draft.prizeKind === 'balance' ? (
-            <Field id={ids.value} label="Сумма на баланс" error={errors.value} hint="Зачислится победителю автоматически">
-              <span className="pf-unit">
-                {currency === 'USD' ? <span className="muted">{unit}</span> : null}
-                <input
-                  id={ids.value}
-                  className="field num"
-                  inputMode={currency === 'USD' ? 'decimal' : 'numeric'}
-                  value={draft.amount}
-                  onChange={(e) => set('amount', e.target.value)}
-                  maxLength={10}
-                  aria-invalid={errors.value ? true : undefined}
-                  aria-describedby={described(ids.value, errors.value)}
+              </Field>
+            </div>
+          </>
+        ) : (
+          <>
+            <p className="cap ct-lead">Каждому призовому диапазону — свой приз. Победителей бот выберет столько, сколько охватывают места.</p>
+            {draft.tiers.map((tier, index) => (
+              <div key={tier.key} className="ct-tier">
+                <div className="ct-tier-top">
+                  <span className="ct-tier-n">Призовое место {index + 1}</span>
+                  <button type="button" className="ct-remove hov" onClick={() => removeTier(tier.key)} aria-label={`Удалить призовое место ${index + 1}`}>
+                    Удалить
+                  </button>
+                </div>
+                <div className="pf-grid pf-three">
+                  <Field id={`${tier.key}-from`} label="С места">
+                    <input
+                      id={`${tier.key}-from`}
+                      className="field num"
+                      inputMode="numeric"
+                      value={tier.fromPlace}
+                      onChange={(e) => setTier(tier.key, { fromPlace: e.target.value })}
+                      maxLength={3}
+                    />
+                  </Field>
+                  <Field id={`${tier.key}-to`} label="По место">
+                    <input
+                      id={`${tier.key}-to`}
+                      className="field num"
+                      inputMode="numeric"
+                      value={tier.toPlace}
+                      onChange={(e) => setTier(tier.key, { toPlace: e.target.value })}
+                      maxLength={3}
+                    />
+                  </Field>
+                  <div className="pf-field">
+                    <span className="pf-label">Победителей в диапазоне</span>
+                    <span className="ct-tier-count">
+                      {Math.max(0, (Number.parseInt(tier.toPlace, 10) || 0) - (Number.parseInt(tier.fromPlace, 10) || 0) + 1)}
+                    </span>
+                  </div>
+                </div>
+                <PrizeInputs
+                  idPrefix={tier.key}
+                  fields={tier}
+                  onChange={(patch) => setTier(tier.key, patch)}
+                  currency={currency}
+                  unit={unit}
+                  phone={phone}
+                  promoOff={!!options && !options.promo_enabled}
                 />
-                {currency === 'RUB' ? <span className="muted">{unit}</span> : null}
-              </span>
-            </Field>
-          ) : null}
-          {draft.prizeKind === 'promo' ? (
-            <>
-              <Field id={ids.value} label="Скидка" error={errors.value} hint="Личный одноразовый код для каждого победителя">
-                <span className="pf-unit">
-                  <input
-                    id={ids.value}
-                    className="field num"
-                    inputMode="numeric"
-                    value={draft.percent}
-                    onChange={(e) => set('percent', e.target.value)}
-                    maxLength={3}
-                    aria-invalid={errors.value ? true : undefined}
-                    aria-describedby={described(ids.value, errors.value)}
-                  />
-                  <span className="muted">%</span>
-                </span>
-              </Field>
-              <Field id={ids.valid} label="Код действует" hint="Дней с момента выдачи">
-                <span className="pf-unit">
-                  <input id={ids.valid} className="field num" inputMode="numeric" value={draft.validDays} onChange={(e) => set('validDays', e.target.value)} maxLength={3} />
-                  <span className="muted">дней</span>
-                </span>
-              </Field>
-            </>
-          ) : null}
-          <Field id={ids.winners} label="Победителей" error={errors.winners} hint={`От 1 до ${options?.winners_max ?? 100}`}>
-            <input
-              id={ids.winners}
-              className="field num"
-              inputMode="numeric"
-              value={draft.winners}
-              onChange={(e) => set('winners', e.target.value)}
-              maxLength={3}
-              aria-invalid={errors.winners ? true : undefined}
-              aria-describedby={described(ids.winners, errors.winners)}
-            />
-          </Field>
-        </div>
+              </div>
+            ))}
+            {errors.tiers ? <span className="err">{errors.tiers}</span> : null}
+            <button type="button" className={phone ? 'pf-quiet press' : 'b40 hov'} onClick={addTier}>
+              + Добавить призовое место
+            </button>
+            <p className="cap">
+              Победителей: {draft.tiers.reduce((max, tier) => Math.max(max, Number.parseInt(tier.toPlace, 10) || 0), 0)} — столько мест охватывают призовые диапазоны.
+            </p>
+          </>
+        )}
       </fieldset>
 
       <fieldset className="ct-block" disabled={busy}>

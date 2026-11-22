@@ -12,49 +12,80 @@ use sn_store::{Db, StoreError};
 pub const DAYS_MAX: u32 = 365;
 pub const VALID_DAYS_MAX: u32 = 365;
 pub const AMOUNT_MAX_UNITS: i64 = 1_000_000;
+pub const CUSTOM_TITLE_MAX: usize = 100;
+pub const CUSTOM_DESCRIPTION_MAX: usize = 500;
+pub const CUSTOM_NOTE_DEFAULT: &str = "Свяжитесь с поддержкой для получения приза";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Prize {
-    Days { days: u32 },
-    Balance { amount: Money },
-    Promo { percent: u8, valid_days: u32 },
+    Days {
+        days: u32,
+    },
+    Balance {
+        amount: Money,
+    },
+    Promo {
+        percent: u8,
+        valid_days: u32,
+    },
+    Custom {
+        title: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+    },
     Empty,
 }
 
 impl Prize {
-    pub fn label(self) -> String {
+    pub fn label(&self) -> String {
         let locale = sn_domain::lang::current();
         if locale == sn_domain::client::Locale::En {
             return match self {
                 Prize::Days { days } => {
-                    format!("+{} of subscription", format::days_in(days, locale))
+                    format!("+{} of subscription", format::days_in(*days, locale))
                 }
                 Prize::Balance { amount } => {
-                    format!("{} to your balance", format::money_in(amount, locale))
+                    format!("{} to your balance", format::money_in(*amount, locale))
                 }
                 Prize::Promo { percent, .. } => format!("A {percent}% discount code"),
+                Prize::Custom { title, .. } => title.clone(),
                 Prize::Empty => "Nothing".into(),
             };
         }
         match self {
-            Prize::Days { days } => format!("+{} к подписке", format::days(days)),
-            Prize::Balance { amount } => format!("{} на баланс", format::money(amount)),
+            Prize::Days { days } => format!("+{} к подписке", format::days(*days)),
+            Prize::Balance { amount } => format!("{} на баланс", format::money(*amount)),
             Prize::Promo { percent, .. } => format!("Промокод на скидку {percent}%"),
+            Prize::Custom { title, .. } => title.clone(),
             Prize::Empty => "Пусто".into(),
         }
     }
 
-    pub const fn is_empty(self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         matches!(self, Prize::Empty)
     }
 
-    pub const fn kind(self) -> &'static str {
+    pub const fn kind(&self) -> &'static str {
         match self {
             Prize::Days { .. } => "days",
             Prize::Balance { .. } => "balance",
             Prize::Promo { .. } => "promo",
+            Prize::Custom { .. } => "custom",
             Prize::Empty => "empty",
+        }
+    }
+
+    /// Инструкция победителю: для своего приза — описание, иначе пусто.
+    pub fn custom_note(&self) -> Option<String> {
+        match self {
+            Prize::Custom { description, .. } => Some(
+                description
+                    .clone()
+                    .filter(|d| !d.trim().is_empty())
+                    .unwrap_or_else(|| CUSTOM_NOTE_DEFAULT.to_string()),
+            ),
+            _ => None,
         }
     }
 }
@@ -73,6 +104,11 @@ pub enum PrizeDraft {
         #[serde(default = "default_valid_days")]
         valid_days: u32,
     },
+    Custom {
+        title: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+    },
     Empty,
 }
 
@@ -82,6 +118,31 @@ const fn default_valid_days() -> u32 {
 
 fn invalid(message: impl Into<String>) -> ModuleError {
     ModuleError::Invalid(message.into())
+}
+
+fn clean_custom_title(raw: &str) -> Result<String, ModuleError> {
+    let title = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    if title.is_empty() {
+        return Err(invalid("Напишите название приза"));
+    }
+    if title.chars().count() > CUSTOM_TITLE_MAX {
+        return Err(invalid(format!(
+            "Название приза длиннее {CUSTOM_TITLE_MAX} знаков"
+        )));
+    }
+    Ok(title)
+}
+
+fn clean_custom_description(raw: Option<&str>) -> Result<Option<String>, ModuleError> {
+    let Some(text) = raw.map(str::trim).filter(|t| !t.is_empty()) else {
+        return Ok(None);
+    };
+    if text.chars().count() > CUSTOM_DESCRIPTION_MAX {
+        return Err(invalid(format!(
+            "Инструкция по получению приза длиннее {CUSTOM_DESCRIPTION_MAX} знаков"
+        )));
+    }
+    Ok(Some(text.to_string()))
 }
 
 pub fn parse_amount(raw: &str, currency: Currency) -> Option<Money> {
@@ -128,12 +189,16 @@ pub fn validate(
                 valid_days: *valid_days,
             })
         }
+        PrizeDraft::Custom { title, description } => Ok(Prize::Custom {
+            title: clean_custom_title(title)?,
+            description: clean_custom_description(description.as_deref())?,
+        }),
         PrizeDraft::Empty if allow_empty => Ok(Prize::Empty),
         PrizeDraft::Empty => Err(invalid("приз не может быть пустым")),
     }
 }
 
-pub fn check_currency(prize: Prize, currency: Currency) -> Result<(), ModuleError> {
+pub fn check_currency(prize: &Prize, currency: Currency) -> Result<(), ModuleError> {
     match prize {
         Prize::Balance { amount } if amount.currency != currency => Err(invalid(
             "сумма приза задана в другой валюте: сохраните приз заново",
@@ -299,5 +364,97 @@ mod tests {
             "500\u{a0}₽ на баланс"
         );
         assert_eq!(Prize::Days { days: 7 }.label(), "+7\u{a0}дней к подписке");
+    }
+
+    #[test]
+    fn свой_приз_проверяется_и_читается_из_json() {
+        let prize = validate(
+            &PrizeDraft::Custom {
+                title: "  Telegram   Premium на год  ".into(),
+                description: Some("  Напишите в поддержку  ".into()),
+            },
+            Currency::Rub,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            prize,
+            Prize::Custom {
+                title: "Telegram Premium на год".into(),
+                description: Some("Напишите в поддержку".into()),
+            }
+        );
+        assert_eq!(prize.label(), "Telegram Premium на год");
+        assert_eq!(prize.kind(), "custom");
+        assert_eq!(prize.custom_note().as_deref(), Some("Напишите в поддержку"));
+
+        let blank = validate(
+            &PrizeDraft::Custom {
+                title: "   ".into(),
+                description: None,
+            },
+            Currency::Rub,
+            false,
+        )
+        .unwrap_err();
+        assert!(blank.to_string().contains("название приза"));
+
+        let long = "я".repeat(CUSTOM_TITLE_MAX + 1);
+        assert!(
+            validate(
+                &PrizeDraft::Custom {
+                    title: long,
+                    description: None,
+                },
+                Currency::Rub,
+                false
+            )
+            .is_err()
+        );
+        let long_note = "я".repeat(CUSTOM_DESCRIPTION_MAX + 1);
+        assert!(
+            validate(
+                &PrizeDraft::Custom {
+                    title: "Мерч".into(),
+                    description: Some(long_note),
+                },
+                Currency::Rub,
+                false
+            )
+            .is_err()
+        );
+
+        let parsed: Prize = serde_json::from_value(serde_json::json!({
+            "kind": "custom",
+            "title": "Подарочный сертификат",
+            "description": "Код придёт в чат"
+        }))
+        .unwrap();
+        assert_eq!(
+            parsed,
+            Prize::Custom {
+                title: "Подарочный сертификат".into(),
+                description: Some("Код придёт в чат".into()),
+            }
+        );
+        let no_note: Prize =
+            serde_json::from_value(serde_json::json!({ "kind": "custom", "title": "Мерч" }))
+                .unwrap();
+        assert_eq!(
+            no_note,
+            Prize::Custom {
+                title: "Мерч".into(),
+                description: None,
+            }
+        );
+        assert_eq!(no_note.custom_note().as_deref(), Some(CUSTOM_NOTE_DEFAULT));
+        assert_eq!(
+            serde_json::to_value(Prize::Custom {
+                title: "Мерч".into(),
+                description: None,
+            })
+            .unwrap(),
+            serde_json::json!({ "kind": "custom", "title": "Мерч" })
+        );
     }
 }

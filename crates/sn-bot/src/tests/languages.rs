@@ -232,12 +232,16 @@ fn уведомления_и_их_параметры_по_английски() {
     let won = render(
         "contest_won",
         serde_json::json!({
-            "title": "Зимний", "prize": "+30 дней к подписке",
+            "title": "Зимний", "place": 1, "prize": "+30 дней к подписке",
             "prize_data": { "kind": "days", "days": 30 }, "note": "Дни уже добавлены к подписке."
         }),
     );
     assert!(
-        won.contains("Prize: +30\u{a0}days of subscription."),
+        won.contains("You took place 1 in the “Зимний” giveaway."),
+        "{won}"
+    );
+    assert!(
+        won.contains("Your prize: +30\u{a0}days of subscription."),
         "{won}"
     );
     assert!(
@@ -266,7 +270,7 @@ fn уведомления_и_их_параметры_по_английски() {
 async fn конкурс_в_боте_по_английски_с_условиями_и_призом() {
     use chrono::{Duration, Utc};
     use sn_domain::module::ModuleId;
-    use sn_modules::catalog::contests::{self, ConditionsDraft, ContestDraft};
+    use sn_modules::catalog::contests::{self, ConditionsDraft, ContestDraft, PrizeConfigDraft};
     use sn_modules::catalog::prize::PrizeDraft;
     let Some((db, services, server, ctx)) = setup().await else {
         return;
@@ -282,7 +286,7 @@ async fn конкурс_в_боте_по_английски_с_условиям�
         &ContestDraft {
             title: "Зимний розыгрыш".into(),
             description: None,
-            prize: PrizeDraft::Days { days: 7 },
+            prize: PrizeConfigDraft::Single(PrizeDraft::Days { days: 7 }),
             winners: 2,
             starts_at: None,
             ends_at: Utc::now() + Duration::days(3),

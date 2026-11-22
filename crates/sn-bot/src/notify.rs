@@ -473,6 +473,7 @@ pub fn render(
                 "notify.contest_won",
                 &[
                     ("title", Html(&param(params, "title")?)),
+                    ("place", Html(&param(params, "place").unwrap_or_default())),
                     ("prize", Html(&prize_param(params)?)),
                     ("result", Html(&note_param(params).unwrap_or_default())),
                 ],

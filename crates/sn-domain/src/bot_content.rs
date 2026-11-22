@@ -534,6 +534,10 @@ const WINNERS: Var = Var {
     name: "winners",
     hint: "число победителей",
 };
+const PLACE: Var = Var {
+    name: "place",
+    hint: "место в конкурсе",
+};
 const CONDITION: Var = Var {
     name: "condition",
     hint: "условие участия",
@@ -1816,6 +1820,20 @@ pub static CATALOG: &[Entry] = &[
         &[PRIZE, WINNERS],
     ),
     text(
+        "contest.prizes",
+        Contests,
+        "Призы по местам",
+        "🎁 Призы:",
+        &[],
+    ),
+    text(
+        "contest.winners",
+        Contests,
+        "Число победителей",
+        "Победителей: {winners}.",
+        &[WINNERS],
+    ),
+    text(
         "contest.until",
         Contests,
         "Когда итоги",
@@ -2967,8 +2985,8 @@ pub static CATALOG: &[Entry] = &[
         "notify.contest_won",
         Notify,
         "Победа в конкурсе",
-        "Вы победили в конкурсе «{title}»!\nПриз: {prize}. {result}",
-        &[TITLE, PRIZE, RESULT],
+        "Поздравляем! Вы заняли {place} место в розыгрыше «{title}». Ваш приз: {prize}. {result}",
+        &[PLACE, TITLE, PRIZE, RESULT],
     ),
     text(
         "notify.contest_won_code",

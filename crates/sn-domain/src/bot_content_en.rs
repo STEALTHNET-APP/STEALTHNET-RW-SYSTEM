@@ -233,6 +233,8 @@ pub fn default(key: &str) -> Option<&'static str> {
         "contest.none" => "No giveaways right now. The bot will message you when a new one starts.",
         "contest.title" => "<b>{title}</b>",
         "contest.prize" => "Prize: {prize}. Winners: {winners}.",
+        "contest.prizes" => "🎁 Prizes:",
+        "contest.winners" => "Winners: {winners}.",
         "contest.until" => "Results on {date}.",
         "contest.conditions" => "\n<b>Requirements</b>",
         "contest.condition_ok" => "✅ {condition}",
@@ -527,7 +529,9 @@ pub fn default(key: &str) -> Option<&'static str> {
         "notify.withdrawal_rejected" => {
             "Your withdrawal of {amount} was declined: {comment}. The money is back on your referral balance."
         }
-        "notify.contest_won" => "You won the “{title}” giveaway!\nPrize: {prize}. {result}",
+        "notify.contest_won" => {
+            "Congratulations! You took place {place} in the “{title}” giveaway. Your prize: {prize}. {result}"
+        }
         "notify.contest_won_code" => "Your promo code: <code>{code}</code>. Enter it at checkout.",
         "notify.contest_waiting" => {
             "You won the “{title}” giveaway!\nPrize: {prize}. The days will be added as soon as you have a subscription."

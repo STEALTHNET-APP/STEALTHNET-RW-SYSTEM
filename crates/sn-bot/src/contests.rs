@@ -8,7 +8,7 @@ use sn_domain::bot_content::Section;
 use sn_domain::client::Client;
 use sn_domain::lang;
 use sn_domain::module::ModuleId;
-use sn_modules::catalog::contests::{self, ClientContest, JoinOutcome, Status};
+use sn_modules::catalog::contests::{self, ClientContest, JoinOutcome, PrizeConfig, Status};
 use sn_modules::catalog::{antibot, referral};
 use sn_services::Services;
 use sn_services::bot_content::BotContent;
@@ -27,14 +27,33 @@ fn card_text(c: &BotContent, contest: &ClientContest, offset: FixedOffset) -> St
     if let Some(description) = &contest.description {
         lines.add(escape(description));
     }
-    lines.add(ui::text(
-        c,
-        "contest.prize",
-        &[
-            ("prize", Text(&contest.prize_label)),
-            ("winners", Text(&contest.winners.to_string())),
-        ],
-    ));
+    match &contest.prize {
+        PrizeConfig::Tiered(tiers) => {
+            lines.add(ui::text(c, "contest.prizes", &[]));
+            for tier in tiers {
+                lines.add(format!(
+                    "{} — {}",
+                    contests::place_title(tier.from_place, tier.to_place),
+                    escape(&tier.prize.label())
+                ));
+            }
+            lines.add(ui::text(
+                c,
+                "contest.winners",
+                &[("winners", Text(&contest.winners.to_string()))],
+            ));
+        }
+        PrizeConfig::Single(_) => {
+            lines.add(ui::text(
+                c,
+                "contest.prize",
+                &[
+                    ("prize", Text(&contest.prize_label)),
+                    ("winners", Text(&contest.winners.to_string())),
+                ],
+            ));
+        }
+    }
     lines.add(ui::text(
         c,
         "contest.until",
@@ -73,7 +92,15 @@ fn card_text(c: &BotContent, contest: &ClientContest, offset: FixedOffset) -> St
                     c,
                     "contest.won",
                     &[
-                        ("prize", Text(&contest.prize_label)),
+                        (
+                            "prize",
+                            Text(
+                                result
+                                    .prize_label
+                                    .as_deref()
+                                    .unwrap_or(&contest.prize_label),
+                            ),
+                        ),
                         (
                             "result",
                             Text(result.prize_note.as_deref().unwrap_or_default()),

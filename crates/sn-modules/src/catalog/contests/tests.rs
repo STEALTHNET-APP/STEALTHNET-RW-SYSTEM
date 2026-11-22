@@ -29,6 +29,115 @@ fn состояние_конкурса_по_датам() {
 }
 
 #[test]
+fn призы_по_местам_читаются_и_находятся_по_месту() {
+    let legacy: PrizeConfig =
+        serde_json::from_value(serde_json::json!({ "kind": "days", "days": 7 })).unwrap();
+    assert_eq!(legacy, PrizeConfig::Single(Prize::Days { days: 7 }));
+    assert_eq!(prize_for_place(&legacy, 4), Some(Prize::Days { days: 7 }));
+
+    let raw = serde_json::json!({
+        "kind": "tiered",
+        "tiers": [
+            { "from_place": 1, "to_place": 1, "prize": { "kind": "custom", "title": "Telegram Premium" } },
+            { "from_place": 2, "to_place": 2, "prize": { "kind": "days", "days": 30 } },
+            { "from_place": 3, "to_place": 5, "prize": { "kind": "promo", "percent": 20, "valid_days": 14 } }
+        ]
+    });
+    let tiered: PrizeConfig = serde_json::from_value(raw.clone()).unwrap();
+    assert_eq!(tiered.winners(), Some(5));
+    assert_eq!(tiered.tiers().len(), 3);
+    assert_eq!(
+        prize_for_place(&tiered, 1),
+        Some(Prize::Custom {
+            title: "Telegram Premium".into(),
+            description: None,
+        })
+    );
+    assert_eq!(prize_for_place(&tiered, 2), Some(Prize::Days { days: 30 }));
+    assert_eq!(
+        prize_for_place(&tiered, 4),
+        Some(Prize::Promo {
+            percent: 20,
+            valid_days: 14,
+        })
+    );
+    assert_eq!(prize_for_place(&tiered, 6), None);
+    assert_eq!(serde_json::to_value(&tiered).unwrap(), raw);
+    assert_eq!(place_title(1, 1), "🥇 1 место");
+    assert_eq!(place_title(2, 3), "2–3 места");
+    assert_eq!(place_title(4, 10), "4–10 мест");
+}
+
+#[test]
+fn призовые_места_проверяются_на_пересечения_и_пропуски() {
+    let tier = |from: u32, to: u32| PrizeTierDraft {
+        from_place: from,
+        to_place: to,
+        prize: PrizeDraft::Days { days: 3 },
+    };
+    let ok = clean_prize_config(
+        &PrizeConfigDraft::Tiered {
+            _kind: TieredKind::Tiered,
+            tiers: vec![tier(1, 1), tier(2, 2), tier(3, 10)],
+        },
+        Currency::Rub,
+    )
+    .unwrap();
+    assert_eq!(ok.winners(), Some(10));
+
+    assert!(
+        clean_prize_config(
+            &PrizeConfigDraft::Tiered {
+                _kind: TieredKind::Tiered,
+                tiers: vec![tier(2, 3)],
+            },
+            Currency::Rub
+        )
+        .is_err()
+    );
+    assert!(
+        clean_prize_config(
+            &PrizeConfigDraft::Tiered {
+                _kind: TieredKind::Tiered,
+                tiers: vec![tier(1, 1), tier(3, 4)],
+            },
+            Currency::Rub
+        )
+        .is_err()
+    );
+    assert!(
+        clean_prize_config(
+            &PrizeConfigDraft::Tiered {
+                _kind: TieredKind::Tiered,
+                tiers: vec![tier(1, 2), tier(2, 3)],
+            },
+            Currency::Rub
+        )
+        .is_err()
+    );
+    assert!(
+        clean_prize_config(
+            &PrizeConfigDraft::Tiered {
+                _kind: TieredKind::Tiered,
+                tiers: vec![tier(1, 101)],
+            },
+            Currency::Rub
+        )
+        .is_err()
+    );
+    assert!(
+        clean_prize_config(
+            &PrizeConfigDraft::Tiered {
+                _kind: TieredKind::Tiered,
+                tiers: Vec::new(),
+            },
+            Currency::Rub
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn тексты_условий_и_подстановки() {
     let offset = offset_of(180);
     let start = DateTime::parse_from_rfc3339("2026-12-01T09:00:00Z")
@@ -67,7 +176,7 @@ fn тексты_условий_и_подстановки() {
     let rendered = render(
         "<b>{title}</b>: {prize}, {winners}, {date}",
         "Новый <год>",
-        Prize::Days { days: 7 },
+        &PrizeConfig::Single(Prize::Days { days: 7 }),
         3,
         end,
         offset,
@@ -158,7 +267,7 @@ fn draft(prize: PrizeDraft, winners: u32) -> ContestDraft {
     ContestDraft {
         title: "Новогодний розыгрыш".into(),
         description: Some("Разыгрываем призы среди клиентов".into()),
-        prize,
+        prize: PrizeConfigDraft::Single(prize),
         winners,
         starts_at: None,
         ends_at: Utc::now() + Duration::hours(1),
@@ -545,6 +654,113 @@ async fn промокод_в_призе_личный_одноразовый_и_�
 }
 
 #[tokio::test]
+async fn разные_призы_по_местам_выдаются_каждому_победителю() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let core = TestCore::new(&db.store);
+    let ctx = context(&db.store, &core, Currency::Usd);
+    let first = tg_client(&db.store, 9301).await;
+    let second = tg_client(&db.store, 9302).await;
+    let third = tg_client(&db.store, 9303).await;
+    for owner in [first, second, third] {
+        live_sub(&db.store, owner, SubscriptionKind::Paid).await;
+    }
+    let mut new = draft(PrizeDraft::Days { days: 1 }, 0);
+    new.prize = PrizeConfigDraft::Tiered {
+        _kind: TieredKind::Tiered,
+        tiers: vec![
+            PrizeTierDraft {
+                from_place: 1,
+                to_place: 1,
+                prize: PrizeDraft::Custom {
+                    title: "Telegram Premium на год".into(),
+                    description: Some("Напишите в поддержку".into()),
+                },
+            },
+            PrizeTierDraft {
+                from_place: 2,
+                to_place: 2,
+                prize: PrizeDraft::Days { days: 30 },
+            },
+            PrizeTierDraft {
+                from_place: 3,
+                to_place: 3,
+                prize: PrizeDraft::Balance { amount: "5".into() },
+            },
+        ],
+    };
+    let created = create(&ctx, &new, None).await.unwrap();
+    assert_eq!(created.winners, 3);
+    assert!(created.prize.is_tiered());
+    assert!(created.prize_label.contains("Telegram Premium на год"));
+    assert!(created.prize_label.contains("+30\u{a0}дней к подписке"));
+    for owner in [first, second, third] {
+        assert_eq!(
+            join(&ctx, created.id, owner).await.unwrap(),
+            JoinOutcome::Joined
+        );
+    }
+    finish_now(&db.store, created.id).await;
+    run(&ctx).await.unwrap();
+    let view = contest(&ctx, created.id).await.unwrap();
+    assert_eq!(view.winners_list.len(), 3);
+    let seed = hex::decode(view.seed.clone().unwrap()).unwrap();
+    let order: Vec<ClientId> = draw::tickets(&seed, &[first.0, second.0, third.0])
+        .into_iter()
+        .map(|drawn| ClientId(drawn.client_id))
+        .collect();
+    let custom = order[0];
+    let days = order[1];
+    let balance_winner = order[2];
+
+    let winner = |client: ClientId| {
+        view.winners_list
+            .iter()
+            .find(|w| w.client_id == client)
+            .unwrap()
+    };
+    assert_eq!(winner(custom).place, 1);
+    assert_eq!(winner(custom).prize_state.as_deref(), Some("issued"));
+    assert_eq!(
+        winner(custom).prize_label.as_deref(),
+        Some("Telegram Premium на год")
+    );
+    assert_eq!(
+        winner(custom).prize_note.as_deref(),
+        Some("Напишите в поддержку")
+    );
+    assert_eq!(winner(days).place, 2);
+    assert_eq!(winner(days).prize_state.as_deref(), Some("issued"));
+    assert_eq!(
+        winner(days).prize_label.as_deref(),
+        Some("+30\u{a0}дней к подписке")
+    );
+    assert!(core.days().iter().any(|(_, days, _)| *days == 30));
+    assert_eq!(winner(balance_winner).place, 3);
+    assert_eq!(
+        winner(balance_winner).prize_state.as_deref(),
+        Some("issued")
+    );
+    assert_eq!(balance(&db.store, balance_winner).await, 500);
+
+    let notified = core
+        .notifications()
+        .into_iter()
+        .find(|(client, _)| *client == custom)
+        .unwrap()
+        .1;
+    assert_eq!(notified.template, TEMPLATE_WON);
+    assert_eq!(notified.params["place"], 1);
+    assert_eq!(notified.params["prize_data"]["kind"], "custom");
+    assert_eq!(
+        notified.params["note"].as_str(),
+        Some("Напишите в поддержку")
+    );
+    db.cleanup().await;
+}
+
+#[tokio::test]
 async fn правки_конкурса_зависят_от_этапа() {
     let Some(db) = test_store().await else {
         return;
@@ -559,7 +775,7 @@ async fn правки_конкурса_зависят_от_этапа() {
     assert!(planned.editable.all);
     assert_eq!(planned.messages.len(), 4);
     let mut changed = later.clone();
-    changed.prize = PrizeDraft::Days { days: 5 };
+    changed.prize = PrizeConfigDraft::Single(PrizeDraft::Days { days: 5 });
     changed.messages = Some(vec![MessageDraft {
         id: None,
         audience: Audience::Results,
@@ -568,7 +784,7 @@ async fn правки_конкурса_зависят_от_этапа() {
         text: "Итоги".into(),
     }]);
     let updated = update(&ctx, planned.id, &changed, None).await.unwrap();
-    assert_eq!(updated.prize, Prize::Days { days: 5 });
+    assert_eq!(updated.prize, PrizeConfig::Single(Prize::Days { days: 5 }));
     assert_eq!(updated.messages.len(), 1);
     delete(&ctx, planned.id, None).await.unwrap();
 

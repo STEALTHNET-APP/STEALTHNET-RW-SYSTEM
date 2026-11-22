@@ -3,14 +3,14 @@ use chrono::{Duration, Utc};
 use sn_domain::bot_content::Content;
 use sn_domain::module::ModuleId;
 use sn_domain::settings::keys;
-use sn_modules::catalog::contests::{self, ConditionsDraft, ContestDraft};
+use sn_modules::catalog::contests::{self, ConditionsDraft, ContestDraft, PrizeConfigDraft};
 use sn_modules::catalog::prize::PrizeDraft;
 
 fn draft(title: &str, subscription: bool) -> ContestDraft {
     ContestDraft {
         title: title.into(),
         description: Some("Разыгрываем призы среди клиентов бота".into()),
-        prize: PrizeDraft::Days { days: 7 },
+        prize: PrizeConfigDraft::Single(PrizeDraft::Days { days: 7 }),
         winners: 2,
         starts_at: None,
         ends_at: Utc::now() + Duration::days(3),

@@ -14,8 +14,10 @@ import {
   initials,
   personName,
   personSub,
+  placeLabel,
   prizeEach,
   prizeStateText,
+  prizeText,
   ROOT,
   shortHash,
   statusTone,
@@ -24,6 +26,7 @@ import {
   type Entry,
   type MessageView,
   type Page,
+  type Prize,
   type Winner,
 } from './model';
 import { useOptions } from './Contests';
@@ -39,6 +42,21 @@ function Avatar({ person, id }: { person: Winner['client']; id: number }) {
     <span className="ct-ava" style={{ background: tone(id) }} aria-hidden="true">
       {initials(person)}
     </span>
+  );
+}
+
+function PrizeLines({ prize }: { prize: Prize }) {
+  if (prize.kind !== 'tiered') {
+    return null;
+  }
+  return (
+    <ul className="ct-ul ct-prizes">
+      {prize.tiers.map((tier) => (
+        <li key={`${tier.from_place}-${tier.to_place}`}>
+          <b>{placeLabel(tier.from_place, tier.to_place)}</b> — {prizeText(tier.prize)}
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -112,10 +130,14 @@ function Winners({ c, phone, onRetry, busy }: { c: Contest; phone: boolean; onRe
             <span role="cell" className="ct-who">
               <Avatar person={w.client} id={w.client_id} />
               <span>
-                <Link to={`/admin/clients/${w.client_id}`} className="ct-name hov">
-                  {personName(w.client, w.client_id)}
-                </Link>
+                <span className="ct-win-row">
+                  {w.place ? <span className="ct-win-place">{placeLabel(w.place, w.place)}</span> : null}
+                  <Link to={`/admin/clients/${w.client_id}`} className="ct-name hov">
+                    {personName(w.client, w.client_id)}
+                  </Link>
+                </span>
                 <span className="ct-sub">{personSub(w.client, w.client_id)}</span>
+                {w.prize_label ? <span className="ct-win-prize">{w.prize_label}</span> : null}
               </span>
             </span>
             <span role="cell" className={`ct-prize ${state.tone}`}>
@@ -234,7 +256,15 @@ function preview(c: Contest): { text: string[]; buttons: string[] } {
   if (c.description) {
     lines.push(c.description);
   }
-  lines.push(`Приз: ${c.prize_label}. Победителей: ${c.winners}.`);
+  if (c.prize.kind === 'tiered') {
+    lines.push('🎁 Призы:');
+    for (const tier of c.prize.tiers) {
+      lines.push(`${placeLabel(tier.from_place, tier.to_place)} — ${prizeText(tier.prize)}`);
+    }
+    lines.push(`Победителей: ${c.winners}.`);
+  } else {
+    lines.push(`Приз: ${c.prize_label}. Победителей: ${c.winners}.`);
+  }
   lines.push(`Итоги — ${when(c.ends_at)}.`);
   if (c.condition_lines.length) {
     lines.push('', 'Условия');
@@ -526,7 +556,7 @@ export function ContestPage() {
             Приз и условия
           </h2>
           <div className="hp-card ct-pcard ct-rules">
-            <p>{prizeEach(c.prize, c.winners)}</p>
+            {c.prize.kind === 'tiered' ? <PrizeLines prize={c.prize} /> : <p>{prizeEach(c.prize, c.winners)}</p>}
             <p className="ct-sub">
               {when(c.starts_at)} — {when(c.ends_at)}
             </p>
@@ -595,7 +625,7 @@ export function ContestPage() {
             </h2>
             <dl className="ct-dl ct-dl-pad">
               <dt>Приз</dt>
-              <dd>{prizeEach(c.prize, c.winners)}</dd>
+              <dd>{c.prize.kind === 'tiered' ? <PrizeLines prize={c.prize} /> : prizeEach(c.prize, c.winners)}</dd>
               <dt>Сроки</dt>
               <dd>
                 С {when(c.starts_at)} по {when(c.ends_at)}

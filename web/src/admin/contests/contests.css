@@ -865,3 +865,65 @@ a.ct-trow:hover {
   flex-direction: column;
   gap: 2px;
 }
+
+.ct-tier {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid var(--line, #e2e5ea);
+  border-radius: 12px;
+}
+
+.ct-tier-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ct-tier-n {
+  font-weight: 600;
+}
+
+.ct-tier-count {
+  display: inline-flex;
+  min-height: 38px;
+  align-items: center;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.ct-form .ct-wide {
+  grid-column: 1 / -1;
+}
+
+.ct-win-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.ct-win-place {
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ct-win-prize {
+  display: block;
+  margin-top: 2px;
+  font-size: 13px;
+  color: var(--muted, #5f6773);
+}
+
+.ct-prizes {
+  margin: 0;
+}
+
+.ct-prizes b {
+  font-weight: 600;
+}
