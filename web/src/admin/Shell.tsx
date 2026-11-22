@@ -98,6 +98,12 @@ function Rail({ items, path, theme, onFlipTheme, build }: MenuProps) {
           );
         })}
         <span className="rail-fill" />
+        <button type="button" className="rail-item quiet hov" title="Выйти" onClick={() => void logout()}>
+          <span className="rail-icon">
+            <Icon name="logout" />
+          </span>
+          <span className="lbl">Выйти</span>
+        </button>
         <button type="button" className="rail-item quiet hov" onClick={onFlipTheme}>
           <span className="rail-icon">
             <Icon name={theme === 'dark' ? 'sun' : 'moon'} />
@@ -105,12 +111,6 @@ function Rail({ items, path, theme, onFlipTheme, build }: MenuProps) {
           <span className="lbl">{ThemeLabel(theme)}</span>
         </button>
         <BuildChip build={build} canOpen={can('settings')} variant="rail" />
-        <button type="button" className="rail-item quiet hov" title="Выйти" onClick={() => void logout()}>
-          <span className="rail-icon">
-            <Icon name="logout" />
-          </span>
-          <span className="lbl">Выйти</span>
-        </button>
         <button type="button" className="rail-item quiet hov" aria-pressed={pinned} onClick={togglePin}>
           <span className="rail-icon">
             <Icon name="pin" />
