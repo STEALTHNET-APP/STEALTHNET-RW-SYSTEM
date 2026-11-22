@@ -205,7 +205,7 @@ async fn подписку_другой_категории_и_пробную_не
     let trial_order = kit
         .services
         .checkout()
-        .start_trial(client_id)
+        .start_trial(client_id, None)
         .await
         .unwrap();
     let trial = deliver(&kit, trial_order).await;

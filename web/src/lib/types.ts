@@ -12,6 +12,14 @@ export type Appearance = {
 
 export type Currency = 'USD' | 'RUB';
 
+export type TrialPlan = {
+  id: string;
+  name: string;
+  days: number;
+  devices: number;
+  squads: string[];
+};
+
 export type Site = {
   brand_name: string;
   title?: string;
@@ -25,7 +33,7 @@ export type Site = {
   appearance: Appearance;
   connect?: { mode: 'ours' | 'remnawave'; page_config: string | null };
   autorenew_days_before?: number;
-  trial?: { enabled: boolean; days: number };
+  trial?: { enabled: boolean; days: number; plans?: TrialPlan[] };
   documents?: Array<{ title: string; url: string }>;
   email_auth?: 'password' | 'code' | null;
   email_reset?: boolean;

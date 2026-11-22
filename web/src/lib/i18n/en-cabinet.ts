@@ -27,6 +27,7 @@ export const CABINET: Record<string, string> = {
   'Выбрать тариф': 'Choose a plan',
   'Включаем…': 'Starting…',
   'Попробовать бесплатно {days}': 'Try free for {days}',
+  'Попробовать: {name} · {days}': 'Try free: {name} · {days}',
   'Проверка перед пробным периодом': 'Check before your free trial',
   'Я не робот': 'I\'m not a robot',
   'закончилась {date}': 'ended {date}',

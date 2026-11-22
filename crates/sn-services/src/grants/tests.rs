@@ -238,7 +238,7 @@ async fn промо_выдача_не_заменяет_действующую_п
     let trial_order = kit
         .services
         .checkout()
-        .start_trial(trial_client)
+        .start_trial(trial_client, None)
         .await
         .unwrap();
     let trial = deliver(&kit, trial_order).await;
@@ -304,7 +304,7 @@ async fn промо_выдача_не_заменяет_подписку_опла
     let trial_order = kit
         .services
         .checkout()
-        .start_trial(client_id)
+        .start_trial(client_id, None)
         .await
         .unwrap();
     let trial = deliver(&kit, trial_order).await;

@@ -985,6 +985,20 @@ pub static CATALOG: &[Entry] = &[
         &[],
     ),
     text(
+        "sub.trial_choose",
+        Subscription,
+        "Выбор пробного периода",
+        "Выберите, какой пробный период подключить:",
+        &[],
+    ),
+    button(
+        "sub.btn.trial_plan",
+        Subscription,
+        "Кнопка выбора пробника",
+        "🎁 {name} · {days} дн.",
+        &[NAME, DAYS],
+    ),
+    text(
         "dev.empty",
         Devices,
         "Устройств нет",

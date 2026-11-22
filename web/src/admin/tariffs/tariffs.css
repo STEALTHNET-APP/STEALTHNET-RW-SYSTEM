@@ -234,6 +234,52 @@
   height: 42px;
 }
 
+.trial-plans {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.trial-plan {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--card-line);
+  border-radius: 12px;
+  background: var(--fill);
+}
+
+.trial-plan-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px 16px;
+}
+
+.trial-plan-name {
+  flex: 1 1 260px;
+}
+
+.trial-plan-name .field {
+  width: 100%;
+}
+
+.trial-plan-state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+}
+
+.trial-plan-del {
+  flex: 0 0 auto;
+}
+
+.trial-add {
+  align-self: flex-start;
+}
+
 .tf-warn {
   font-size: 13px;
   color: var(--warn);

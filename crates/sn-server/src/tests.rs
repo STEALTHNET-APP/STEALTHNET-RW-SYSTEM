@@ -10,7 +10,7 @@ use sn_domain::money::{Currency, Stars};
 use sn_domain::order::{NewOrder, OrderKind, PurchaseIntent};
 use sn_domain::payment::{NewPayment, ProviderId, providers};
 use sn_domain::pricing::{QuoteRequest, quote};
-use sn_domain::settings::keys;
+use sn_domain::settings::{TrialPlan, TrialSettings, keys};
 use sn_domain::tariff::{CurrencyPrices, DevicePolicy, Tariff};
 use sn_domain::traffic::TrafficPolicy;
 use sn_modules::ModuleRegistry;
@@ -1722,6 +1722,41 @@ async fn клиенты_ищутся_и_история_собирается_че
 async fn открытый_каталог_без_входа_и_без_сквадов() {
     let Some(h) = http().await else { return };
     let tariff = h.tariff().await;
+    {
+        let mut conn = h.services().store().conn().await.unwrap();
+        conn.settings()
+            .set_as(
+                keys::TRIAL,
+                &TrialSettings {
+                    enabled: true,
+                    plans: vec![
+                        TrialPlan {
+                            id: "ru".into(),
+                            name: "Россия".into(),
+                            enabled: true,
+                            days: 3,
+                            devices: 1,
+                            traffic: TrafficPolicy::UNLIMITED,
+                            squads: vec![SquadId(Uuid::from_u128(1))],
+                        },
+                        TrialPlan {
+                            id: "eu".into(),
+                            name: "Европа".into(),
+                            enabled: true,
+                            days: 1,
+                            devices: 1,
+                            traffic: TrafficPolicy::UNLIMITED,
+                            squads: vec![SquadId(Uuid::from_u128(2))],
+                        },
+                    ],
+                    ..TrialSettings::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    h.services().reload().await.unwrap();
     let (status, _, catalog) = h.send(Method::GET, "/api/public/catalog", None, None).await;
     assert_eq!(status, StatusCode::OK, "{catalog}");
     assert_eq!(catalog["currency"], "USD");
@@ -1733,6 +1768,13 @@ async fn открытый_каталог_без_входа_и_без_сквад�
     assert!(offer["countries"].is_array());
     let (_, _, site) = h.send(Method::GET, "/api/public/site", None, None).await;
     assert!(site["trial"]["days"].is_number());
+    assert_eq!(site["trial"]["enabled"], true);
+    let plans = site["trial"]["plans"].as_array().unwrap();
+    assert_eq!(plans.len(), 2, "{site}");
+    assert_eq!(plans[0]["id"], "ru");
+    assert_eq!(plans[0]["name"], "Россия");
+    assert_eq!(plans[0]["days"], 3);
+    assert_eq!(plans[0]["squads"][0], Uuid::from_u128(1).to_string());
     assert!(site["autorenew_days_before"].is_number());
     h.db.cleanup().await;
 }

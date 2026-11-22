@@ -79,6 +79,7 @@ fn settings() -> CoreSettings {
             squads: vec![SquadId(Uuid::from_u128(7))],
             traffic: TrafficPolicy::UNLIMITED,
             devices: 1,
+            plans: Vec::new(),
         },
         ..CoreSettings::default()
     }

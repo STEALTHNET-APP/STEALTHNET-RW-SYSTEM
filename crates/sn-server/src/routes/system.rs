@@ -97,6 +97,7 @@ async fn catalog(State(state): State<AppState>, headers: HeaderMap) -> Response 
 
 async fn site(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let settings = state.services.settings();
+    let trial_plans = settings.trial.active_plans();
     let bot_username = match state.services.store().conn().await {
         Ok(mut conn) => conn
             .settings()
@@ -140,7 +141,17 @@ async fn site(State(state): State<AppState>, headers: HeaderMap) -> Response {
             "appearance": settings.appearance,
             "connect": settings.connect,
             "autorenew_days_before": settings.autorenew.charge_days_before,
-            "trial": { "enabled": settings.trial.enabled, "days": settings.trial.days },
+            "trial": {
+                "enabled": !trial_plans.is_empty(),
+                "days": settings.trial.days,
+                "plans": trial_plans.iter().map(|plan| serde_json::json!({
+                    "id": plan.id,
+                    "name": plan.name,
+                    "days": plan.days,
+                    "devices": plan.devices,
+                    "squads": plan.squads,
+                })).collect::<Vec<_>>(),
+            },
             "documents": state.services.bot_content().documents,
             "email_auth": email_auth,
             "email_reset": email_reset,

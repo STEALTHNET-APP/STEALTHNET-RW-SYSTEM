@@ -1599,24 +1599,78 @@ impl<'a> SettingsOps<'a> {
         trial: &TrialSettings,
         admin: AdminId,
     ) -> ServiceResult<TrialSettings> {
-        if !(1..=90).contains(&trial.days) {
-            return Err(field_error("days", "пробный период от 1 до 90 дней"));
+        if trial.plans.len() > 20 {
+            return Err(field_error("plans", "не больше 20 пробников"));
         }
-        if !(1..=100).contains(&trial.devices) {
-            return Err(field_error("devices", "от 1 до 100 устройств"));
+        for plan in &trial.plans {
+            let valid_id =
+                plan.id
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_lowercase())
+                    && plan.id.len() <= 24
+                    && plan.id.chars().all(|c| {
+                        c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_'
+                    });
+            if !valid_id {
+                return Err(field_error(
+                    "plans",
+                    "код пробника: строчные латинские буквы, цифры, дефис и подчёркивание, до 24 знаков",
+                ));
+            }
+            if plan.name.trim().is_empty() || plan.name.chars().count() > 60 {
+                return Err(field_error("plans", "название пробника: от 1 до 60 знаков"));
+            }
+            if !(1..=90).contains(&plan.days) {
+                return Err(field_error("plans", "пробный период от 1 до 90 дней"));
+            }
+            if !(1..=100).contains(&plan.devices) {
+                return Err(field_error("plans", "от 1 до 100 устройств"));
+            }
+            plan.traffic.validate()?;
+            let mut unique = plan.squads.clone();
+            unique.sort();
+            unique.dedup();
+            if unique.len() != plan.squads.len() {
+                return Err(field_error("plans", "сквад указан дважды"));
+            }
+            if plan.enabled && plan.squads.is_empty() {
+                return Err(field_error(
+                    "plans",
+                    "выберите хотя бы один сквад для включённого пробника",
+                ));
+            }
         }
-        trial.traffic.validate()?;
-        if trial.enabled && trial.squads.is_empty() {
+        let mut ids: Vec<&str> = trial.plans.iter().map(|p| p.id.as_str()).collect();
+        ids.sort_unstable();
+        if ids.windows(2).any(|w| w[0] == w[1]) {
+            return Err(field_error("plans", "код пробника указан дважды"));
+        }
+        if trial.plans.is_empty() {
+            if !(1..=90).contains(&trial.days) {
+                return Err(field_error("days", "пробный период от 1 до 90 дней"));
+            }
+            if !(1..=100).contains(&trial.devices) {
+                return Err(field_error("devices", "от 1 до 100 устройств"));
+            }
+            trial.traffic.validate()?;
+            if trial.enabled && trial.squads.is_empty() {
+                return Err(field_error(
+                    "squads",
+                    "выберите хотя бы один сквад, иначе у пробной подписки не будет серверов",
+                ));
+            }
+            let mut unique = trial.squads.clone();
+            unique.sort();
+            unique.dedup();
+            if unique.len() != trial.squads.len() {
+                return Err(field_error("squads", "сквад указан дважды"));
+            }
+        } else if trial.enabled && trial.active_plans().is_empty() {
             return Err(field_error(
-                "squads",
-                "выберите хотя бы один сквад, иначе у пробной подписки не будет серверов",
+                "plans",
+                "включите хотя бы один пробник со сквадами или выключите пробный период",
             ));
-        }
-        let mut unique = trial.squads.clone();
-        unique.sort();
-        unique.dedup();
-        if unique.len() != trial.squads.len() {
-            return Err(field_error("squads", "сквад указан дважды"));
         }
         let mut tx = self.services.store().begin().await?;
         tx.settings()

@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use sn_domain::money::Currency;
 use sn_domain::pricing::QuoteLine;
 use sn_domain::pricing::QuoteLineKind;
+use sn_domain::settings::{TrialPlan, TrialSettings, keys};
 use sn_domain::subscription::TRIAL_TAG;
 use sn_domain::traffic::TrafficPolicy;
 use sn_modules::{Module, ModuleContext, ModuleError};
@@ -315,7 +316,7 @@ async fn пробный_период_один_раз_и_с_тегом() {
     let order_id = kit
         .services
         .checkout()
-        .start_trial(client_id)
+        .start_trial(client_id, None)
         .await
         .unwrap();
     let order = order(&kit.services, order_id).await;
@@ -324,7 +325,7 @@ async fn пробный_период_один_раз_и_с_тегом() {
     let again = kit
         .services
         .checkout()
-        .start_trial(client_id)
+        .start_trial(client_id, None)
         .await
         .unwrap_err();
     assert_eq!(again.code(), "trial.used");
@@ -347,10 +348,71 @@ async fn пробный_период_один_раз_и_с_тегом() {
     let after = kit
         .services
         .checkout()
-        .start_trial(client_id)
+        .start_trial(client_id, None)
         .await
         .unwrap_err();
     assert_eq!(after.code(), "trial.has_subscription");
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn пробный_период_выбирает_план_локации() {
+    let Some(kit) = kit().await else { return };
+    let client_id = client(&kit.services, 8_200_000_001).await;
+    {
+        let mut conn = kit.services.store().conn().await.unwrap();
+        conn.settings()
+            .set_as(
+                keys::TRIAL,
+                &TrialSettings {
+                    enabled: true,
+                    plans: vec![
+                        TrialPlan {
+                            id: "ru".into(),
+                            name: "Россия".into(),
+                            enabled: true,
+                            days: 3,
+                            devices: 1,
+                            traffic: TrafficPolicy::UNLIMITED,
+                            squads: vec![squad(1)],
+                        },
+                        TrialPlan {
+                            id: "eu".into(),
+                            name: "Европа".into(),
+                            enabled: true,
+                            days: 1,
+                            devices: 2,
+                            traffic: TrafficPolicy::UNLIMITED,
+                            squads: vec![squad(2)],
+                        },
+                    ],
+                    ..TrialSettings::default()
+                },
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    kit.services.reload().await.unwrap();
+    kit.services.set_remna(Some(kit.remna.clone()));
+    let err = kit
+        .services
+        .checkout()
+        .start_trial(client_id, None)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), "trial.plan_required");
+    let order_id = kit
+        .services
+        .checkout()
+        .start_trial(client_id, Some("eu"))
+        .await
+        .unwrap();
+    let order = self::order(&kit.services, order_id).await;
+    let snapshot = order.snapshot.as_ref().unwrap();
+    assert_eq!(snapshot.name, "Европа");
+    assert_eq!((snapshot.days, snapshot.devices_included), (1, 2));
+    assert_eq!(snapshot.squads, vec![squad(2)]);
     kit.db.cleanup().await;
 }
 
@@ -361,7 +423,7 @@ async fn покупка_после_пробного_периода_меняет_
     let trial = kit
         .services
         .checkout()
-        .start_trial(client_id)
+        .start_trial(client_id, None)
         .await
         .unwrap();
     kit.services.fulfillment().run(trial).await.unwrap();

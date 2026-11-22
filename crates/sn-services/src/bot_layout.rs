@@ -62,7 +62,7 @@ impl Install {
         let roulette_ready =
             roulette_on && miniapp.is_some() && roulette::ready(&ctx).await.unwrap_or(false);
         Install {
-            trial: settings.trial.enabled,
+            trial: !settings.trial.active_plans().is_empty(),
             balance: services.payments().balance_enabled(),
             promo: modules.is_enabled(ModuleId::Promo),
             options: modules.is_enabled(ModuleId::Options),

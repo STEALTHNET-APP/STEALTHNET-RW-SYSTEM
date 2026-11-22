@@ -798,6 +798,7 @@ impl<'a> Extras<'a> {
                     reset: TrafficReset::NoReset,
                 },
                 devices,
+                plans: Vec::new(),
             };
             let result = ops.update_trial(&trial, actor).await.map(|_| ());
             self.outcome("Пробный период", result);

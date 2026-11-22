@@ -21,7 +21,7 @@ use sn_domain::plan::{
     CurrentTariff, HeldSubscription, PlanKind, classify, new_expire_at, single_target,
 };
 use sn_domain::pricing::{Quote, QuoteRequest, quote, topup_quote};
-use sn_domain::settings::{TrialSettings, keys};
+use sn_domain::settings::{TrialPlan, keys};
 use sn_domain::subscription::{Subscription, SubscriptionKind, SubscriptionStatus};
 use sn_domain::tariff::{Category, PeriodOffer, Tariff, TariffSnapshot, period_offers};
 use sn_modules::catalog::{antibot, promo};
@@ -759,18 +759,18 @@ fn trusted_return_url(url: &str, public_url: Option<&str>) -> bool {
         && (public_url.is_some_and(same_origin) || same_origin("https://t.me"))
 }
 
-pub(crate) fn trial_snapshot(trial: &TrialSettings) -> TariffSnapshot {
+pub(crate) fn trial_snapshot(plan: &TrialPlan) -> TariffSnapshot {
     TariffSnapshot {
         traffic_leftover: Default::default(),
         tariff_id: TariffId(0),
         category_id: CategoryId(0),
-        name: "Пробный период".into(),
+        name: plan.name.clone(),
         period_id: PeriodId(0),
-        days: trial.days,
-        devices_included: trial.devices,
+        days: plan.days,
+        devices_included: plan.devices,
         max_extra_devices: 0,
-        traffic: trial.traffic,
-        squads: trial.squads.clone(),
+        traffic: plan.traffic,
+        squads: plan.squads.clone(),
         external_squad: None,
     }
 }
@@ -1331,7 +1331,11 @@ impl<'a> Checkout<'a> {
         })
     }
 
-    pub async fn start_trial(&self, client_id: ClientId) -> ServiceResult<OrderId> {
+    pub async fn start_trial(
+        &self,
+        client_id: ClientId,
+        plan_id: Option<&str>,
+    ) -> ServiceResult<OrderId> {
         self.services.remna()?;
         let settings = self.services.settings();
         let trial = &settings.trial;
@@ -1341,7 +1345,35 @@ impl<'a> Checkout<'a> {
                 "Пробный период сейчас недоступен",
             ));
         }
-        if trial.squads.is_empty() || trial.days == 0 {
+        let plans = trial.active_plans();
+        let plan = match plan_id.map(str::trim).filter(|id| !id.is_empty()) {
+            Some(id) => plans
+                .iter()
+                .find(|plan| plan.id == id)
+                .cloned()
+                .ok_or_else(|| {
+                    ServiceError::rejected(
+                        "trial.plan_unavailable",
+                        "Выбранный вариант пробного периода недоступен",
+                    )
+                })?,
+            None => match plans.len() {
+                0 => {
+                    return Err(ServiceError::rejected(
+                        "trial.not_configured",
+                        "Пробный период не настроен: укажите срок и сквады",
+                    ));
+                }
+                1 => plans[0].clone(),
+                _ => {
+                    return Err(ServiceError::rejected(
+                        "trial.plan_required",
+                        "Выберите локацию для пробного периода",
+                    ));
+                }
+            },
+        };
+        if plan.squads.is_empty() || plan.days == 0 {
             return Err(ServiceError::rejected(
                 "trial.not_configured",
                 "Пробный период не настроен: укажите срок и сквады",
@@ -1395,10 +1427,10 @@ impl<'a> Checkout<'a> {
                     discount: Money::zero(currency),
                     total: Money::zero(currency),
                     stars: None,
-                    days: trial.days,
+                    days: plan.days,
                     extra_devices: 0,
                 },
-                snapshot: Some(trial_snapshot(trial)),
+                snapshot: Some(trial_snapshot(&plan)),
             })
             .await?;
         tx.orders().transition(order.id, OrderStatus::Paid).await?;
@@ -1446,9 +1478,14 @@ impl<'a> Checkout<'a> {
         Ok(antibot::challenge(&self.services.module_context(), client_id).await?)
     }
 
-    pub async fn confirm_trial(&self, client_id: ClientId, token: &str) -> ServiceResult<OrderId> {
+    pub async fn confirm_trial(
+        &self,
+        client_id: ClientId,
+        token: &str,
+        plan_id: Option<&str>,
+    ) -> ServiceResult<OrderId> {
         match antibot::confirm(&self.services.module_context(), client_id, token, "trial").await? {
-            antibot::Confirmation::Confirmed => self.start_trial(client_id).await,
+            antibot::Confirmation::Confirmed => self.start_trial(client_id, plan_id).await,
             antibot::Confirmation::TooFast => Err(ServiceError::rejected(
                 "antibot.too_fast",
                 "Нажмите кнопку ещё раз",

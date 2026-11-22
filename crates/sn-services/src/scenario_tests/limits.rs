@@ -27,7 +27,11 @@ async fn limits_kit() -> Option<Kit> {
 async fn trial_subscription(kit: &Kit, telegram_id: i64) -> (ClientId, Subscription) {
     let services = &kit.services;
     let client_id = client(services, telegram_id).await;
-    let order = services.checkout().start_trial(client_id).await.unwrap();
+    let order = services
+        .checkout()
+        .start_trial(client_id, None)
+        .await
+        .unwrap();
     services.fulfillment().run(order).await.unwrap();
     let mut conn = services.store().conn().await.unwrap();
     let subscription = conn

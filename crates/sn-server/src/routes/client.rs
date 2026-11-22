@@ -698,6 +698,8 @@ async fn gram_in_telegram(
 struct TrialBody {
     #[serde(default)]
     confirm: Option<String>,
+    #[serde(default)]
+    plan_id: Option<String>,
 }
 
 async fn trial(
@@ -708,10 +710,12 @@ async fn trial(
     client.require_full()?;
     let checkout = state.services.checkout();
     let id = client.0.client_id;
-    let token = body.and_then(|ApiJson(b)| b.confirm);
-    let result = match token.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
-        Some(token) => checkout.confirm_trial(id, token).await,
-        None => checkout.start_trial(id).await,
+    let TrialBody { confirm, plan_id } = body.map(|ApiJson(b)| b).unwrap_or_default();
+    let plan = plan_id.as_deref().map(str::trim).filter(|p| !p.is_empty());
+    let token = confirm.as_deref().map(str::trim).filter(|t| !t.is_empty());
+    let result = match token {
+        Some(token) => checkout.confirm_trial(id, token, plan).await,
+        None => checkout.start_trial(id, plan).await,
     };
     match result {
         Ok(order_id) => Ok(Json(serde_json::json!({ "order_id": order_id }))),

@@ -787,49 +787,98 @@ fn trial_started(c: &BotContent) -> Screen {
         .section(Section::Subscription)
 }
 
-async fn trial_check(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, BotError> {
+fn trial_choice(c: &BotContent, plans: &[sn_domain::settings::TrialPlan]) -> Screen {
+    let mut keyboard = Keyboard::new();
+    for plan in plans {
+        let days = plan.days.to_string();
+        let name: String = plan.name.chars().take(40).collect();
+        keyboard = keyboard.push(ui::button(
+            c,
+            "sub.btn.trial_plan",
+            &[("name", Text(&name)), ("days", Text(&days))],
+            format!("trial:{}", plan.id),
+        ));
+    }
+    keyboard = keyboard.push(ui::menu(c));
+    Screen::new(ui::text(c, "sub.trial_choose", &[]))
+        .keyboard(keyboard)
+        .section(Section::Subscription)
+}
+
+async fn trial_check(
+    turn: &mut Turn<'_>,
+    client: &Client,
+    plan_id: Option<&str>,
+) -> Result<Screen, BotError> {
     let content = turn.content();
     let c = &*content;
     match turn.services().checkout().trial_challenge(client.id).await {
-        Ok(token) => Ok(Screen::new(ui::text(c, "sub.trial_confirm", &[]))
-            .keyboard(
-                Keyboard::new()
-                    .push(ui::button(
-                        c,
-                        "sub.btn.trial_confirm",
-                        &[],
-                        format!("ab:{token}"),
-                    ))
-                    .push(ui::menu(c)),
-            )
-            .section(Section::Subscription)),
+        Ok(token) => {
+            let data = match plan_id {
+                Some(plan) => format!("abp:{plan}:{token}"),
+                None => format!("ab:{token}"),
+            };
+            Ok(Screen::new(ui::text(c, "sub.trial_confirm", &[]))
+                .keyboard(
+                    Keyboard::new()
+                        .push(ui::button(c, "sub.btn.trial_confirm", &[], data))
+                        .push(ui::menu(c)),
+                )
+                .section(Section::Subscription))
+        }
+        Err(err) => Ok(Screen::notice(text::user_error(&err))),
+    }
+}
+
+async fn trial_start(
+    turn: &mut Turn<'_>,
+    client: &Client,
+    plan_id: Option<&str>,
+) -> Result<Screen, BotError> {
+    let content = turn.content();
+    match turn
+        .services()
+        .checkout()
+        .start_trial(client.id, plan_id)
+        .await
+    {
+        Ok(_) => Ok(trial_started(&content)),
+        Err(err) if err.code() == antibot::CONFIRM_CODE => trial_check(turn, client, plan_id).await,
         Err(err) => Ok(Screen::notice(text::user_error(&err))),
     }
 }
 
 pub async fn trial(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, BotError> {
-    let content = turn.content();
-    match turn.services().checkout().start_trial(client.id).await {
-        Ok(_) => Ok(trial_started(&content)),
-        Err(err) if err.code() == antibot::CONFIRM_CODE => trial_check(turn, client).await,
-        Err(err) => Ok(Screen::notice(text::user_error(&err))),
+    let plans = turn.services().settings().trial.active_plans();
+    if plans.len() > 1 {
+        return Ok(trial_choice(&turn.content(), &plans));
     }
+    trial_start(turn, client, None).await
+}
+
+pub async fn trial_plan(
+    turn: &mut Turn<'_>,
+    client: &Client,
+    plan_id: &str,
+) -> Result<Screen, BotError> {
+    trial_start(turn, client, Some(plan_id)).await
 }
 
 pub async fn trial_confirmed(
     turn: &mut Turn<'_>,
     client: &Client,
+    plan_id: Option<&str>,
     token: &str,
 ) -> Result<Screen, BotError> {
     let content = turn.content();
     match turn
         .services()
         .checkout()
-        .confirm_trial(client.id, token)
+        .confirm_trial(client.id, token, plan_id)
         .await
     {
         Ok(_) => Ok(trial_started(&content)),
-        Err(err) if err.code() == "antibot.too_fast" => trial_check(turn, client).await,
+        Err(err) if err.code() == "antibot.too_fast" => trial_check(turn, client, plan_id).await,
         Err(err) => Ok(Screen::notice(text::user_error(&err))),
     }
 }

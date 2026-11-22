@@ -204,6 +204,17 @@ impl Default for AutoRenewSettings {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrialPlan {
+    pub id: String,
+    pub name: String,
+    pub enabled: bool,
+    pub days: u32,
+    pub devices: u32,
+    pub traffic: TrafficPolicy,
+    pub squads: Vec<SquadId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TrialSettings {
     pub enabled: bool,
@@ -211,6 +222,33 @@ pub struct TrialSettings {
     pub squads: Vec<SquadId>,
     pub traffic: TrafficPolicy,
     pub devices: u32,
+    #[serde(default)]
+    pub plans: Vec<TrialPlan>,
+}
+
+impl TrialSettings {
+    pub fn active_plans(&self) -> Vec<TrialPlan> {
+        if !self.enabled {
+            return Vec::new();
+        }
+        if !self.plans.is_empty() {
+            return self
+                .plans
+                .iter()
+                .filter(|plan| plan.enabled && !plan.squads.is_empty())
+                .cloned()
+                .collect();
+        }
+        vec![TrialPlan {
+            id: "default".into(),
+            name: "Пробный период".into(),
+            enabled: true,
+            days: self.days,
+            devices: self.devices,
+            traffic: self.traffic,
+            squads: self.squads.clone(),
+        }]
+    }
 }
 
 impl Default for TrialSettings {
@@ -221,6 +259,7 @@ impl Default for TrialSettings {
             squads: Vec::new(),
             traffic: TrafficPolicy::UNLIMITED,
             devices: 1,
+            plans: Vec::new(),
         }
     }
 }
@@ -818,6 +857,61 @@ mod tests {
         assert_eq!(missing_required(&schema, &config), ["api_token"]);
         config.insert("api_token".into(), serde_json::json!("abc"));
         assert!(missing_required(&schema, &config).is_empty());
+    }
+
+    #[test]
+    fn пробники_поддерживают_несколько_локаций() {
+        let uuid = |n: u128| crate::ids::SquadId(uuid::Uuid::from_u128(n));
+        let plan = |id: &str, enabled: bool, days: u32, squad: u128| TrialPlan {
+            id: id.into(),
+            name: format!("Пробник {id}"),
+            enabled,
+            days,
+            devices: 1,
+            traffic: TrafficPolicy::UNLIMITED,
+            squads: vec![uuid(squad)],
+        };
+        let legacy = TrialSettings {
+            enabled: true,
+            days: 5,
+            squads: vec![uuid(9)],
+            ..TrialSettings::default()
+        };
+        let fallback = legacy.active_plans();
+        assert_eq!(fallback.len(), 1);
+        assert_eq!(fallback[0].id, "default");
+        assert_eq!(fallback[0].days, 5);
+        let multi = TrialSettings {
+            enabled: true,
+            plans: vec![
+                plan("ru", true, 3, 1),
+                plan("eu", false, 1, 2),
+                plan("us", true, 7, 3),
+            ],
+            ..TrialSettings::default()
+        };
+        let active: Vec<String> = multi.active_plans().into_iter().map(|p| p.id).collect();
+        assert_eq!(active, ["ru", "us"]);
+        let none = TrialSettings {
+            enabled: true,
+            plans: vec![plan("ru", false, 3, 1)],
+            ..TrialSettings::default()
+        };
+        assert!(none.active_plans().is_empty());
+        let off = TrialSettings {
+            enabled: false,
+            plans: vec![plan("ru", true, 3, 1)],
+            ..TrialSettings::default()
+        };
+        assert!(off.active_plans().is_empty());
+        let old: TrialSettings = serde_json::from_value(serde_json::json!({
+            "enabled": true,
+            "days": 2,
+            "squads": [],
+            "devices": 1,
+        }))
+        .unwrap();
+        assert!(old.plans.is_empty());
     }
 
     #[test]

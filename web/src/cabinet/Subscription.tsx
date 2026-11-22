@@ -37,6 +37,7 @@ export function SubscriptionPage() {
   const [copied, setCopied] = useState<string | null>(null);
   const [qr, setQr] = useState(false);
   const [trialBusy, setTrialBusy] = useState(false);
+  const [trialPlan, setTrialPlan] = useState<string | null>(null);
   const [trialCheck, setTrialCheck] = useState<{ token: string; text: string } | null>(null);
   const error = pageError ?? subs.error;
 
@@ -110,11 +111,18 @@ export function SubscriptionPage() {
     }
   };
 
-  const startTrial = async (confirm?: string) => {
+  const startTrial = async (planId?: string | null, confirm?: string) => {
     setTrialBusy(true);
     setError(null);
     try {
-      const started = await api<{ confirm?: { token: string; text: string } }>('/api/client/trial', { method: 'POST', body: confirm ? { confirm } : {} });
+      const body: Record<string, string> = {};
+      if (planId) {
+        body.plan_id = planId;
+      }
+      if (confirm) {
+        body.confirm = confirm;
+      }
+      const started = await api<{ confirm?: { token: string; text: string } }>('/api/client/trial', { method: 'POST', body });
       if (started.confirm) {
         setTrialCheck(started.confirm);
         return;
@@ -138,6 +146,7 @@ export function SubscriptionPage() {
   }
 
   const blocked = me.client.status === 'blocked';
+  const trialPlans = site.trial?.plans ?? [];
   const status = statusWord(view, blocked);
   const note = explanation(view, blocked);
   const traffic = view ? trafficLine(view) : null;
@@ -221,15 +230,41 @@ export function SubscriptionPage() {
           {t('Выбрать тариф')}
         </Link>
         {site.trial?.enabled && !trialCheck ? (
-          <button type="button" className="cb-second" onClick={() => void startTrial()} disabled={trialBusy}>
-            {trialBusy ? t('Включаем…') : t('Попробовать бесплатно {days}', { days: days(site.trial.days) })}
-          </button>
+          trialPlans.length > 1 ? (
+            trialPlans.map((plan) => (
+              <button
+                key={plan.id}
+                type="button"
+                className="cb-second"
+                onClick={() => {
+                  setTrialPlan(plan.id);
+                  void startTrial(plan.id);
+                }}
+                disabled={trialBusy}
+              >
+                {trialBusy && trialPlan === plan.id ? t('Включаем…') : t('Попробовать: {name} · {days}', { name: plan.name, days: days(plan.days) })}
+              </button>
+            ))
+          ) : (
+            <button
+              type="button"
+              className="cb-second"
+              onClick={() => {
+                const plan = trialPlans[0]?.id ?? null;
+                setTrialPlan(plan);
+                void startTrial(plan);
+              }}
+              disabled={trialBusy}
+            >
+              {trialBusy ? t('Включаем…') : t('Попробовать бесплатно {days}', { days: days(trialPlans[0]?.days ?? site.trial.days) })}
+            </button>
+          )
         ) : null}
       </div>
       {trialCheck ? (
         <div className="cb-human" role="group" aria-label={t('Проверка перед пробным периодом')}>
           <p className="cb-ink2">{trialCheck.text}</p>
-          <button type="button" className="cb-second" onClick={() => void startTrial(trialCheck.token)} disabled={trialBusy}>
+          <button type="button" className="cb-second" onClick={() => void startTrial(trialPlan, trialCheck.token)} disabled={trialBusy}>
             {trialBusy ? t('Проверяем…') : t('Я не робот')}
           </button>
         </div>

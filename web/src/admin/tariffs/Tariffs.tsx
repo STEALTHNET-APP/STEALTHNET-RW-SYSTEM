@@ -36,7 +36,17 @@ import {
 import '../form.css';
 import './tariffs.css';
 
-type Trial = { enabled: boolean; days: number; squads: string[]; traffic: { limit_bytes: number | null; reset: TrafficReset }; devices: number };
+type TrialPlan = {
+  id: string;
+  name: string;
+  enabled: boolean;
+  days: number;
+  devices: number;
+  traffic: { limit_bytes: number | null; reset: TrafficReset };
+  squads: string[];
+};
+type Trial = { enabled: boolean; days: number; squads: string[]; traffic: { limit_bytes: number | null; reset: TrafficReset }; devices: number; plans?: TrialPlan[] };
+type TrialPlanDraft = { id: string; name: string; enabled: boolean; days: string; devices: string; gb: string; squads: string[] };
 type Multi = { enabled: boolean };
 
 const DEFAULT_CHANNELS: Channels = { bot: true, cabinet: true, miniapp: true };
@@ -232,7 +242,14 @@ export function Tariffs() {
         ) : null}
         {settingsOk && trial ? (
           <button type="button" className="b44 hov tf-trial" onClick={() => setDialog('trial')}>
-            Пробный период <span className="muted">{trial.enabled ? `${trial.days}${NBSP}${plural(trial.days, 'день', 'дня', 'дней')}` : 'выключен'}</span>
+            Пробный период{' '}
+            <span className="muted">
+              {trial.enabled
+                ? trial.plans?.length
+                  ? `${trial.plans.filter((p) => p.enabled).length} из ${trial.plans.length}`
+                  : `${trial.days}${NBSP}${plural(trial.days, 'день', 'дня', 'дней')}`
+                : 'выключен'}
+            </span>
           </button>
         ) : null}
         <button type="button" className="btn-main btn" onClick={startNew} style={{ padding: '0 18px' }}>
@@ -1005,29 +1022,113 @@ function MultiDialog({ value, onClose, onDone }: { value: Multi; onClose: () => 
   );
 }
 
+function trialDraft(plan: TrialPlan): TrialPlanDraft {
+  return {
+    id: plan.id,
+    name: plan.name,
+    enabled: plan.enabled,
+    days: String(plan.days),
+    devices: String(plan.devices),
+    gb: plan.traffic.limit_bytes ? String(Math.round(plan.traffic.limit_bytes / GIB)) : '',
+    squads: plan.squads,
+  };
+}
+
+function initialTrialPlans(trial: Trial): TrialPlanDraft[] {
+  if (trial.plans?.length) {
+    return trial.plans.map(trialDraft);
+  }
+  return [
+    trialDraft({
+      id: 'default',
+      name: 'Пробный период',
+      enabled: trial.enabled,
+      days: trial.days,
+      devices: trial.devices,
+      traffic: trial.traffic,
+      squads: trial.squads,
+    }),
+  ];
+}
+
+function nextPlanId(plans: TrialPlanDraft[]): string {
+  let n = plans.length + 1;
+  while (plans.some((plan) => plan.id === `plan-${n}`)) {
+    n += 1;
+  }
+  return `plan-${n}`;
+}
+
 function TrialDialog({ trial, squads, onClose, onDone }: { trial: Trial; squads: Squad[]; onClose: () => void; onDone: (trial: Trial) => void }) {
   const [enabled, setEnabled] = useState(trial.enabled);
-  const [daysRaw, setDays] = useState(String(trial.days));
-  const [devices, setDevices] = useState(String(trial.devices));
-  const [gb, setGb] = useState(trial.traffic.limit_bytes ? String(Math.round(trial.traffic.limit_bytes / GIB)) : '');
-  const [chosen, setChosen] = useState<string[]>(trial.squads);
+  const [plans, setPlans] = useState<TrialPlanDraft[]>(() => initialTrialPlans(trial));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const ids = useId();
+  const patch = (id: string, change: Partial<TrialPlanDraft>) => {
+    setPlans((list) => list.map((plan) => (plan.id === id ? { ...plan, ...change } : plan)));
+  };
+  const addPlan = () => {
+    setPlans((list) => [
+      ...list,
+      { id: nextPlanId(list), name: 'Новый пробник', enabled: false, days: '3', devices: '1', gb: '', squads: [] },
+    ]);
+  };
+  const removePlan = (id: string) => {
+    setPlans((list) => (list.length > 1 ? list.filter((plan) => plan.id !== id) : list));
+  };
   const save = async () => {
-    const days = Number(daysRaw);
-    const dev = Number(devices);
-    const limit = gb.trim() ? Number(gb) : null;
-    if (!Number.isInteger(days) || days < 1 || days > 90) {
-      setError('Срок пробного периода: от 1 до 90 дней');
+    if (plans.length === 0) {
+      setError('Добавьте хотя бы один пробник');
       return;
     }
-    if (!Number.isInteger(dev) || dev < 1 || dev > 100) {
-      setError('Устройств: от 1 до 100');
+    const parsed: TrialPlan[] = [];
+    for (const [index, plan] of plans.entries()) {
+      const name = plan.name.trim();
+      if (!name) {
+        setError(`Пробник ${index + 1}: укажите название`);
+        return;
+      }
+      if (name.length > 60) {
+        setError(`Пробник ${index + 1}: название до 60 знаков`);
+        return;
+      }
+      const days = Number(plan.days);
+      if (!Number.isInteger(days) || days < 1 || days > 90) {
+        setError(`Пробник «${name}»: срок от 1 до 90 дней`);
+        return;
+      }
+      const devices = Number(plan.devices);
+      if (!Number.isInteger(devices) || devices < 1 || devices > 100) {
+        setError(`Пробник «${name}»: устройств от 1 до 100`);
+        return;
+      }
+      const limit = plan.gb.trim() ? Number(plan.gb) : null;
+      if (limit !== null && (!Number.isInteger(limit) || limit < 1)) {
+        setError(`Пробник «${name}»: лимит трафика — целое число ГБ`);
+        return;
+      }
+      if (plan.enabled && plan.squads.length === 0) {
+        setError(`Пробник «${name}»: выберите хотя бы один сквад`);
+        return;
+      }
+      parsed.push({
+        id: plan.id,
+        name,
+        enabled: plan.enabled,
+        days,
+        devices,
+        traffic: { limit_bytes: limit === null ? null : limit * GIB, reset: 'no_reset' },
+        squads: plan.squads,
+      });
+    }
+    if (enabled && !parsed.some((plan) => plan.enabled)) {
+      setError('Включите хотя бы один пробник или выключите пробный период');
       return;
     }
-    if (enabled && chosen.length === 0) {
-      setError('Выберите хотя бы один сквад');
+    const fallback = parsed[0];
+    if (!fallback) {
+      setError('Добавьте хотя бы один пробник');
       return;
     }
     setBusy(true);
@@ -1035,7 +1136,14 @@ function TrialDialog({ trial, squads, onClose, onDone }: { trial: Trial; squads:
     try {
       const next = await api<Trial>('/api/admin/settings/trial', {
         method: 'PUT',
-        body: { enabled, days, devices: dev, squads: chosen, traffic: { limit_bytes: limit === null ? null : limit * GIB, reset: 'no_reset' } },
+        body: {
+          enabled,
+          days: fallback.days,
+          devices: fallback.devices,
+          squads: fallback.squads,
+          traffic: fallback.traffic,
+          plans: parsed,
+        },
       });
       onDone(next);
     } catch (err) {
@@ -1051,40 +1159,112 @@ function TrialDialog({ trial, squads, onClose, onDone }: { trial: Trial; squads:
           Выдавать пробный период новым клиентам
         </span>
       </span>
-      <div className="tf-wrap">
-        <label className="tf-field" htmlFor={`${ids}-d`}>
-          <span>Срок</span>
-          <span className="tf-inline">
-            <input id={`${ids}-d`} className="field num" inputMode="numeric" value={daysRaw} onChange={(e) => setDays(e.target.value.replace(/\D/g, '').slice(0, 2))} style={{ width: 88 }} disabled={busy} />
-            <span className="muted">{plural(Number(daysRaw) || 0, 'день', 'дня', 'дней')}</span>
-          </span>
-        </label>
-        <label className="tf-field" htmlFor={`${ids}-v`}>
-          <span>Устройств</span>
-          <input id={`${ids}-v`} className="field num" inputMode="numeric" value={devices} onChange={(e) => setDevices(e.target.value.replace(/\D/g, '').slice(0, 3))} style={{ width: 88 }} disabled={busy} />
-        </label>
-        <label className="tf-field" htmlFor={`${ids}-g`}>
-          <span>Трафик на весь срок</span>
-          <span className="tf-inline">
-            <input id={`${ids}-g`} className="field num" inputMode="numeric" placeholder="Без лимита" value={gb} onChange={(e) => setGb(e.target.value.replace(/\D/g, '').slice(0, 6))} style={{ width: 120 }} disabled={busy} />
-            <span className="muted">ГБ</span>
-          </span>
-        </label>
-      </div>
-      <div className="field-row">
-        <span style={{ fontWeight: 600 }}>Сквады</span>
-        <div role="group" aria-label="Сквады пробного периода" className="chips">
-          {squads.map((s) => {
-            const on = chosen.includes(s.uuid);
-            return (
-              <button key={s.uuid} type="button" className="chip" aria-pressed={on} onClick={() => setChosen(on ? chosen.filter((x) => x !== s.uuid) : [...chosen, s.uuid])} disabled={busy}>
-                <span>{s.name}</span>
+      <div className="trial-plans">
+        {plans.map((plan, index) => (
+          <section key={plan.id} className="trial-plan" aria-label={plan.name || `Пробник ${index + 1}`}>
+            <div className="trial-plan-head">
+              <label className="tf-field trial-plan-name" htmlFor={`${ids}-${plan.id}-n`}>
+                <span>Название</span>
+                <input
+                  id={`${ids}-${plan.id}-n`}
+                  className="field"
+                  value={plan.name}
+                  maxLength={60}
+                  onChange={(e) => patch(plan.id, { name: e.target.value })}
+                  disabled={busy}
+                />
+              </label>
+              <span className="trial-plan-state">
+                <Switch on={plan.enabled} onToggle={() => patch(plan.id, { enabled: !plan.enabled })} label={`Включить пробник «${plan.name}»`} />
+                <span className="muted">{plan.enabled ? 'включён' : 'выключен'}</span>
+              </span>
+              <button
+                type="button"
+                className="icon-btn hov trial-plan-del"
+                aria-label="Удалить пробник"
+                title="Удалить пробник"
+                onClick={() => removePlan(plan.id)}
+                disabled={busy || plans.length === 1}
+              >
+                <Icon name="close" />
               </button>
-            );
-          })}
-          {squads.length === 0 ? <span className="muted">Remnawave не отдал сквады</span> : null}
-        </div>
+            </div>
+            <div className="tf-wrap">
+              <label className="tf-field" htmlFor={`${ids}-${plan.id}-d`}>
+                <span>Срок</span>
+                <span className="tf-inline">
+                  <input
+                    id={`${ids}-${plan.id}-d`}
+                    className="field num"
+                    inputMode="numeric"
+                    value={plan.days}
+                    onChange={(e) => patch(plan.id, { days: e.target.value.replace(/\D/g, '').slice(0, 2) })}
+                    style={{ width: 88 }}
+                    disabled={busy}
+                  />
+                  <span className="muted">{plural(Number(plan.days) || 0, 'день', 'дня', 'дней')}</span>
+                </span>
+              </label>
+              <label className="tf-field" htmlFor={`${ids}-${plan.id}-v`}>
+                <span>Устройств</span>
+                <input
+                  id={`${ids}-${plan.id}-v`}
+                  className="field num"
+                  inputMode="numeric"
+                  value={plan.devices}
+                  onChange={(e) => patch(plan.id, { devices: e.target.value.replace(/\D/g, '').slice(0, 3) })}
+                  style={{ width: 88 }}
+                  disabled={busy}
+                />
+              </label>
+              <label className="tf-field" htmlFor={`${ids}-${plan.id}-g`}>
+                <span>Трафик на весь срок</span>
+                <span className="tf-inline">
+                  <input
+                    id={`${ids}-${plan.id}-g`}
+                    className="field num"
+                    inputMode="numeric"
+                    placeholder="Без лимита"
+                    value={plan.gb}
+                    onChange={(e) => patch(plan.id, { gb: e.target.value.replace(/\D/g, '').slice(0, 6) })}
+                    style={{ width: 120 }}
+                    disabled={busy}
+                  />
+                  <span className="muted">ГБ</span>
+                </span>
+              </label>
+            </div>
+            <div className="field-row">
+              <span style={{ fontWeight: 600 }}>Сквады</span>
+              <div role="group" aria-label={`Сквады пробника «${plan.name}»`} className="chips">
+                {squads.map((s) => {
+                  const on = plan.squads.includes(s.uuid);
+                  return (
+                    <button
+                      key={s.uuid}
+                      type="button"
+                      className="chip"
+                      aria-pressed={on}
+                      onClick={() =>
+                        patch(plan.id, {
+                          squads: on ? plan.squads.filter((x) => x !== s.uuid) : [...plan.squads, s.uuid],
+                        })
+                      }
+                      disabled={busy}
+                    >
+                      <span>{s.name}</span>
+                    </button>
+                  );
+                })}
+                {squads.length === 0 ? <span className="muted">Remnawave не отдал сквады</span> : null}
+              </div>
+            </div>
+          </section>
+        ))}
       </div>
+      <button type="button" className="btn-line hov trial-add" onClick={addPlan} disabled={busy || plans.length >= 20}>
+        + Добавить пробник
+      </button>
       {error ? (
         <p className="err" role="alert">
           {error}

@@ -93,15 +93,15 @@ async fn новый_аккаунт_без_username_жмёт_кнопку_и_по
     let services = &kit.services;
     let checkout = services.checkout();
     let calm = fresh(services, 1_010_000_000, Some("real_user")).await;
-    checkout.start_trial(calm).await.unwrap();
+    checkout.start_trial(calm, None).await.unwrap();
     assert!(actions(services, calm).await.is_empty());
     let suspect = fresh(services, 8_100_000_000, None).await;
-    let err = checkout.start_trial(suspect).await.unwrap_err();
+    let err = checkout.start_trial(suspect, None).await.unwrap_err();
     assert_eq!(err.code(), antibot::CONFIRM_CODE);
     let token = checkout.trial_challenge(suspect).await.unwrap();
     assert_eq!(
         checkout
-            .confirm_trial(suspect, &token)
+            .confirm_trial(suspect, &token, None)
             .await
             .unwrap_err()
             .code(),
@@ -111,15 +111,19 @@ async fn новый_аккаунт_без_username_жмёт_кнопку_и_по
     age_challenge(services, suspect).await;
     assert_eq!(
         checkout
-            .confirm_trial(suspect, "чужой")
+            .confirm_trial(suspect, "чужой", None)
             .await
             .unwrap_err()
             .code(),
         "antibot.expired"
     );
-    checkout.confirm_trial(suspect, &token).await.unwrap();
+    checkout.confirm_trial(suspect, &token, None).await.unwrap();
     assert_eq!(
-        checkout.start_trial(suspect).await.unwrap_err().code(),
+        checkout
+            .start_trial(suspect, None)
+            .await
+            .unwrap_err()
+            .code(),
         "trial.used"
     );
     assert_eq!(
@@ -154,11 +158,19 @@ async fn в_режиме_запрета_пробника_нет_пока_адм�
     let checkout = services.checkout();
     let suspect = fresh(services, 8_200_000_000, None).await;
     assert_eq!(
-        checkout.start_trial(suspect).await.unwrap_err().code(),
+        checkout
+            .start_trial(suspect, None)
+            .await
+            .unwrap_err()
+            .code(),
         antibot::DENIED_CODE
     );
     assert_eq!(
-        checkout.start_trial(suspect).await.unwrap_err().code(),
+        checkout
+            .start_trial(suspect, None)
+            .await
+            .unwrap_err()
+            .code(),
         antibot::DENIED_CODE
     );
     assert_eq!(actions(services, suspect).await, ["marked", "trial_denied"]);
@@ -166,14 +178,14 @@ async fn в_режиме_запрета_пробника_нет_пока_адм�
     let admin = crate::scenario_tests::owner(services).await;
     assert!(antibot::clear(&ctx, suspect, Some(admin)).await.unwrap());
     assert!(!antibot::clear(&ctx, suspect, Some(admin)).await.unwrap());
-    checkout.start_trial(suspect).await.unwrap();
+    checkout.start_trial(suspect, None).await.unwrap();
     assert_eq!(
         actions(services, suspect).await,
         ["marked", "trial_denied", "cleared"]
     );
     mode(services, "mark").await;
     let quiet = fresh(services, 8_300_000_000, None).await;
-    checkout.start_trial(quiet).await.unwrap();
+    checkout.start_trial(quiet, None).await.unwrap();
     assert_eq!(actions(services, quiet).await, ["marked"]);
     services
         .modules()
@@ -181,7 +193,7 @@ async fn в_режиме_запрета_пробника_нет_пока_адм�
         .await
         .unwrap();
     let off = fresh(services, 8_400_000_000, None).await;
-    checkout.start_trial(off).await.unwrap();
+    checkout.start_trial(off, None).await.unwrap();
     assert!(actions(services, off).await.is_empty());
     kit.db.cleanup().await;
 }

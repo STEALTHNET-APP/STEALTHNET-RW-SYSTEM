@@ -239,6 +239,7 @@ pub(crate) async fn kit_with(modules: Vec<Arc<dyn Module>>) -> Option<Kit> {
                     squads: vec![squad(9)],
                     traffic: TrafficPolicy::UNLIMITED,
                     devices: 1,
+                    plans: Vec::new(),
                 },
                 None,
             )

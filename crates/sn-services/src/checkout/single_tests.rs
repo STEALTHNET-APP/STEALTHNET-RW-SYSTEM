@@ -260,7 +260,7 @@ async fn пробный_период_при_оплате_переводится_
     let trial_order = kit
         .services
         .checkout()
-        .start_trial(client_id)
+        .start_trial(client_id, None)
         .await
         .unwrap();
     let trial = deliver(&kit, trial_order).await;
