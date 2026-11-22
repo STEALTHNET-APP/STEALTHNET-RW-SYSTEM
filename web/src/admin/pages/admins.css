@@ -135,6 +135,12 @@
   max-width: 760px;
 }
 
+.sec-out {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .sec-form .row:first-child {
   border-top: 1px solid var(--line);
 }
