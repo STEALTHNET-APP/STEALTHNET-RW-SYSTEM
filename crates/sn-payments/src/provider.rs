@@ -6,9 +6,70 @@ use serde::{Deserialize, Serialize};
 use sn_domain::ids::{ClientId, PaymentId};
 use sn_domain::money::{Amount, Currency, Money};
 use sn_domain::payment::NoticeKind;
-use sn_domain::settings::{SettingField, missing_required};
+use sn_domain::settings::{SettingField, check_proxy, mask_proxy, missing_required};
 use std::net::IpAddr;
+use std::sync::RwLock;
 use uuid::Uuid;
+
+static HTTP_PROXY: RwLock<Option<String>> = RwLock::new(None);
+
+pub fn set_http_proxy(proxy: Option<String>) {
+    let proxy = proxy
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    if let Some(value) = &proxy
+        && let Err(problem) = check_proxy(value)
+    {
+        tracing::warn!(
+            proxy = %mask_proxy(value),
+            error = %problem,
+            "прокси платёжных систем не применён"
+        );
+        return;
+    }
+    match HTTP_PROXY.write() {
+        Ok(mut guard) => *guard = proxy,
+        Err(poisoned) => *poisoned.into_inner() = proxy,
+    }
+}
+
+pub fn http_proxy() -> Option<String> {
+    match HTTP_PROXY.read() {
+        Ok(guard) => guard.clone(),
+        Err(poisoned) => poisoned.into_inner().clone(),
+    }
+}
+
+pub fn proxy_interceptor() -> reqwest::Proxy {
+    reqwest::Proxy::custom(|_| http_proxy())
+}
+
+pub fn apply_http_proxy(builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
+    builder.proxy(proxy_interceptor())
+}
+
+fn http_builder() -> reqwest::ClientBuilder {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent(concat!("stealthnet/", env!("CARGO_PKG_VERSION")))
+}
+
+pub fn http_client_with_proxy(proxy: Option<&str>) -> reqwest::Client {
+    let mut builder = http_builder();
+    if let Some(raw) = proxy.map(str::trim).filter(|value| !value.is_empty()) {
+        match reqwest::Proxy::all(raw) {
+            Ok(value) => builder = builder.proxy(value),
+            Err(err) => tracing::warn!(
+                proxy = %mask_proxy(raw),
+                error = %err,
+                "прокси не разобран, платёжная система пойдёт напрямую"
+            ),
+        }
+    }
+    builder.build().unwrap_or_default()
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -671,13 +732,7 @@ pub trait PaymentProvider: Send + Sync + 'static {
 }
 
 pub fn http_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .connect_timeout(std::time::Duration::from_secs(5))
-        .redirect(reqwest::redirect::Policy::none())
-        .user_agent(concat!("stealthnet/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .unwrap_or_default()
+    apply_http_proxy(http_builder()).build().unwrap_or_default()
 }
 
 #[cfg(test)]

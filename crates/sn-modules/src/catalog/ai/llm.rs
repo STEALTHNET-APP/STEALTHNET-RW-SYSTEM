@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::fmt;
 use std::net::IpAddr;
-use std::sync::OnceLock;
 use std::time::Duration;
 
 const TIMEOUT: Duration = Duration::from_secs(25);
@@ -828,17 +827,23 @@ pub fn check_address(raw: &str, strict: bool) -> Result<String, String> {
     Ok(trimmed.to_string())
 }
 
-fn http() -> &'static reqwest::Client {
-    static HTTP: OnceLock<reqwest::Client> = OnceLock::new();
-    HTTP.get_or_init(|| {
-        reqwest::Client::builder()
-            .timeout(TIMEOUT)
-            .connect_timeout(CONNECT_TIMEOUT)
-            .redirect(reqwest::redirect::Policy::none())
-            .user_agent(concat!("stealthnet/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .unwrap_or_default()
-    })
+fn http(proxy: Option<&str>) -> reqwest::Client {
+    let mut builder = reqwest::Client::builder()
+        .timeout(TIMEOUT)
+        .connect_timeout(CONNECT_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent(concat!("stealthnet/", env!("CARGO_PKG_VERSION")));
+    if let Some(raw) = proxy.map(str::trim).filter(|value| !value.is_empty()) {
+        match reqwest::Proxy::all(raw) {
+            Ok(proxy) => builder = builder.proxy(proxy),
+            Err(err) => tracing::warn!(
+                proxy = %sn_domain::settings::mask_proxy(raw),
+                error = %err,
+                "прокси нейросети не разобран, запрос пойдёт напрямую"
+            ),
+        }
+    }
+    builder.build().unwrap_or_default()
 }
 
 fn transport(err: &reqwest::Error) -> String {
@@ -853,14 +858,19 @@ fn transport(err: &reqwest::Error) -> String {
 
 #[derive(Clone)]
 pub struct Llm {
-    http: &'static reqwest::Client,
+    http: reqwest::Client,
     provider: Provider,
     base: String,
     key: String,
 }
 
 impl Llm {
-    pub fn new(provider: Provider, api_url: &str, key: &str) -> Result<Self, AiError> {
+    pub fn new(
+        provider: Provider,
+        api_url: &str,
+        key: &str,
+        proxy: Option<&str>,
+    ) -> Result<Self, AiError> {
         let address = if api_url.trim().is_empty() {
             provider.base_url().unwrap_or_default()
         } else {
@@ -869,7 +879,7 @@ impl Llm {
         let base = check_address(address, false)
             .map_err(|problem| AiError::new(provider, Fault::Address(problem)))?;
         Ok(Llm {
-            http: http(),
+            http: http(proxy),
             provider,
             base,
             key: key.trim().to_string(),
@@ -1497,12 +1507,12 @@ mod tests {
         assert!(check_address("ftp://proxy.example.com", true).is_err());
         assert!(check_address("не адрес", true).is_err());
         assert!(matches!(
-            Llm::new(Provider::Custom, "", "k"),
+            Llm::new(Provider::Custom, "", "k", None),
             Err(AiError {
                 fault: Fault::Address(_),
                 ..
             })
         ));
-        assert!(Llm::new(Provider::Groq, "", "k").is_ok());
+        assert!(Llm::new(Provider::Groq, "", "k", None).is_ok());
     }
 }

@@ -18,7 +18,7 @@ use sn_domain::payment::{
 use sn_domain::settings::{
     Appearance, AutoRenewSettings, ClientAccess, ConnectSettings, CoreSettings, FieldKind,
     ImageMeta, MultiSubscriptions, PaymentOrder, SettingField, SiteSettings, SupportMode,
-    TopUpSettings, TrialSettings, keys, secret_keys,
+    TopUpSettings, TrialSettings, check_proxy, keys, secret_keys,
 };
 use sn_modules::{ModuleConfig, ModuleView};
 use sn_payments::providers::STARS_TOKEN_FIELD;
@@ -455,10 +455,9 @@ pub fn secrets_again(
     saved: &[&str],
     changes: &[SecretChange],
 ) -> ServiceResult<()> {
-    let Some(moved) = schema
-        .iter()
-        .find(|f| f.kind == FieldKind::Url && address(f, before) != address(f, after))
-    else {
+    let Some(moved) = schema.iter().find(|f| {
+        f.kind == FieldKind::Url && f.key != "proxy_url" && address(f, before) != address(f, after)
+    }) else {
         return Ok(());
     };
     let stale: Vec<String> = schema
@@ -844,6 +843,11 @@ fn checked_value(field: &SettingField, value: &Value) -> ServiceResult<Value> {
             if raw.is_empty() {
                 return Ok(Value::String(String::new()));
             }
+            if field.key == "proxy_url" {
+                return check_proxy(raw)
+                    .map(Value::String)
+                    .map_err(|problem| field_error(field.key, &format!("прокси: {problem}")));
+            }
             if !(raw.starts_with("https://") || raw.starts_with("http://"))
                 || raw.contains(char::is_whitespace)
                 || raw.len() > MAX_TEXT_FIELD
@@ -1018,13 +1022,17 @@ pub struct BalanceHolders {
 pub struct PaymentsView {
     pub currency: Currency,
     pub order: Vec<String>,
+    pub proxy: Option<String>,
     pub providers: Vec<ProviderView>,
     pub balances: BalanceHolders,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct PaymentsUpdate {
+    #[serde(default)]
     pub order: Vec<String>,
+    #[serde(default)]
+    pub proxy: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
@@ -1168,6 +1176,7 @@ pub struct BotSettingsView {
     pub token_set: bool,
     pub token_from_env: bool,
     pub username: Option<String>,
+    pub proxy: Option<String>,
     pub status: crate::BotState,
     pub updates: crate::bot_webhook::UpdatesView,
     pub flood: FloodView,
@@ -1185,6 +1194,8 @@ pub struct BotUpdate {
     pub token: Option<String>,
     #[serde(default)]
     pub username: Option<String>,
+    #[serde(default)]
+    pub proxy: Option<String>,
     #[serde(default)]
     pub updates: Option<sn_domain::settings::UpdatesMode>,
     #[serde(default)]
@@ -1821,11 +1832,18 @@ impl<'a> SettingsOps<'a> {
 
     pub async fn payments(&self) -> ServiceResult<PaymentsView> {
         let settings = self.services.settings();
-        let (clients, total) = {
+        let (clients, total, proxy) = {
             let mut conn = self.services.store().conn().await?;
-            conn.ledger()
+            let holders = conn
+                .ledger()
                 .holders(Wallet::Main, settings.currency)
+                .await?;
+            let proxy = conn
+                .settings()
+                .get_as::<String>(keys::PAYMENTS_PROXY)
                 .await?
+                .filter(|p| !p.trim().is_empty());
+            (holders.0, holders.1, proxy)
         };
         Ok(PaymentsView {
             currency: settings.currency,
@@ -1833,6 +1851,7 @@ impl<'a> SettingsOps<'a> {
                 .payment_order
                 .for_currency(settings.currency)
                 .to_vec(),
+            proxy,
             providers: self.services.payments().views(),
             balances: BalanceHolders { clients, total },
         })
@@ -1870,27 +1889,59 @@ impl<'a> SettingsOps<'a> {
             order.push(id.to_string());
         }
         let mut tx = self.services.store().begin().await?;
-        let mut payment_order = tx
-            .settings()
-            .get(keys::PAYMENT_ORDER)
-            .await?
-            .and_then(|v| parse::<PaymentOrder>(keys::PAYMENT_ORDER, v))
-            .unwrap_or_default();
-        match settings.currency {
-            Currency::Usd => payment_order.usd = order.clone(),
-            Currency::Rub => payment_order.rub = order.clone(),
+        if let Some(proxy) = &update.proxy {
+            match optional_text(Some(proxy)) {
+                Some(proxy) => {
+                    let proxy = check_proxy(&proxy)
+                        .map_err(|problem| field_error("proxy", &format!("прокси: {problem}")))?;
+                    tx.settings()
+                        .set_as(keys::PAYMENTS_PROXY, &proxy, Some(admin))
+                        .await?;
+                    tx.audit()
+                        .record(&Actor::Admin(admin).audit(
+                            "settings.payments_proxy",
+                            "settings",
+                            None,
+                            serde_json::json!({ "proxy": sn_domain::settings::mask_proxy(&proxy) }),
+                        ))
+                        .await?;
+                }
+                None => {
+                    tx.settings().delete(keys::PAYMENTS_PROXY).await?;
+                    tx.audit()
+                        .record(&Actor::Admin(admin).audit(
+                            "settings.payments_proxy",
+                            "settings",
+                            None,
+                            serde_json::json!({ "proxy": null }),
+                        ))
+                        .await?;
+                }
+            }
         }
-        tx.settings()
-            .set_as(keys::PAYMENT_ORDER, &payment_order, Some(admin))
-            .await?;
-        tx.audit()
-            .record(&Actor::Admin(admin).audit(
-                "settings.payment_order",
-                "settings",
-                None,
-                serde_json::json!({ "currency": settings.currency, "order": order }),
-            ))
-            .await?;
+        if !update.order.is_empty() {
+            let mut payment_order = tx
+                .settings()
+                .get(keys::PAYMENT_ORDER)
+                .await?
+                .and_then(|v| parse::<PaymentOrder>(keys::PAYMENT_ORDER, v))
+                .unwrap_or_default();
+            match settings.currency {
+                Currency::Usd => payment_order.usd = order.clone(),
+                Currency::Rub => payment_order.rub = order.clone(),
+            }
+            tx.settings()
+                .set_as(keys::PAYMENT_ORDER, &payment_order, Some(admin))
+                .await?;
+            tx.audit()
+                .record(&Actor::Admin(admin).audit(
+                    "settings.payment_order",
+                    "settings",
+                    None,
+                    serde_json::json!({ "currency": settings.currency, "order": order }),
+                ))
+                .await?;
+        }
         tx.commit().await?;
         self.saved().await?;
         self.payments().await
@@ -2585,6 +2636,11 @@ impl<'a> SettingsOps<'a> {
             .get_as::<String>(keys::BOT_USERNAME)
             .await?
             .filter(|u| !u.trim().is_empty());
+        let proxy = conn
+            .settings()
+            .get_as::<String>(keys::BOT_PROXY)
+            .await?
+            .filter(|p| !p.trim().is_empty());
         let env = self.services.env().bot_token.is_some();
         let stats = conn
             .bot_state()
@@ -2597,6 +2653,7 @@ impl<'a> SettingsOps<'a> {
             token_set: stored.is_some() || env,
             token_from_env: stored.is_none() && env,
             username,
+            proxy,
             status: self.services.bot_runtime().state(),
             updates: self.services.bot_webhook().view().await?,
             flood: FloodView {
@@ -2677,6 +2734,21 @@ impl<'a> SettingsOps<'a> {
                 }
             }
             changed.push("username");
+        }
+        if let Some(proxy) = &update.proxy {
+            match optional_text(Some(proxy)) {
+                Some(proxy) => {
+                    let proxy = check_proxy(&proxy)
+                        .map_err(|problem| field_error("proxy", &format!("прокси: {problem}")))?;
+                    tx.settings()
+                        .set_as(keys::BOT_PROXY, &proxy, Some(admin))
+                        .await?;
+                }
+                None => {
+                    tx.settings().delete(keys::BOT_PROXY).await?;
+                }
+            }
+            changed.push("proxy");
         }
         if !changed.is_empty() {
             tx.audit()

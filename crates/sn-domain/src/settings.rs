@@ -756,7 +756,55 @@ impl CoreSettings {
     }
 }
 
+pub const BOT_PROXY: &str = "bot.proxy";
+pub const PAYMENTS_PROXY: &str = "payments.proxy";
+
+pub const PROXY_SCHEMES: [&str; 4] = ["http", "https", "socks5", "socks5h"];
+
+pub fn check_proxy(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("адрес прокси пуст".into());
+    }
+    if trimmed.chars().any(char::is_whitespace) {
+        return Err("в адресе прокси не должно быть пробелов".into());
+    }
+    let url = url::Url::parse(trimmed).map_err(|_| {
+        "нужен адрес вида socks5://127.0.0.1:1080 или http://user:pass@host:port".to_string()
+    })?;
+    if !PROXY_SCHEMES.contains(&url.scheme()) {
+        return Err(format!(
+            "схема {} не поддерживается: нужны http, https, socks5 или socks5h",
+            url.scheme()
+        ));
+    }
+    if url.host_str().is_none_or(str::is_empty) {
+        return Err("в адресе прокси нет сервера".into());
+    }
+    if !url.path().is_empty() && url.path() != "/" {
+        return Err("в адресе прокси не должно быть пути".into());
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        return Err("в адресе прокси не должно быть параметров после ? и #".into());
+    }
+    Ok(trimmed.to_string())
+}
+
+pub fn mask_proxy(raw: &str) -> String {
+    match url::Url::parse(raw.trim()) {
+        Ok(mut url) => {
+            if url.password().is_some() {
+                let _ = url.set_password(Some("***"));
+            }
+            url.to_string()
+        }
+        Err(_) => raw.trim().to_string(),
+    }
+}
+
 pub mod keys {
+    pub const BOT_PROXY: &str = super::BOT_PROXY;
+    pub const PAYMENTS_PROXY: &str = super::PAYMENTS_PROXY;
     pub const CURRENCY: &str = "core.currency";
     pub const BRAND_NAME: &str = "core.brand_name";
     pub const PUBLIC_URL: &str = "core.public_url";
@@ -819,6 +867,39 @@ pub mod secret_keys {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn адреса_прокси_проверяются_и_пароль_скрывается() {
+        for good in [
+            "http://127.0.0.1:8080",
+            "https://proxy.example.com:443",
+            "socks5://127.0.0.1:1080",
+            "socks5h://user:pass@proxy.example.com:1080",
+            " http://user:pass@proxy.example.com:3128 ",
+        ] {
+            assert!(check_proxy(good).is_ok(), "{good}");
+        }
+        for bad in [
+            "ftp://127.0.0.1:21",
+            "socks5://",
+            "http://proxy.example.com:8080/path",
+            "http://proxy.example.com:8080?x=1",
+            "http://proxy.example.com:8080#x",
+            "http://proxy.example.com:8080 with space",
+            "proxy.example.com:8080",
+        ] {
+            assert!(check_proxy(bad).is_err(), "{bad}");
+        }
+        assert_eq!(
+            mask_proxy("socks5://user:secret@127.0.0.1:1080"),
+            "socks5://user:***@127.0.0.1:1080"
+        );
+        assert_eq!(
+            mask_proxy("http://127.0.0.1:8080"),
+            "http://127.0.0.1:8080/"
+        );
+        assert_eq!(mask_proxy("not a url secret"), "not a url secret");
+    }
 
     #[test]
     fn ссылка_поддержки_видна_только_в_режимах_со_ссылкой() {

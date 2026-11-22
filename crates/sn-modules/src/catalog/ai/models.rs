@@ -255,7 +255,13 @@ mod tests {
             .mount(&server)
             .await;
         let catalog = Catalog::default();
-        let llm = Llm::new(Provider::OpenRouter, &server.uri(), "sk-or-cache-test").unwrap();
+        let llm = Llm::new(
+            Provider::OpenRouter,
+            &server.uri(),
+            "sk-or-cache-test",
+            None,
+        )
+        .unwrap();
         let first = catalog.load(AdminId(7), &llm, false).await;
         let Loaded::Fresh(Listing::Models(models)) = &first else {
             panic!("{first:?}");
@@ -293,7 +299,13 @@ mod tests {
             .mount(&server)
             .await;
         let catalog = Catalog::default();
-        let llm = Llm::new(Provider::OpenRouter, &server.uri(), "sk-or-secret-value").unwrap();
+        let llm = Llm::new(
+            Provider::OpenRouter,
+            &server.uri(),
+            "sk-or-secret-value",
+            None,
+        )
+        .unwrap();
         let Loaded::Fresh(Listing::Failed(text)) = catalog.load(AdminId(3), &llm, false).await
         else {
             panic!("ожидалась ошибка");
@@ -312,7 +324,13 @@ mod tests {
         }
         assert_eq!(catalog.load(AdminId(3), &llm, true).await, Loaded::Limited);
         assert_eq!(server.received_requests().await.unwrap().len(), PER_MINUTE);
-        let other = Llm::new(Provider::OpenRouter, &server.uri(), "sk-or-other-value").unwrap();
+        let other = Llm::new(
+            Provider::OpenRouter,
+            &server.uri(),
+            "sk-or-other-value",
+            None,
+        )
+        .unwrap();
         assert_eq!(
             catalog.load(AdminId(3), &other, false).await,
             Loaded::Limited

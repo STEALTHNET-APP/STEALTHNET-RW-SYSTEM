@@ -633,6 +633,7 @@ fn settings_place(action: &str) -> Option<TargetView> {
         "settings.languages" => ("Языки", "/admin/settings/languages"),
         "settings.autorenew"
         | "settings.payment_order"
+        | "settings.payments_proxy"
         | "settings.provider"
         | "settings.provider_check" => ("Платёжки", "/admin/settings/payments"),
         "settings.bot"

@@ -51,6 +51,9 @@ pub struct EnvFallbacks {
     pub remna: Option<RemnaConnection>,
     pub bot_token: Option<String>,
     pub telegram_api: Option<String>,
+    pub proxy_telegram: Option<String>,
+    pub proxy_payments: Option<String>,
+    pub proxy_ai: Option<String>,
 }
 
 pub struct ServiceDeps {
@@ -67,6 +70,8 @@ struct Runtime {
     remna: Option<Arc<dyn RemnawaveApi>>,
     remna_webhook_secret: Option<String>,
     bot_token: Option<String>,
+    bot_proxy: Option<String>,
+    payments_proxy: Option<String>,
     bot_webhook: Option<crate::bot_webhook::WebhookKeys>,
     updates: Option<Arc<crate::updates::UpdateConfig>>,
     backup_env: Option<Arc<crate::backups::BackupEnv>>,
@@ -113,6 +118,8 @@ impl Services {
                 .as_ref()
                 .and_then(|r| r.webhook_secret.clone()),
             bot_token: deps.env.bot_token.clone(),
+            bot_proxy: deps.env.proxy_telegram.clone(),
+            payments_proxy: deps.env.proxy_payments.clone(),
             bot_webhook: None,
             updates: None,
             backup_env: None,
@@ -227,6 +234,14 @@ impl Services {
         self.read(|r| r.bot_token.clone())
     }
 
+    pub fn telegram_proxy(&self) -> Option<String> {
+        self.read(|r| r.bot_proxy.clone())
+    }
+
+    pub fn payments_proxy(&self) -> Option<String> {
+        self.read(|r| r.payments_proxy.clone())
+    }
+
     pub fn bot_webhook_keys(&self) -> Option<crate::bot_webhook::WebhookKeys> {
         self.read(|r| r.bot_webhook.clone())
     }
@@ -308,6 +323,20 @@ impl Services {
             self.inner.env.bot_token.clone(),
         )
         .await?;
+        let bot_proxy = conn
+            .settings()
+            .get_as::<String>(sn_domain::settings::keys::BOT_PROXY)
+            .await?
+            .map(|proxy| proxy.trim().to_string())
+            .filter(|proxy| !proxy.is_empty())
+            .or_else(|| self.inner.env.proxy_telegram.clone());
+        let payments_proxy = conn
+            .settings()
+            .get_as::<String>(sn_domain::settings::keys::PAYMENTS_PROXY)
+            .await?
+            .map(|proxy| proxy.trim().to_string())
+            .filter(|proxy| !proxy.is_empty())
+            .or_else(|| self.inner.env.proxy_payments.clone());
         let snapshot = settings::registry_snapshot(
             &mut conn,
             self.secrets(),
@@ -326,6 +355,8 @@ impl Services {
         .await?
         .and_then(|secret| crate::bot_webhook::WebhookKeys::from_secret(&secret));
         drop(conn);
+        sn_payments::set_http_proxy(payments_proxy.clone());
+        sn_modules::catalog::ai::set_fallback_proxy(self.inner.env.proxy_ai.clone());
         self.inner.payments.apply(snapshot);
         self.inner.payments.set_checks(checks);
         self.inner.modules.set_currency(core.currency);
@@ -352,16 +383,19 @@ impl Services {
             || previous.public_url != core.public_url
             || self.bot_webhook_keys() != bot_webhook;
         let token_changed = self.bot_token() != bot_token;
+        let proxy_changed = self.telegram_proxy() != bot_proxy;
         self.write(|r| {
             r.settings = Arc::new(core);
             r.remna = client;
             r.remna_webhook_secret = remna.webhook_secret;
             r.bot_token = bot_token;
+            r.bot_proxy = bot_proxy;
+            r.payments_proxy = payments_proxy;
             r.bot_webhook = bot_webhook;
             r.bot_content_en = Arc::new(bot_content.in_locale(Locale::En));
             r.bot_content = Arc::new(bot_content);
         });
-        if token_changed || delivery_changed {
+        if token_changed || delivery_changed || proxy_changed {
             self.inner.bot.wake();
         }
         Ok(())

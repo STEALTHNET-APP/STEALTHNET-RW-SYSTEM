@@ -591,15 +591,28 @@ pub struct TelegramApi {
 
 const PACED_RETRIES: u32 = 2;
 
+pub(crate) fn http_client(proxy: Option<&str>, timeout: Duration) -> reqwest::Client {
+    let mut builder = reqwest::Client::builder()
+        .timeout(timeout)
+        .connect_timeout(Duration::from_secs(5))
+        .redirect(reqwest::redirect::Policy::none());
+    if let Some(raw) = proxy.map(str::trim).filter(|value| !value.is_empty()) {
+        match reqwest::Proxy::all(raw) {
+            Ok(proxy) => builder = builder.proxy(proxy),
+            Err(err) => tracing::warn!(
+                proxy = %sn_domain::settings::mask_proxy(raw),
+                error = %err,
+                "прокси Telegram не разобран, бот пойдёт напрямую"
+            ),
+        }
+    }
+    builder.build().unwrap_or_default()
+}
+
 impl TelegramApi {
-    pub fn new(api_base: &str, token: &str) -> Self {
+    pub fn new(api_base: &str, token: &str, proxy: Option<&str>) -> Self {
         TelegramApi {
-            http: reqwest::Client::builder()
-                .timeout(Duration::from_secs(65))
-                .connect_timeout(Duration::from_secs(5))
-                .redirect(reqwest::redirect::Policy::none())
-                .build()
-                .unwrap_or_default(),
+            http: http_client(proxy, Duration::from_secs(65)),
             base: format!("{}/bot{}", api_base.trim_end_matches('/'), token),
             files: format!("{}/file/bot{}", api_base.trim_end_matches('/'), token),
             pacer: None,
@@ -607,10 +620,10 @@ impl TelegramApi {
         }
     }
 
-    pub fn paced(api_base: &str, token: &str, limits: SendLimits) -> Self {
+    pub fn paced(api_base: &str, token: &str, limits: SendLimits, proxy: Option<&str>) -> Self {
         TelegramApi {
             pacer: Some(crate::pacer::shared(api_base, token, limits)),
-            ..TelegramApi::new(api_base, token)
+            ..TelegramApi::new(api_base, token, proxy)
         }
     }
 
@@ -1289,7 +1302,7 @@ mod tests {
 
     #[tokio::test]
     async fn ошибка_сети_не_раскрывает_токен() {
-        let api = TelegramApi::new("http://127.0.0.1:9", TOKEN);
+        let api = TelegramApi::new("http://127.0.0.1:9", TOKEN, None);
         let err = api.get_me().await.unwrap_err();
         assert!(matches!(err, TelegramError::Transport(_)));
         assert!(!err.to_string().contains("SECRET"));
@@ -1307,7 +1320,7 @@ mod tests {
             })))
             .mount(&server)
             .await;
-        let api = TelegramApi::new(&server.uri(), TOKEN);
+        let api = TelegramApi::new(&server.uri(), TOKEN, None);
         let err = api.send_message(1, "текст", None).await.unwrap_err();
         assert_eq!(err.retry_after(), Some(7));
         assert!(err.is_retryable());
@@ -1332,7 +1345,7 @@ mod tests {
             })))
             .mount(&server)
             .await;
-        let api = TelegramApi::new(&server.uri(), TOKEN);
+        let api = TelegramApi::new(&server.uri(), TOKEN, None);
         let sent = api
             .send_message(1, "<b>Привет</b> &amp; пока", None)
             .await

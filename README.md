@@ -132,6 +132,10 @@ sudo stealthnet restore /путь/к/stealthnet-backup-20261118-040000-auto.tar.
 | `SN_LOG` | `info` | Фильтр журнала в формате `tracing` |
 | `SN_LOG_FORMAT` | `text` | `text` или `json` |
 | `SN_TELEGRAM_API` | `https://api.telegram.org` | Адрес Bot API. Меняют, если хостинг закрывает Telegram и рядом поднят свой сервер Bot API. С вебхуком этому серверу нужен доступ к адресу панели |
+| `SN_PROXY_TELEGRAM` | `SN_OUTBOUND_PROXY` | Прокси для Telegram Bot API: `socks5://`, `socks5h://`, `http://` или `https://`. Алиас — `SN_TELEGRAM_PROXY`. Значение из админки важнее |
+| `SN_PROXY_PAYMENTS` | `SN_OUTBOUND_PROXY` | Прокси для платёжных систем. Алиас — `SN_PAYMENTS_PROXY` |
+| `SN_PROXY_AI` | `SN_OUTBOUND_PROXY` | Прокси для ИИ-чата поддержки. Алиас — `SN_AI_PROXY`. Значение в настройках модуля важнее |
+| `SN_OUTBOUND_PROXY` | `ALL_PROXY`, `HTTPS_PROXY` | Общий прокси для Telegram, платёжек и ИИ, если отдельный не задан |
 | `REMNAWAVE_URL`, `REMNAWAVE_TOKEN` | — | Адрес и API-токен Remnawave, пока они не заданы в админке |
 | `REMNAWAVE_WEBHOOK_SECRET` | — | Совпадает с `WEBHOOK_SECRET_HEADER` в `.env` Remnawave |
 | `REMNAWAVE_COOKIE` | — | Кука защиты eGames: `имя=значение` или ссылка входа из установщика eGames |

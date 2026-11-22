@@ -60,6 +60,18 @@ fn list(vars: &HashMap<String, String>, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn proxy(vars: &HashMap<String, String>, keys: &[&str]) -> Result<Option<String>> {
+    let Some((key, raw)) = keys
+        .iter()
+        .find_map(|key| text(vars, key).map(|value| (*key, value)))
+    else {
+        return Ok(None);
+    };
+    sn_domain::settings::check_proxy(&raw)
+        .map(Some)
+        .map_err(|err| anyhow!("{key}: {err}"))
+}
+
 fn updates(vars: &HashMap<String, String>) -> Result<UpdateConfig> {
     let build = BuildInfo::new(
         text(vars, "SN_BUILD_COMMIT").as_deref(),
@@ -140,6 +152,21 @@ impl Config {
             }
             _ => None,
         };
+        let outbound = proxy(
+            vars,
+            &[
+                "SN_OUTBOUND_PROXY",
+                "ALL_PROXY",
+                "all_proxy",
+                "HTTPS_PROXY",
+                "https_proxy",
+            ],
+        )?;
+        let proxy_telegram =
+            proxy(vars, &["SN_PROXY_TELEGRAM", "SN_TELEGRAM_PROXY"])?.or_else(|| outbound.clone());
+        let proxy_payments =
+            proxy(vars, &["SN_PROXY_PAYMENTS", "SN_PAYMENTS_PROXY"])?.or_else(|| outbound.clone());
+        let proxy_ai = proxy(vars, &["SN_PROXY_AI", "SN_AI_PROXY"])?.or_else(|| outbound.clone());
         Ok(Config {
             database_url,
             db_max_connections,
@@ -163,6 +190,9 @@ impl Config {
                 remna,
                 bot_token: text(vars, "TELEGRAM_BOT_TOKEN"),
                 telegram_api: custom_api,
+                proxy_telegram,
+                proxy_payments,
+                proxy_ai,
             },
             updates: updates(vars)?,
             backup_dir: text(vars, "SN_BACKUP_DIR").map(std::path::PathBuf::from),
@@ -199,6 +229,64 @@ mod tests {
         assert!(config.secret_key.is_none());
         assert_eq!(config.telegram_api, "https://api.telegram.org");
         assert!(config.backup_dir.is_none());
+        assert!(config.env.proxy_telegram.is_none());
+    }
+
+    #[test]
+    fn прокси_берётся_из_специфичной_переменной_или_общего_фоллбэка() {
+        let fallback = Config::from_vars(&vars(&[
+            ("DATABASE_URL", "postgres://sn@db/sn"),
+            ("SN_OUTBOUND_PROXY", "socks5://127.0.0.1:1080"),
+        ]))
+        .unwrap();
+        assert_eq!(
+            fallback.env.proxy_telegram.as_deref(),
+            Some("socks5://127.0.0.1:1080")
+        );
+        assert_eq!(
+            fallback.env.proxy_payments.as_deref(),
+            Some("socks5://127.0.0.1:1080")
+        );
+        assert_eq!(
+            fallback.env.proxy_ai.as_deref(),
+            Some("socks5://127.0.0.1:1080")
+        );
+        let specific = Config::from_vars(&vars(&[
+            ("DATABASE_URL", "postgres://sn@db/sn"),
+            ("SN_PROXY_TELEGRAM", "http://user:pass@tg.example.com:3128"),
+            ("SN_PAYMENTS_PROXY", "socks5h://pay.example.com:1080"),
+            ("SN_AI_PROXY", "https://ai.example.com:443"),
+            ("HTTPS_PROXY", "http://fallback.example.com:8080"),
+        ]))
+        .unwrap();
+        assert_eq!(
+            specific.env.proxy_telegram.as_deref(),
+            Some("http://user:pass@tg.example.com:3128")
+        );
+        assert_eq!(
+            specific.env.proxy_payments.as_deref(),
+            Some("socks5h://pay.example.com:1080")
+        );
+        assert_eq!(
+            specific.env.proxy_ai.as_deref(),
+            Some("https://ai.example.com:443")
+        );
+        let alias = Config::from_vars(&vars(&[
+            ("DATABASE_URL", "postgres://sn@db/sn"),
+            ("SN_TELEGRAM_PROXY", "socks5://127.0.0.1:1080"),
+        ]))
+        .unwrap();
+        assert_eq!(
+            alias.env.proxy_telegram.as_deref(),
+            Some("socks5://127.0.0.1:1080")
+        );
+        assert!(
+            Config::from_vars(&vars(&[
+                ("DATABASE_URL", "postgres://sn@db/sn"),
+                ("SN_PROXY_AI", "ftp://127.0.0.1:21")
+            ]))
+            .is_err()
+        );
     }
 
     #[test]

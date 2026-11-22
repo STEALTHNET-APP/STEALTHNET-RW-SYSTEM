@@ -121,6 +121,7 @@ pub enum BotError {
 enum Stop {
     Cancelled,
     TokenChanged,
+    ProxyChanged,
     ModeChanged,
 }
 
@@ -402,6 +403,7 @@ struct Live<'a> {
     me: BotUser,
     queue: i64,
     token: &'a str,
+    proxy: Option<String>,
     since: chrono::DateTime<chrono::Utc>,
     menu: Option<String>,
     commands: Option<sn_domain::client::Languages>,
@@ -450,6 +452,9 @@ impl Bot {
                 Ok(Stop::TokenChanged) => {
                     tracing::info!("токен бота сменился, переподключаемся");
                 }
+                Ok(Stop::ProxyChanged) => {
+                    tracing::info!("прокси бота сменился, переподключаемся");
+                }
                 Ok(Stop::ModeChanged) => {
                     tracing::info!("способ получения обновлений сменился, переподключаемся");
                 }
@@ -491,6 +496,7 @@ impl Bot {
             &self.config.api_base,
             token,
             self.config.send,
+            self.services.telegram_proxy().as_deref(),
         ));
         let me = api.get_me().await?;
         let previous = remembered_username(&self.services).await?;
@@ -589,6 +595,7 @@ impl Bot {
             me,
             queue,
             token,
+            proxy: self.services.telegram_proxy(),
             since: self.services.now(),
             menu: stored_menu(&self.services).await,
             commands,
@@ -829,6 +836,9 @@ impl Bot {
             if self.services.bot_token().as_deref() != Some(live.token) {
                 break Ok(Stop::TokenChanged);
             }
+            if self.services.telegram_proxy() != live.proxy {
+                break Ok(Stop::ProxyChanged);
+            }
             if self.services.bot_webhook().wanted() {
                 break Ok(Stop::ModeChanged);
             }
@@ -940,6 +950,9 @@ impl Bot {
             if self.services.bot_token().as_deref() != Some(live.token) {
                 webhook::forget_previous(&self.services, &api).await;
                 return Ok(Stop::TokenChanged);
+            }
+            if self.services.telegram_proxy() != live.proxy {
+                return Ok(Stop::ProxyChanged);
             }
             if !hooks.wanted() {
                 return Ok(Stop::ModeChanged);

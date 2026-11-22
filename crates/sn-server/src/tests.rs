@@ -802,6 +802,40 @@ async fn настройки_ядра_оплаты_и_remnawave_через_http()
     let (status, body) = h
         .write(
             Method::PUT,
+            "/api/admin/settings/payments",
+            &owner,
+            json!({ "proxy": "ftp://127.0.0.1:21" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["code"], "settings.invalid_field");
+    let (status, body) = h
+        .write(
+            Method::PUT,
+            "/api/admin/settings/bot",
+            &owner,
+            json!({ "proxy": "socks5h://user:secret@127.0.0.1:1080" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["proxy"], "socks5h://user:secret@127.0.0.1:1080");
+    assert_eq!(
+        h.services().telegram_proxy().as_deref(),
+        Some("socks5h://user:secret@127.0.0.1:1080")
+    );
+    let (status, body) = h
+        .write(
+            Method::PUT,
+            "/api/admin/settings/bot",
+            &owner,
+            json!({ "proxy": "socks5://" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["code"], "settings.invalid_field");
+    let (status, body) = h
+        .write(
+            Method::PUT,
             "/api/admin/settings/trial",
             &owner,
             json!({ "enabled": true, "days": 3, "squads": [], "devices": 1 }),

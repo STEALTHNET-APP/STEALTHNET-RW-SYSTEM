@@ -51,7 +51,6 @@ pub struct PhotoKeeper {
     services: Services,
     api_base: String,
     every: Duration,
-    http: reqwest::Client,
 }
 
 fn pick(sizes: Vec<PhotoSize>) -> Option<PhotoSize> {
@@ -103,12 +102,6 @@ impl PhotoKeeper {
             services,
             api_base: api_base.trim_end_matches('/').to_string(),
             every,
-            http: reqwest::Client::builder()
-                .timeout(Duration::from_secs(20))
-                .connect_timeout(Duration::from_secs(5))
-                .redirect(reqwest::redirect::Policy::none())
-                .build()
-                .unwrap_or_default(),
         }
     }
 
@@ -135,10 +128,12 @@ impl PhotoKeeper {
         if due.is_empty() {
             return Ok(0);
         }
-        let api = TelegramApi::new(&self.api_base, token);
+        let proxy = self.services.telegram_proxy();
+        let api = TelegramApi::new(&self.api_base, token, proxy.as_deref());
+        let http = crate::telegram::http_client(proxy.as_deref(), Duration::from_secs(20));
         let mut done = 0;
         for target in due {
-            let outcome = self.fetch(&api, token, &target).await;
+            let outcome = self.fetch(&api, &http, token, &target).await;
             if outcome == Outcome::Stop {
                 break;
             }
@@ -148,7 +143,13 @@ impl PhotoKeeper {
         Ok(done)
     }
 
-    async fn fetch(&self, api: &TelegramApi, token: &str, target: &PhotoTarget) -> Outcome {
+    async fn fetch(
+        &self,
+        api: &TelegramApi,
+        http: &reqwest::Client,
+        token: &str,
+        target: &PhotoTarget,
+    ) -> Outcome {
         let photos: ProfilePhotos = match api
             .call(
                 "getUserProfilePhotos",
@@ -181,7 +182,7 @@ impl PhotoKeeper {
         let Some(path) = file.file_path.filter(|p| safe_path(p)) else {
             return Outcome::Missing;
         };
-        match self.download(token, &path).await {
+        match self.download(http, token, &path).await {
             Ok(content) => match sniff(&content) {
                 Some(content_type) => Outcome::Saved {
                     version: size.file_unique_id,
@@ -194,10 +195,14 @@ impl PhotoKeeper {
         }
     }
 
-    async fn download(&self, token: &str, path: &str) -> Result<Vec<u8>, Outcome> {
+    async fn download(
+        &self,
+        http: &reqwest::Client,
+        token: &str,
+        path: &str,
+    ) -> Result<Vec<u8>, Outcome> {
         let url = format!("{}/file/bot{token}/{path}", self.api_base);
-        let mut response = self
-            .http
+        let mut response = http
             .get(url)
             .send()
             .await

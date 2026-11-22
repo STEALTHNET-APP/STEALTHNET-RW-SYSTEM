@@ -20,6 +20,7 @@ type Bot = {
   token_set: boolean;
   token_from_env: boolean;
   username: string | null;
+  proxy: string | null;
   status: BotStatus;
   updates: Updates;
   flood: { settings: FloodSettings; stats: FloodStats | null };
@@ -143,6 +144,7 @@ export function SettingsBot() {
   const [token, setToken] = useState('');
   const [replacing, setReplacing] = useState(false);
   const [username, setUsername] = useState('');
+  const [proxy, setProxy] = useState('');
   const [mode, setMode] = useState<UpdatesMode>('polling');
   const [flood, setFlood] = useState<FloodForm | null>(null);
   const [status, setStatus] = useState<{ text: string; bad: boolean } | null>(null);
@@ -151,6 +153,7 @@ export function SettingsBot() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [fastUntil, setFastUntil] = useState(0);
   const touched = useRef(false);
+  const proxyTouched = useRef(false);
   const modeTouched = useRef(false);
   const floodTouched = useRef(false);
 
@@ -158,6 +161,9 @@ export function SettingsBot() {
     setBot(data);
     if (!touched.current) {
       setUsername(data.username ?? '');
+    }
+    if (!proxyTouched.current) {
+      setProxy(data.proxy ?? '');
     }
     if (!modeTouched.current) {
       setMode(data.updates.mode);
@@ -171,6 +177,7 @@ export function SettingsBot() {
     try {
       const data = await api<Bot>('/api/admin/settings/bot');
       touched.current = false;
+      proxyTouched.current = false;
       modeTouched.current = false;
       floodTouched.current = false;
       apply(data);
@@ -223,10 +230,11 @@ export function SettingsBot() {
   const clean = username.trim().replace(/^@/, '');
   const nameBad = clean !== '' && !/^[A-Za-z0-9_]{5,32}$/.test(clean);
   const tokenBad = token.trim() !== '' && !/^\d+:[A-Za-z0-9_-]{20,}$/.test(token.trim());
+  const proxyBad = proxy.trim() !== '' && !/^(https?|socks5h?):\/\//i.test(proxy.trim());
   const modeChanged = mode !== bot.updates.mode;
   const floodDirty = flood !== null && floodChanged(flood, bot.flood.settings);
   const floodBad = flood !== null && floodInvalid(flood);
-  const dirty = token.trim() !== '' || clean !== (bot.username ?? '') || modeChanged || floodDirty;
+  const dirty = token.trim() !== '' || clean !== (bot.username ?? '') || proxy.trim() !== (bot.proxy ?? '') || modeChanged || floodDirty;
   const editingToken = !bot.token_set || replacing;
   const shown = describe(bot.status);
 
@@ -234,7 +242,7 @@ export function SettingsBot() {
     if (!dirty || busy) {
       return;
     }
-    if (nameBad || tokenBad || floodBad) {
+    if (nameBad || tokenBad || proxyBad || floodBad) {
       setStatus({ text: 'Исправьте поля, отмеченные красным', bad: true });
       return;
     }
@@ -247,6 +255,9 @@ export function SettingsBot() {
       }
       if (clean !== (bot.username ?? '')) {
         body.username = clean;
+      }
+      if (proxy.trim() !== (bot.proxy ?? '')) {
+        body.proxy = proxy.trim();
       }
       if (modeChanged) {
         body.updates = mode;
@@ -424,6 +435,33 @@ export function SettingsBot() {
             </span>
           </div>
         </div>
+        <div className="row">
+          <label htmlFor="bot-proxy" className="rl">
+            Прокси для Telegram
+          </label>
+          <div className="rc">
+            <input
+              id="bot-proxy"
+              className="field"
+              value={proxy}
+              placeholder="socks5://127.0.0.1:1080"
+              aria-invalid={proxyBad}
+              aria-describedby="bot-proxy-hint"
+              onChange={(e) => {
+                proxyTouched.current = true;
+                setProxy(e.target.value);
+                setStatus(null);
+              }}
+              disabled={busy}
+              style={{ maxWidth: 420 }}
+            />
+            <span id="bot-proxy-hint" className={proxyBad ? 'err' : 'cap'}>
+              {proxyBad
+                ? 'Адрес начинается с http://, https://, socks5:// или socks5h://'
+                : 'Необязательно. socks5://127.0.0.1:1080, socks5h://user:pass@host:1080 или http://user:pass@host:port. Пусто — напрямую или через прокси из .env'}
+            </span>
+          </div>
+        </div>
       </section>
 
       <BotUpdates
@@ -461,11 +499,13 @@ export function SettingsBot() {
           disabled={busy}
           onClick={() => {
             touched.current = false;
+            proxyTouched.current = false;
             modeTouched.current = false;
             floodTouched.current = false;
             setToken('');
             setReplacing(false);
             setUsername(bot.username ?? '');
+            setProxy(bot.proxy ?? '');
             setMode(bot.updates.mode);
             setFlood(floodForm(bot.flood.settings));
             setStatus(null);

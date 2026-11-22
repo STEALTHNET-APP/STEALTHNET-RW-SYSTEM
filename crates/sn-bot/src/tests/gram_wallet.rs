@@ -61,7 +61,7 @@ async fn gram_setup(chain: &MockServer) -> Option<(TestDb, Services, MockServer,
     }
     let ctx = BotCtx {
         services: services.clone(),
-        api: Arc::new(TelegramApi::new(&server.uri(), TOKEN)),
+        api: Arc::new(TelegramApi::new(&server.uri(), TOKEN, None)),
         username: Some("stealth_test_bot".into()),
     };
     Some((db, services, server, ctx))

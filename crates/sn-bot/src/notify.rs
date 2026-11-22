@@ -527,8 +527,10 @@ pub fn render(
 pub struct NotifyHandler {
     api_base: String,
     send: crate::SendLimits,
-    cache: Mutex<Option<(String, Arc<TelegramApi>)>>,
+    cache: Mutex<Option<CachedApi>>,
 }
+
+type CachedApi = (String, Option<String>, Arc<TelegramApi>);
 
 impl Default for NotifyHandler {
     fn default() -> Self {
@@ -545,18 +547,20 @@ impl NotifyHandler {
         }
     }
 
-    fn api(&self, token: &str) -> Arc<TelegramApi> {
+    fn api(&self, token: &str, proxy: Option<&str>) -> Arc<TelegramApi> {
+        let key = proxy.map(str::to_string);
         let mut cache = match self.cache.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
-        if let Some((cached, api)) = cache.as_ref()
+        if let Some((cached, cached_proxy, api)) = cache.as_ref()
             && cached == token
+            && cached_proxy == &key
         {
             return api.clone();
         }
-        let api = Arc::new(TelegramApi::paced(&self.api_base, token, self.send).bulk());
-        *cache = Some((token.to_string(), api.clone()));
+        let api = Arc::new(TelegramApi::paced(&self.api_base, token, self.send, proxy).bulk());
+        *cache = Some((token.to_string(), key, api.clone()));
         api
     }
 
@@ -625,6 +629,7 @@ impl NotifyHandler {
         let Some(token) = services.bot_token() else {
             return retry("токен бота не задан".into());
         };
+        let proxy = services.telegram_proxy();
         let sent = if template == gram_wallet::TEMPLATE {
             let Some(payment) = params
                 .get("payment_id")
@@ -638,7 +643,7 @@ impl NotifyHandler {
                 Ok(None) => return JobResult::Done,
                 Err(err) => return retry(err.to_string()),
             };
-            self.api(&token)
+            self.api(&token, proxy.as_deref())
                 .send_widget(chat_id, &widget)
                 .await
                 .map(|_| ())
@@ -658,14 +663,14 @@ impl NotifyHandler {
                 Vec::new()
             };
             if files.is_empty() {
-                self.api(&token)
+                self.api(&token, proxy.as_deref())
                     .send_message(chat_id, &rendered.text, Some(&rendered.keyboard))
                     .await
                     .map(|_| ())
             } else {
                 crate::support_files::send_reply(
                     services,
-                    &self.api(&token),
+                    &self.api(&token, proxy.as_deref()),
                     chat_id,
                     &rendered.text,
                     &rendered.keyboard,

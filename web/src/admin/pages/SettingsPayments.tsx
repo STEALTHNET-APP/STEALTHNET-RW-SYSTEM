@@ -181,6 +181,7 @@ type Work = {
   retry: string;
   forNew: boolean;
   savedCard: boolean;
+  proxy: string;
 };
 
 const ACCEPTS: Record<string, string> = {
@@ -281,7 +282,7 @@ export function SettingsPayments() {
   const load = useCallback(async () => {
     try {
       const [pay, core, renew] = await Promise.all([
-        api<{ currency: Currency; order: string[]; providers: Provider[]; balances?: Holders }>('/api/admin/settings/payments'),
+        api<{ currency: Currency; order: string[]; proxy?: string | null; providers: Provider[]; balances?: Holders }>('/api/admin/settings/payments'),
         api<Core>('/api/admin/settings/core'),
         api<Renew>('/api/admin/settings/autorenew'),
       ]);
@@ -295,6 +296,7 @@ export function SettingsPayments() {
         retry: String(renew.retry_days),
         forNew: renew.enable_for_new,
         savedCard: renew.use_saved_card,
+        proxy: pay.proxy ?? '',
       };
       setProviders(list);
       setHolders(pay.balances ?? null);
@@ -371,6 +373,9 @@ export function SettingsPayments() {
     setBusy(true);
     setStatus(null);
     try {
+      if (work.proxy.trim() !== base.proxy.trim()) {
+        await api('/api/admin/settings/payments', { method: 'PUT', body: { proxy: work.proxy.trim() } });
+      }
       const savedKey = key(base.currency);
       if (work.currency !== base.currency) {
         if (JSON.stringify(work.order[savedKey]) !== JSON.stringify(base.order[savedKey])) {
@@ -489,6 +494,32 @@ export function SettingsPayments() {
               {label}
             </button>
           ))}
+        </div>
+      </section>
+
+      <section className="sec" aria-labelledby="proxy-h">
+        <div className="sec-head">
+          <h2 id="proxy-h" className="section-title">
+            Прокси для платёжных шлюзов
+          </h2>
+          <span className="muted">Через него панель обращается к платёжным системам: счета, проверки и возвраты. Пусто — напрямую или через прокси из .env</span>
+        </div>
+        <div className="row">
+          <label htmlFor="pay-proxy" className="rl">
+            Адрес прокси
+          </label>
+          <div className="rc">
+            <input
+              id="pay-proxy"
+              className="field"
+              value={work.proxy}
+              placeholder="socks5://127.0.0.1:1080"
+              onChange={(e) => edit({ proxy: e.target.value })}
+              disabled={busy}
+              style={{ maxWidth: 420 }}
+            />
+            <span className="cap">http://, https://, socks5:// или socks5h://. Логин и пароль можно указать в адресе: http://user:pass@host:port</span>
+          </div>
         </div>
       </section>
 

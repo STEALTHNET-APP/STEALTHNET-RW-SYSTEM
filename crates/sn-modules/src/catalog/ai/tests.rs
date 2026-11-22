@@ -997,6 +997,7 @@ fn свой_адрес_только_https_и_ключ_не_переезжает_
         api_url: url.map(str::to_string),
         api_key: None,
         model: None,
+        proxy_url: None,
         refresh: false,
     };
     let same_form = routes::form_settings(&saved_config, &request(Some("groq"), Some("")));

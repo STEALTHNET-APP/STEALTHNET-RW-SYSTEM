@@ -61,6 +61,7 @@ pub(super) struct ModelsRequest {
     pub api_url: Option<String>,
     pub api_key: Option<String>,
     pub model: Option<String>,
+    pub proxy_url: Option<String>,
     pub refresh: bool,
 }
 
@@ -99,6 +100,7 @@ pub(super) fn form_settings(saved: &ModuleConfig, request: &ModelsRequest) -> Se
         ("provider", &request.provider),
         ("api_url", &request.api_url),
         ("model", &request.model),
+        ("proxy_url", &request.proxy_url),
     ] {
         if let Some(value) = value {
             config.0.insert(key.into(), serde_json::json!(value.trim()));
@@ -156,7 +158,7 @@ async fn models(
         ));
     }
     let provider = form.provider.label();
-    let llm = match Llm::new(form.provider, &form.api_url, &key) {
+    let llm = match Llm::new(form.provider, &form.api_url, &key, form.proxy.as_deref()) {
         Ok(llm) => llm,
         Err(err) => {
             return Ok(Json(ModelsView::failed(

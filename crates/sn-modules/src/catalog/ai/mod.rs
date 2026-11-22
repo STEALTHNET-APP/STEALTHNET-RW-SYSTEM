@@ -23,11 +23,32 @@ use sn_domain::access::ClientChannel;
 use sn_domain::ids::TicketId;
 use sn_domain::jobs::JobPayload;
 use sn_domain::module::ModuleId;
-use sn_domain::settings::{FieldCase, SettingField};
+use sn_domain::settings::{FieldCase, SettingField, check_proxy};
 use sn_domain::support::{HandoffReason, TicketChannel};
 use sn_store::Db;
+use std::sync::RwLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
+
+static FALLBACK_PROXY: RwLock<Option<String>> = RwLock::new(None);
+
+pub fn set_fallback_proxy(proxy: Option<String>) {
+    let proxy = proxy
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .filter(|value| check_proxy(value).is_ok());
+    match FALLBACK_PROXY.write() {
+        Ok(mut guard) => *guard = proxy,
+        Err(poisoned) => *poisoned.into_inner() = proxy,
+    }
+}
+
+fn fallback_proxy() -> Option<String> {
+    match FALLBACK_PROXY.read() {
+        Ok(guard) => guard.clone(),
+        Err(poisoned) => poisoned.into_inner().clone(),
+    }
+}
 use store::{Claimed, Saved, Spent};
 
 pub const ANSWER_TASK: &str = "answer";
@@ -115,6 +136,7 @@ pub struct Settings {
     pub cabinet: bool,
     pub miniapp: bool,
     pub api_url: String,
+    pub proxy: Option<String>,
 }
 
 fn bounded(config: &ModuleConfig, key: &str, default: i64, range: (i64, i64)) -> i64 {
@@ -165,6 +187,11 @@ impl Settings {
                 .unwrap_or_default()
                 .trim_end_matches('/')
                 .to_string(),
+            proxy: config
+                .text("proxy_url")
+                .map(str::to_string)
+                .or_else(fallback_proxy)
+                .filter(|proxy| check_proxy(proxy).is_ok()),
         }
     }
 
@@ -397,7 +424,12 @@ pub async fn process(
         settings.instructions.as_deref(),
     ))];
     chat.extend(prompt::dialogue(&messages));
-    let answer = match Llm::new(settings.provider, &settings.api_url, &settings.api_key) {
+    let answer = match Llm::new(
+        settings.provider,
+        &settings.api_url,
+        &settings.api_key,
+        settings.proxy.as_deref(),
+    ) {
         Ok(llm) => ask(&llm, settings, &chat).await,
         Err(err) => Err(err),
     };
@@ -601,6 +633,12 @@ impl Module for AiModule {
             )
             .optional()
             .depends("provider", &URL_CASES, true),
+            SettingField::url(
+                "proxy_url",
+                "Прокси для нейросети",
+                "SOCKS5 или HTTP-прокси для обхода ограничений OpenAI, Anthropic, Gemini (например socks5://127.0.0.1:1080).",
+            )
+            .optional(),
         ]
     }
 
@@ -642,6 +680,12 @@ impl Module for AiModule {
             .and_then(|url| llm::check_address(url, true).err())
         {
             problems.push(format!("«Адрес API»: {problem}"));
+        }
+        if let Some(problem) = config
+            .text("proxy_url")
+            .and_then(|url| check_proxy(url).err())
+        {
+            problems.push(format!("«Прокси для нейросети»: {problem}"));
         }
         if let Some(model) = config.text("model") {
             if model.chars().count() > MODEL_MAX {

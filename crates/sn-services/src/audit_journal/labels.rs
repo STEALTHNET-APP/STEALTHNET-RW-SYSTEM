@@ -524,6 +524,11 @@ pub const ACTIONS: &[ActionLabel] = &[
         Area::Settings,
     ),
     a(
+        "settings.payments_proxy",
+        "Изменён прокси платёжных систем",
+        Area::Settings,
+    ),
+    a(
         "settings.provider",
         "Изменены настройки платёжки",
         Area::Settings,

@@ -580,11 +580,13 @@ impl Overpay {
     }
 
     fn builder(&self) -> reqwest::ClientBuilder {
-        let builder = reqwest::Client::builder()
-            .timeout(Duration::from_secs(15))
-            .connect_timeout(Duration::from_secs(5))
-            .redirect(reqwest::redirect::Policy::none())
-            .user_agent(concat!("stealthnet/", env!("CARGO_PKG_VERSION")));
+        let builder = apply_http_proxy(
+            reqwest::Client::builder()
+                .timeout(Duration::from_secs(15))
+                .connect_timeout(Duration::from_secs(5))
+                .redirect(reqwest::redirect::Policy::none())
+                .user_agent(concat!("stealthnet/", env!("CARGO_PKG_VERSION"))),
+        );
         match &self.root {
             Some(root) => builder.add_root_certificate(root.clone()),
             None => builder,
