@@ -35,6 +35,7 @@ export type ClientMe = {
   balance_enabled?: boolean;
   multi_subscriptions?: boolean;
   promo_codes?: boolean;
+  options?: boolean;
   autorenew_card?: boolean;
   referral_balance: Money;
   currency: Currency;

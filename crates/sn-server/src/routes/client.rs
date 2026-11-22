@@ -449,6 +449,10 @@ async fn me(
             .services
             .modules()
             .is_enabled(sn_domain::module::ModuleId::Promo),
+        "options": state
+            .services
+            .modules()
+            .is_enabled(sn_domain::module::ModuleId::Options),
         "autorenew_card": autorenew_card,
         "referral_balance": card.referral_balance,
         "currency": state.services.settings().currency,

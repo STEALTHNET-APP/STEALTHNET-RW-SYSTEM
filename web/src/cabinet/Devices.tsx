@@ -54,7 +54,7 @@ export function DevicesPage() {
             <Link to={subs.link('/cabinet#connect')} className="cb-second">
               {t('Как подключить')}
             </Link>
-            {extra && !ended ? (
+            {extra && !ended && me.options !== false ? (
               <Link to={subs.link('/cabinet/addons?kind=devices')} className="cb-second">
                 {t('Добавить устройства')}
               </Link>

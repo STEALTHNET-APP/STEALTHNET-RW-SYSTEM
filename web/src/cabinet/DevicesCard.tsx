@@ -28,7 +28,7 @@ export function DevicesCard({
   link?: (path: string) => string;
   addLink?: boolean;
 }) {
-  const { site, phone } = useCabinet();
+  const { me, site, phone } = useCabinet();
   const [ask, setAsk] = useState('');
   const [busy, setBusy] = useState(false);
   const mayDisconnect = site.client_access?.devices !== false;
@@ -70,7 +70,7 @@ export function DevicesCard({
           {t('Устройства')}{' '}
           <span className="cb-count">{limit ? t('{n} из {limit}', { n: shown, limit }) : shown}</span>
         </h2>
-        {addLink && !phone ? (
+        {addLink && !phone && me.options !== false ? (
           <Link to={link(view.status === 'expired' ? '/cabinet/pay' : '/cabinet/addons?kind=devices')} className="cb-accent-link">
             {t('Добавить ещё')}
           </Link>

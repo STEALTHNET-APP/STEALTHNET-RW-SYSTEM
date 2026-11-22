@@ -310,9 +310,11 @@ export function SubscriptionPage() {
             <Link to={subs.link('/cabinet/pay')} className="cb-second">
               {t('Продлить')}
             </Link>
-            <Link to={subs.link('/cabinet/addons')} className="cb-second">
-              {t('Докупить')}
-            </Link>
+            {me.options !== false ? (
+              <Link to={subs.link('/cabinet/addons')} className="cb-second">
+                {t('Докупить')}
+              </Link>
+            ) : null}
           </>
         )}
       </div>

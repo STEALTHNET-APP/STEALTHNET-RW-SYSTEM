@@ -211,3 +211,24 @@ async fn кабинет_активирует_промокод_на_дни_и_в�
     assert_eq!(off["error"]["code"], "module.disabled");
     h.db.cleanup().await;
 }
+
+#[tokio::test]
+async fn кабинет_скрывает_докупку_когда_модуль_доп_опций_выключен() {
+    let Some(h) = with_promo().await else { return };
+    let client = h.client(5_093_118_902).await;
+    let token = h.client_token(client).await;
+
+    let (status, me) = h.get("/api/client/me", &token).await;
+    assert_eq!(status, StatusCode::OK, "{me}");
+    assert_eq!(me["options"], true);
+
+    h.services()
+        .modules()
+        .set_enabled(h.services().store(), ModuleId::Options, false, None)
+        .await
+        .unwrap();
+    let (status, me) = h.get("/api/client/me", &token).await;
+    assert_eq!(status, StatusCode::OK, "{me}");
+    assert_eq!(me["options"], false);
+    h.db.cleanup().await;
+}
