@@ -3,6 +3,7 @@ import { api, ApiError } from '../../lib/api';
 import { count, groupDigits, NBSP, plural } from '../../lib/format';
 import { Icon } from '../../lib/icons';
 import { ConfirmDialog, Dialog } from '../client/dialogs';
+import { DeleteTariff } from './DeleteTariff';
 import { useSession } from '../session';
 import { Switch } from '../ui';
 import {
@@ -450,13 +451,16 @@ export function Tariffs() {
         />
       ) : null}
       {dialog === 'delete' && draft?.id ? (
-        <ConfirmDialog
-          title="Удалить тариф"
-          text="Тариф пропадёт из продажи и из списка. Удалить можно, только если на нём нет действующих подписок; оплаты останутся в отчётах."
-          confirm="Удалить тариф"
+        <DeleteTariff
+          tariffId={draft.id}
+          onSale={(view?.tariffs ?? []).find((t) => t.id === draft.id)?.on_sale ?? draft.on_sale}
           onClose={() => setDialog('')}
-          run={async () => {
-            await api(`/api/admin/tariffs/${draft.id}`, { method: 'DELETE' });
+          onDeleted={async () => {
+            setDialog('');
+            setDraft(null);
+            await load();
+          }}
+          onHidden={async () => {
             setDialog('');
             setDraft(null);
             await load();

@@ -10,6 +10,7 @@ use sn_domain::access::Permission;
 use sn_domain::ids::{CategoryId, TariffId};
 use sn_domain::tariff::{Category, Tariff, TariffChannels};
 use sn_services::tariffs::{CategoryInput, SquadBrief, TariffInput, TariffsView};
+use sn_store::TariffUsage;
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -20,6 +21,7 @@ pub fn routes() -> Router<AppState> {
             get(one).put(update).patch(visibility).delete(remove),
         )
         .route("/tariffs/{id}/channels", put(channels))
+        .route("/tariffs/{id}/usage", get(usage))
         .route("/categories", get(categories).post(create_category))
         .route(
             "/categories/{id}",
@@ -39,6 +41,18 @@ async fn one(
 ) -> ApiResult<Json<Tariff>> {
     admin.require(Permission::Tariffs)?;
     Ok(Json(state.services.tariffs().get(TariffId(id)).await?))
+}
+
+async fn usage(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> ApiResult<Json<TariffUsage>> {
+    admin.require(Permission::Tariffs)?;
+    let people = admin.can(Permission::ClientsRead);
+    Ok(Json(
+        state.services.tariffs().usage(TariffId(id), people).await?,
+    ))
 }
 
 async fn create(

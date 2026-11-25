@@ -1,7 +1,7 @@
 use super::{non_negative_u32, non_negative_u64, to_i32, to_i64};
 use crate::error::{StoreError, StoreResult};
 use chrono::{DateTime, Utc};
-use sn_domain::ids::{CategoryId, PeriodId, SquadId, TariffId};
+use sn_domain::ids::{CategoryId, ClientId, PeriodId, SquadId, SubscriptionId, TariffId};
 use sn_domain::money::Stars;
 use sn_domain::tariff::{
     Category, CurrencyPrices, DeviceDiscount, DevicePolicy, ExtraDevices, Tariff, TariffChannels,
@@ -14,6 +14,42 @@ use sqlx::types::Json;
 use sqlx::{PgConnection, Postgres};
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct TariffHolder {
+    pub client_id: ClientId,
+    pub subscription_id: SubscriptionId,
+    pub name: Option<String>,
+    pub telegram_username: Option<String>,
+    pub email: Option<String>,
+    pub expire_at: Option<DateTime<Utc>>,
+    pub active: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct TariffUsage {
+    pub active: i64,
+    pub ended: i64,
+    pub holders: Vec<TariffHolder>,
+}
+
+impl TariffUsage {
+    pub fn total(&self) -> i64 {
+        self.active + self.ended
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct HolderRow {
+    subscription_id: i64,
+    client_id: i64,
+    expire_at: Option<DateTime<Utc>>,
+    active: bool,
+    first_name: Option<String>,
+    last_name: Option<String>,
+    telegram_username: Option<String>,
+    email: Option<String>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewCategory {
@@ -555,13 +591,63 @@ impl<'c> TariffsRepo<'c> {
         Ok(rows.into_iter().map(|(id, n)| (TariffId(id), n)).collect())
     }
 
-    pub async fn live_subscriptions(&mut self, id: TariffId) -> StoreResult<i64> {
-        Ok(sqlx::query_scalar(
-            "SELECT count(*) FROM subscriptions WHERE tariff_id = $1 AND ended_at IS NULL",
+    pub async fn usage(
+        &mut self,
+        id: TariffId,
+        now: DateTime<Utc>,
+        shown: i64,
+    ) -> StoreResult<TariffUsage> {
+        let (active, ended): (i64, i64) = sqlx::query_as(
+            "SELECT count(*) FILTER (WHERE expire_at IS NULL OR expire_at > $2), \
+             count(*) FILTER (WHERE expire_at <= $2) \
+             FROM subscriptions WHERE tariff_id = $1 AND ended_at IS NULL",
         )
         .bind(id.0)
+        .bind(now)
         .fetch_one(&mut *self.conn)
-        .await?)
+        .await?;
+        let rows: Vec<HolderRow> = if shown > 0 && active + ended > 0 {
+            sqlx::query_as(
+                "SELECT s.id AS subscription_id, s.client_id, s.expire_at, \
+                 (s.expire_at IS NULL OR s.expire_at > $2) AS active, \
+                 tg.meta ->> 'first_name' AS first_name, tg.meta ->> 'last_name' AS last_name, \
+                 tg.meta ->> 'username' AS telegram_username, em.value AS email \
+                 FROM subscriptions s \
+                 LEFT JOIN LATERAL (SELECT i.meta FROM client_identities i WHERE i.client_id = s.client_id \
+                     AND i.kind = 'telegram' ORDER BY i.id LIMIT 1) tg ON true \
+                 LEFT JOIN LATERAL (SELECT i.value FROM client_identities i WHERE i.client_id = s.client_id \
+                     AND i.kind = 'email' ORDER BY i.id LIMIT 1) em ON true \
+                 WHERE s.tariff_id = $1 AND s.ended_at IS NULL \
+                 ORDER BY (s.expire_at IS NULL OR s.expire_at > $2) DESC, s.expire_at DESC NULLS FIRST, s.id \
+                 LIMIT $3",
+            )
+            .bind(id.0)
+            .bind(now)
+            .bind(shown)
+            .fetch_all(&mut *self.conn)
+            .await?
+        } else {
+            Vec::new()
+        };
+        Ok(TariffUsage {
+            active,
+            ended,
+            holders: rows
+                .into_iter()
+                .map(|row| TariffHolder {
+                    client_id: ClientId(row.client_id),
+                    subscription_id: SubscriptionId(row.subscription_id),
+                    name: super::clients::display_name(
+                        row.first_name.as_deref(),
+                        row.last_name.as_deref(),
+                    ),
+                    telegram_username: row.telegram_username,
+                    email: row.email,
+                    expire_at: row.expire_at,
+                    active: row.active,
+                })
+                .collect(),
+        })
     }
 
     pub async fn category_tariffs(&mut self, id: CategoryId) -> StoreResult<i64> {

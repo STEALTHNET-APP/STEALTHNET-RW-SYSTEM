@@ -2759,6 +2759,37 @@ async fn тарифы_каналы_применение_и_удаление_че
         .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     assert_eq!(body["error"]["code"], "tariff.in_use");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("На тарифе 1 действующая подписка. "),
+        "{body}"
+    );
+    let (status, usage) = h
+        .get(&format!("/api/admin/tariffs/{id}/usage"), &owner)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{usage}");
+    assert_eq!(
+        (usage["active"].clone(), usage["ended"].clone()),
+        (json!(1), json!(0))
+    );
+    assert_eq!(usage["holders"].as_array().unwrap().len(), 1, "{usage}");
+    assert_eq!(usage["holders"][0]["client_id"], client.0);
+    assert_eq!(usage["holders"][0]["name"], "Алексей");
+    assert_eq!(usage["holders"][0]["telegram_username"], "morozov_a");
+    assert_eq!(usage["holders"][0]["active"], true);
+    let hidden = h
+        .services()
+        .tariffs()
+        .usage(sn_domain::ids::TariffId(id), false)
+        .await
+        .unwrap();
+    assert_eq!((hidden.active, hidden.holders.len()), (1, 0));
+    assert_eq!(
+        h.get("/api/admin/tariffs/987654/usage", &owner).await.0,
+        StatusCode::NOT_FOUND
+    );
     let category = tariff.category_id.0;
     let (status, body) = h
         .write(

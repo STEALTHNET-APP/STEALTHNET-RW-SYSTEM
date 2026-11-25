@@ -3,6 +3,7 @@ use crate::error::{ServiceError, ServiceResult};
 use crate::services::Services;
 use serde::{Deserialize, Serialize};
 use sn_domain::DomainError;
+use sn_domain::format::plural_ru;
 use sn_domain::ids::{AdminId, CategoryId, PeriodId, RemnaUserId, SquadId, TariffId};
 use sn_domain::money::{Currency, Stars};
 use sn_domain::tariff::{
@@ -11,7 +12,7 @@ use sn_domain::tariff::{
 };
 use sn_domain::traffic::TrafficPolicy;
 use sn_remnawave::{BulkSquadsRequest, BulkUpdateRequest, BulkUserFields};
-use sn_store::{Db, NewCategory, NewPeriod, NewTariff};
+use sn_store::{Db, NewCategory, NewPeriod, NewTariff, TariffUsage};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 pub const MAX_NAME_CHARS: usize = 100;
@@ -71,6 +72,41 @@ pub struct TariffStats {
     pub tariff_id: TariffId,
     pub sales_30d: i64,
     pub channels: TariffChannels,
+}
+
+pub const IN_USE: &str = "tariff.in_use";
+pub const HOLDERS_SHOWN: i64 = 20;
+
+fn count(n: i64, one: &str, few: &str, many: &str) -> String {
+    let n = u64::try_from(n).unwrap_or_default();
+    format!("{n} {}", plural_ru(n, one, few, many))
+}
+
+pub fn held(usage: &TariffUsage) -> String {
+    match (usage.active, usage.ended) {
+        (active, 0) => count(
+            active,
+            "действующая подписка",
+            "действующие подписки",
+            "действующих подписок",
+        ),
+        (0, ended) => count(
+            ended,
+            "закончившаяся подписка",
+            "закончившиеся подписки",
+            "закончившихся подписок",
+        ),
+        (_, ended) => format!(
+            "{}, из них {} {ended}",
+            count(usage.total(), "подписка", "подписки", "подписок"),
+            plural_ru(
+                u64::try_from(ended).unwrap_or_default(),
+                "закончилась",
+                "закончились",
+                "закончились"
+            )
+        ),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -358,15 +394,23 @@ impl<'a> TariffAdmin<'a> {
         Ok(channels)
     }
 
+    pub async fn usage(&self, id: TariffId, people: bool) -> ServiceResult<TariffUsage> {
+        let mut conn = self.services.store().conn().await?;
+        conn.tariffs().get(id).await?;
+        let shown = if people { HOLDERS_SHOWN } else { 0 };
+        Ok(conn.tariffs().usage(id, self.services.now(), shown).await?)
+    }
+
     pub async fn delete(&self, id: TariffId, admin: AdminId) -> ServiceResult<()> {
         let mut tx = self.services.store().begin().await?;
         let tariff = tx.tariffs().get(id).await?;
-        let live = tx.tariffs().live_subscriptions(id).await?;
-        if live > 0 {
+        let usage = tx.tariffs().usage(id, self.services.now(), 0).await?;
+        if usage.total() > 0 {
             return Err(ServiceError::rejected(
-                "tariff.in_use",
+                IN_USE,
                 format!(
-                    "на тарифе {live} действующих подписок: снимите его с продажи или переведите клиентов на другой тариф"
+                    "На тарифе {}. Удалить его можно, когда подписок на нём не останется: переведите клиентов на другой тариф или удалите их подписки в карточке клиента",
+                    held(&usage)
                 ),
             ));
         }
@@ -714,6 +758,28 @@ mod tests {
     use super::*;
     use sn_domain::tariff::ExtraDevices;
     use uuid::Uuid;
+
+    #[test]
+    fn подписки_на_тарифе_названы_с_правильными_окончаниями() {
+        let usage = |active, ended| TariffUsage {
+            active,
+            ended,
+            holders: Vec::new(),
+        };
+        for (active, ended, text) in [
+            (1, 0, "1 действующая подписка"),
+            (2, 0, "2 действующие подписки"),
+            (5, 0, "5 действующих подписок"),
+            (11, 0, "11 действующих подписок"),
+            (21, 0, "21 действующая подписка"),
+            (0, 1, "1 закончившаяся подписка"),
+            (0, 3, "3 закончившиеся подписки"),
+            (2, 1, "3 подписки, из них закончилась 1"),
+            (1, 4, "5 подписок, из них закончились 4"),
+        ] {
+            assert_eq!(held(&usage(active, ended)), text);
+        }
+    }
 
     fn input() -> TariffInput {
         TariffInput {
