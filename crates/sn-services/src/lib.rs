@@ -60,6 +60,7 @@ pub mod subscriptions;
 pub mod support;
 pub mod tariffs;
 pub mod telegram;
+pub mod telegram_link;
 pub mod totp;
 pub mod two_factor;
 pub mod updates;

@@ -79,6 +79,7 @@ mod site_limits;
 mod support_files;
 mod support_mode;
 mod support_role;
+mod telegram_link;
 mod telegram_webhook;
 mod tribute;
 mod utm;

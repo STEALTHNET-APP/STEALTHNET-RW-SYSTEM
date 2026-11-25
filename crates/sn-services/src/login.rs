@@ -134,7 +134,7 @@ struct LoginRow {
 const LOGIN_COLUMNS: &str =
     "id, status, client_id, code_hash, attempts, ip, user_agent, created_at, expires_at";
 
-fn random_hex(bytes: usize) -> String {
+pub(crate) fn random_hex(bytes: usize) -> String {
     let mut raw = vec![0u8; bytes];
     rand::rngs::OsRng.fill_bytes(&mut raw);
     hex::encode(raw)
@@ -256,7 +256,7 @@ pub(crate) async fn issue_session_scoped(
     })
 }
 
-async fn forget_old_requests(db: &mut impl Db, now: DateTime<Utc>) -> ServiceResult<()> {
+pub(crate) async fn forget_old_requests(db: &mut impl Db, now: DateTime<Utc>) -> ServiceResult<()> {
     sqlx::query(
         "DELETE FROM client_login_requests WHERE id IN ( \
              SELECT id FROM client_login_requests WHERE expires_at < $1 \

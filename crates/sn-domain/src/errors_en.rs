@@ -88,6 +88,26 @@ pub fn by_code(code: &str) -> Option<&'static str> {
         "oauth.last_method" => {
             "This is your only sign-in method. Link another one first: Telegram, email or another account."
         }
+        "telegram_link.expired" => {
+            "This link has expired. Open Security on the website and start again."
+        }
+        "telegram_link.taken" => {
+            "This Telegram already has its own account. Sign in to it or contact support."
+        }
+        "telegram_link.already_linked" => "A Telegram is already linked to this account.",
+        "telegram_link.unavailable" => "Linking Telegram isn't available right now.",
+        "telegram_link.session_gone" => {
+            "Your website session has ended. Sign in again and repeat the linking."
+        }
+        "telegram_link.blocked" => {
+            "Your account is blocked. If this is a mistake, please contact support."
+        }
+        "telegram_link.email_unverified" => {
+            "Confirm your email first: sign in with a code from the letter or reset your password with “Forgot password”. Then link Telegram."
+        }
+        "telegram_link.email_unconfirmable" => {
+            "Your email has to be confirmed first, but letters aren't being sent right now. Please contact support."
+        }
         "app_link.expired" => "The link has expired. Go back to Telegram and tap the button again.",
         "app_link.taken" => {
             "This link is already open in another window. Go back to Telegram and tap the button again."

@@ -225,6 +225,7 @@ pub struct LoginMethod {
 pub struct LoginMethods {
     pub methods: Vec<LoginMethod>,
     pub can_link: Vec<Provider>,
+    pub can_link_telegram: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -448,7 +449,7 @@ async fn notify_linked(tx: &mut Tx, client_id: ClientId, claims: &IdClaims) -> S
     Ok(())
 }
 
-fn account_title(identity: &Identity) -> String {
+pub(crate) fn account_title(identity: &Identity) -> String {
     let meta = |key: &str| {
         identity
             .meta
@@ -460,6 +461,13 @@ fn account_title(identity: &Identity) -> String {
     match identity.kind {
         IdentityKind::Telegram => meta("username")
             .map(|u| format!("@{u}"))
+            .or_else(|| {
+                let name: Vec<&str> = [meta("first_name"), meta("last_name")]
+                    .into_iter()
+                    .flatten()
+                    .collect();
+                (!name.is_empty()).then(|| name.join(" "))
+            })
             .unwrap_or_else(|| format!("Telegram {}", identity.value)),
         IdentityKind::Email => identity.value.clone(),
         IdentityKind::Google => {
@@ -1466,7 +1474,12 @@ impl<'a> OauthOps<'a> {
         .await
     }
 
-    fn describe(&self, identities: &[Identity], password: bool) -> LoginMethods {
+    fn describe(
+        &self,
+        identities: &[Identity],
+        password: bool,
+        can_link_telegram: bool,
+    ) -> LoginMethods {
         let available = self.availability();
         let mail = self.services.mail();
         let email_login = password || mail.code_login() || mail.available();
@@ -1492,14 +1505,23 @@ impl<'a> OauthOps<'a> {
             .into_iter()
             .filter(|p| available.has(*p) && !identities.iter().any(|i| i.kind == p.identity()))
             .collect();
-        LoginMethods { methods, can_link }
+        LoginMethods {
+            methods,
+            can_link,
+            can_link_telegram,
+        }
     }
 
     pub async fn logins(&self, client_id: ClientId) -> ServiceResult<LoginMethods> {
         let mut conn = self.services.store().conn().await?;
         let identities = conn.clients().identities(client_id).await?;
         let password = has_password(&mut conn, client_id).await?;
-        Ok(self.describe(&identities, password))
+        let telegram = self
+            .services
+            .telegram_links()
+            .offered(&mut conn, &identities)
+            .await?;
+        Ok(self.describe(&identities, password, telegram))
     }
 
     pub async fn unlink(
@@ -1512,7 +1534,7 @@ impl<'a> OauthOps<'a> {
         tx.clients().lock(client_id).await?;
         let identities = tx.clients().identities(client_id).await?;
         let password = has_password(&mut tx, client_id).await?;
-        let view = self.describe(&identities, password);
+        let view = self.describe(&identities, password, false);
         let Some(method) = view.methods.iter().find(|m| m.kind == provider.identity()) else {
             return Err(ServiceError::rejected(
                 "oauth.not_linked",

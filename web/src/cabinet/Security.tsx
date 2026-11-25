@@ -9,6 +9,7 @@ import { supportTickets } from '../lib/support';
 import { Card, useCabinet } from './CabinetApp';
 import { aboutEmail, closedText, doneText, sixDigits, unconfirmedText, useEmailChange, withoutCodeText } from './email';
 import type { TwoFactor } from './model';
+import { TelegramLink } from './TelegramLink';
 import { finishOauth, leaveFor, PROVIDER_TITLE, ProviderMark, returnedProvider, type OauthProvider } from './oauth';
 
 type Setup = { secret: string; uri: string };
@@ -494,7 +495,7 @@ function PasswordCard() {
 
 type LoginKind = 'telegram' | 'email' | 'google' | 'apple';
 type LoginMethod = { kind: LoginKind; account: string; linked_at: string; removable: boolean };
-type Logins = { methods: LoginMethod[]; can_link: OauthProvider[] };
+type Logins = { methods: LoginMethod[]; can_link: OauthProvider[]; can_link_telegram?: boolean };
 
 const KIND_TITLE: Record<LoginKind, string> = { telegram: 'Telegram', email: msg('Почта'), google: 'Google', apple: 'Apple' };
 
@@ -510,7 +511,7 @@ function KindMark({ kind }: { kind: LoginKind }) {
 }
 
 function LoginsCard() {
-  const { phone } = useCabinet();
+  const { phone, reload } = useCabinet();
   const navigate = useNavigate();
   const [data, setData] = useState<Logins | null>(null);
   const [ask, setAsk] = useState<OauthProvider | null>(null);
@@ -576,7 +577,14 @@ function LoginsCard() {
     }
   };
 
-  const shown = data !== null && (data.can_link.length > 0 || data.methods.some((m) => isProvider(m.kind)));
+  const linked = (account: string) => {
+    setNotice(t('Telegram привязан: {account}. Теперь им можно входить в кабинет.', { account }));
+    void load();
+    void reload();
+  };
+
+  const removable = data !== null && data.methods.some((m) => isProvider(m.kind));
+  const shown = data !== null && (data.can_link.length > 0 || data.can_link_telegram === true || removable || data.methods.length > 1);
   if (!shown && !error) {
     return null;
   }
@@ -584,7 +592,11 @@ function LoginsCard() {
   return (
     <Card label={t('Способы входа')} className="cb-logins">
       <h2 className="cb-h2">{t('Способы входа')}</h2>
-      <p className="cb-note">{t('Войти в кабинет можно любым из них. Последний способ отвязать нельзя.')}</p>
+      {removable ? (
+        <p className="cb-note">{t('Войти в кабинет можно любым из них. Последний способ отвязать нельзя.')}</p>
+      ) : data && data.methods.length > 1 ? (
+        <p className="cb-note">{t('Войти в кабинет можно любым из них.')}</p>
+      ) : null}
       {data?.methods.map((m) => (
         <Fragment key={m.kind}>
           <div className="cb-device">
@@ -633,6 +645,15 @@ function LoginsCard() {
             </button>
           ))}
         </span>
+      ) : null}
+      {data?.can_link_telegram ? (
+        <TelegramLink
+          onStart={() => {
+            setNotice(null);
+            setError(null);
+          }}
+          onLinked={linked}
+        />
       ) : null}
       {notice ? (
         <p className="cb-result" role="status">

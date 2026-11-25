@@ -134,6 +134,21 @@ pub mod rules {
         limit: 60,
         window_seconds: 600,
     };
+    pub const TELEGRAM_LINK_CLIENT: RateRule = RateRule {
+        scope: "telegram_link_client",
+        limit: 10,
+        window_seconds: 900,
+    };
+    pub const TELEGRAM_LINK_IP: RateRule = RateRule {
+        scope: "telegram_link_ip",
+        limit: 20,
+        window_seconds: 600,
+    };
+    pub const TELEGRAM_LINK_USER: RateRule = RateRule {
+        scope: "telegram_link_user",
+        limit: 20,
+        window_seconds: 600,
+    };
     pub const CAPTCHA_IP: RateRule = RateRule {
         scope: "captcha_ip",
         limit: 30,

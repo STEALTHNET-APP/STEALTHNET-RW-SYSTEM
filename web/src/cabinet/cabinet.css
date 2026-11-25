@@ -942,6 +942,21 @@
   border-radius: 12px;
 }
 
+.cb-tglink {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.cb-tglink .cb-btns {
+  align-items: center;
+}
+
+.cb-tglink .qr {
+  border-radius: 12px;
+}
+
 .cb-field {
   display: flex;
   flex-direction: column;
@@ -1538,6 +1553,10 @@
 
 .cb-phone .cb-device {
   padding: 6px 0;
+}
+
+.cb-phone .cb-tglink {
+  align-items: stretch;
 }
 
 .cb-phone .cb-device .cb-text {

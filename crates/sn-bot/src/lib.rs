@@ -10,6 +10,7 @@ mod gifts;
 pub mod gram_wallet;
 pub mod handler;
 pub mod lanes;
+pub mod link;
 pub mod login;
 pub mod media;
 pub mod notify;

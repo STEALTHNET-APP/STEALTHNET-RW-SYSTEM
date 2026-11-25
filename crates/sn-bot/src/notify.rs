@@ -49,6 +49,7 @@ pub mod templates {
     pub const PAYMENT_REVIEW: &str = sn_services::inbox::PAYMENT_REVIEW_TEMPLATE;
     pub const SUBSCRIPTION_LINK: &str = sn_services::remna_transfer::LINK_TEMPLATE;
     pub const EMAIL_SET: &str = sn_services::email_admin::TEMPLATE_EMAIL_SET;
+    pub const TELEGRAM_LINKED: &str = sn_services::telegram_link::TEMPLATE_LINKED;
     pub const EMAIL_REMOVED: &str = sn_services::email_admin::TEMPLATE_EMAIL_REMOVED;
 }
 
@@ -694,7 +695,7 @@ impl NotifyHandler {
             .iter()
             .find(|i| i.kind == IdentityKind::Telegram)
             .and_then(|i| i.value.parse::<i64>().ok())
-            .filter(|_| !client.bot_unreachable);
+            .filter(|_| !client.bot_unreachable && template != templates::TELEGRAM_LINKED);
         let Some(chat_id) = chat else {
             return match identities.iter().find(|i| i.takes_letters()) {
                 Some(email) => mail_notice(services, &email.value, template, params, attempt).await,
@@ -933,7 +934,7 @@ pub fn letter_of(
         ),
         oauth::TEMPLATE_UNLINKED => (LetterId::LoginsUnlinked, Values::new()),
         oauth::TEMPLATE_PASSWORD_ISSUED => (LetterId::PasswordIssued, Values::new()),
-        oauth::TEMPLATE_LINKED => (
+        oauth::TEMPLATE_LINKED | templates::TELEGRAM_LINKED => (
             LetterId::LoginLinked,
             Values::new()
                 .maybe("provider", raw(params, "provider"))

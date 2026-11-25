@@ -6,7 +6,8 @@ use crate::telegram::{
 use crate::text::{self, escape};
 use crate::ui::{self, Html, Lines, Text};
 use crate::{
-    BotError, account, buy, consent, contests, email, extras, gifts, gram_wallet, login, media,
+    BotError, account, buy, consent, contests, email, extras, gifts, gram_wallet, link, login,
+    media,
 };
 use sn_domain::bot_content::Section;
 use sn_domain::bot_layout::{Screen as LayoutScreen, arrange, pack};
@@ -346,6 +347,17 @@ async fn process(turn: &mut Turn<'_>, action: Action) -> Result<Screen, BotError
         }
         other => (other, false),
     };
+    match &action {
+        Action::Start(Some(param)) if link::opens(param) => {
+            return link::opened(turn, param).await;
+        }
+        Action::Callback(data) => {
+            if let Some(rest) = link::decision(data) {
+                return link::decided(turn, rest).await;
+            }
+        }
+        _ => {}
+    }
     let start_param = match &action {
         Action::Start(param) => param.clone(),
         _ => None,
@@ -1068,6 +1080,13 @@ fn paysupport(ctx: &BotCtx) -> Screen {
         .section(Section::Support)
 }
 
+pub fn who(user: &BotUser) -> String {
+    match &user.username {
+        Some(username) => format!("{} (@{}, Telegram {})", user.first_name, username, user.id),
+        None => format!("{} (Telegram {})", user.first_name, user.id),
+    }
+}
+
 async fn login_screen(
     turn: &mut Turn<'_>,
     client: &Client,
@@ -1090,13 +1109,7 @@ async fn login_screen(
         }
     };
     turn.session.login_token = Some(token.to_string());
-    let who = match &turn.user.username {
-        Some(username) => format!(
-            "{} (@{}, Telegram {})",
-            turn.user.first_name, username, turn.user.id
-        ),
-        None => format!("{} (Telegram {})", turn.user.first_name, turn.user.id),
-    };
+    let who = who(turn.user);
     let mut lines = Lines::new();
     lines.add(ui::text(c, "login.title", &[]));
     lines.add(ui::text(c, "login.account", &[("who", Text(&who))]));

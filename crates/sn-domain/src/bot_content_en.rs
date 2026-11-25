@@ -470,6 +470,20 @@ pub fn default(key: &str) -> Option<&'static str> {
         "login.busy" => {
             "Too many new accounts are being created on the website right now. Please try signing in again in a minute, or send /start to use the bot."
         }
+        "link.title" => "<b>Linking Telegram</b>",
+        "link.account" => "Account on {site}: {account}",
+        "link.who" => "Your Telegram: {who}",
+        "link.hint" => {
+            "This is not a website sign-in. After linking, the bot and the app open this account, and your Telegram can be used to sign in to it on the website. If you didn't start this, tap “Cancel”."
+        }
+        "link.btn.confirm" => "Link",
+        "link.btn.cancel" => "Cancel",
+        "link.done" => {
+            "Telegram is linked. Your subscription and payments are now available here in the bot too."
+        }
+        "link.same" => "This Telegram is already linked to your account.",
+        "link.canceled" => "Linking cancelled, nothing has changed.",
+        "link.error" => "Linking Telegram: {error}",
         "docs.intro" => "Before you start, please read these documents:",
         "docs.item" => "• <a href=\"{url}\">{title}</a>",
         "docs.agree" => "\nBy tapping “I accept”, you agree to them.",

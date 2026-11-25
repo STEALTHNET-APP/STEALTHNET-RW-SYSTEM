@@ -759,7 +759,7 @@ pub const CATALOG: [Spec; 28] = [
     Spec {
         id: LetterId::LoginLinked,
         group: Group::Service,
-        title: "Привязан вход через Google или Apple",
+        title: "Привязан вход через Google, Apple или Telegram",
         when: "К аккаунту добавили новый способ входа",
         vars: &[PROVIDER, ACCOUNT],
         required: &[],

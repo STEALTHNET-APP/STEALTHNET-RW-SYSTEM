@@ -475,6 +475,10 @@ impl Services {
         crate::oauth::OauthOps::new(self)
     }
 
+    pub fn telegram_links(&self) -> crate::telegram_link::TelegramLinks<'_> {
+        crate::telegram_link::TelegramLinks::new(self)
+    }
+
     pub fn mail(&self) -> crate::mail::MailOps<'_> {
         crate::mail::MailOps::new(self)
     }

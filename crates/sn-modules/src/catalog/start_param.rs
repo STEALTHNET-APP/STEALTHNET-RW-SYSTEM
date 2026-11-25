@@ -110,10 +110,13 @@ pub fn with_referral(param: Option<&str>, referral: Option<&str>) -> Option<Stri
     (!parts.is_empty()).then(|| parts.join(SEPARATOR))
 }
 
-pub const SECRET_PREFIXES: [&str; 3] = [
+pub const LINK_PREFIX: &str = "tglink_";
+
+pub const SECRET_PREFIXES: [&str; 4] = [
     crate::catalog::gifts::START_PREFIX,
     crate::catalog::promolinks::START_PREFIX,
     "auth_",
+    LINK_PREFIX,
 ];
 
 pub fn masked(raw: &str) -> String {
@@ -203,6 +206,7 @@ mod tests {
         assert_eq!(masked("gift_WRWM-48NG-B662"), "gift_");
         assert_eq!(masked("pl_blogger-nov"), "pl_");
         assert_eq!(masked("auth_0123456789abcdef"), "auth_");
+        assert_eq!(masked("tglink_0123456789abcdef"), "tglink_");
         assert_eq!(
             masked("ref_ABC123__s_tiktok__gift_WRWM-48NG-B662"),
             "ref_ABC123__s_tiktok__gift_"

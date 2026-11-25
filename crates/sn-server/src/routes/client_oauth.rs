@@ -21,6 +21,7 @@ use sn_services::oauth::{
     COOKIE, COOKIE_PATH, CallbackParams, LoginMethods, OauthFinish, OauthStart, Purpose,
     REQUEST_TTL_SECONDS, UNFINISHED,
 };
+use sn_services::telegram_link::{TelegramLinkStart, TelegramLinkStatus};
 use sn_services::utm_tracking::site_utm;
 
 const FIELD_MAX: usize = 4096;
@@ -34,6 +35,12 @@ pub fn routes() -> Router<AppState> {
             get(callback_query).post(callback_form),
         )
         .route("/security/logins", get(logins))
+        .route("/security/logins/telegram", post(link_telegram))
+        .route(
+            "/security/logins/telegram/status",
+            post(link_telegram_status),
+        )
+        .route("/security/logins/telegram/cancel", post(stop_telegram))
         .route("/security/logins/{provider}", post(link).delete(unlink))
 }
 
@@ -261,6 +268,56 @@ async fn link(
         .start_link(&client.0, provider, &meta)
         .await?;
     Ok(started(&state, provider, &start))
+}
+
+async fn link_telegram(
+    client: CurrentClient,
+    State(state): State<AppState>,
+    Meta(meta): Meta,
+) -> ApiResult<Json<TelegramLinkStart>> {
+    cabinet(&client)?;
+    Ok(Json(
+        state
+            .services
+            .telegram_links()
+            .start(&client.0, &meta)
+            .await?,
+    ))
+}
+
+#[derive(Debug, Deserialize)]
+struct LinkRequest {
+    poll_token: String,
+}
+
+async fn link_telegram_status(
+    client: CurrentClient,
+    State(state): State<AppState>,
+    Meta(meta): Meta,
+    ApiJson(body): ApiJson<LinkRequest>,
+) -> ApiResult<Json<TelegramLinkStatus>> {
+    cabinet(&client)?;
+    Ok(Json(
+        state
+            .services
+            .telegram_links()
+            .status(&client.0, &body.poll_token, &meta)
+            .await?,
+    ))
+}
+
+async fn stop_telegram(
+    client: CurrentClient,
+    State(state): State<AppState>,
+    ApiJson(body): ApiJson<LinkRequest>,
+) -> ApiResult<StatusCode> {
+    cabinet(&client)?;
+    state
+        .services
+        .telegram_links()
+        .stop(&client.0, &body.poll_token)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn unlink(

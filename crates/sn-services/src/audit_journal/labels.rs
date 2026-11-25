@@ -180,6 +180,7 @@ pub const ACTIONS: &[ActionLabel] = &[
         "Регистрация через Google или Apple",
         Area::Clients,
     ),
+    a("client.telegram_linked", "Привязан Telegram", Area::Clients),
     a(
         "client.oauth_linked",
         "Привязан вход через Google или Apple",
@@ -1230,6 +1231,8 @@ const FIELDS: &[(&str, &str)] = &[
     ("icons", "Значков"),
     ("count", "Количество"),
     ("telegram", "Telegram"),
+    ("telegram_id", "ID в Telegram"),
+    ("username", "Имя в Telegram"),
     ("endpoint", "Адрес хранилища"),
     ("bucket", "Бакет"),
     ("prefix", "Папка"),

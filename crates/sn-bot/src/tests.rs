@@ -47,6 +47,7 @@ mod stars_review;
 mod support_files;
 mod support_followup;
 mod support_mode;
+mod telegram_link;
 mod trial_variants;
 mod utm_clicks;
 mod webhook;

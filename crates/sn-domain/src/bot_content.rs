@@ -538,6 +538,14 @@ const ACCOUNT: Var = Var {
     name: "account",
     hint: "почта аккаунта Google или Apple",
 };
+const SITE: Var = Var {
+    name: "site",
+    hint: "адрес сайта",
+};
+const MASKED: Var = Var {
+    name: "account",
+    hint: "почта аккаунта, часть букв скрыта",
+};
 const WINNERS: Var = Var {
     name: "winners",
     hint: "число победителей",
@@ -2610,6 +2618,76 @@ pub static CATALOG: &[Entry] = &[
         "Новый аккаунт с сайта: слишком много сразу",
         "Сейчас на сайте создаётся слишком много новых аккаунтов. Попробуйте войти ещё раз через минуту или отправьте /start, чтобы пользоваться ботом.",
         &[],
+    ),
+    text(
+        "link.title",
+        Login,
+        "Привязка Telegram: заголовок",
+        "<b>Привязка Telegram</b>",
+        &[],
+    ),
+    text(
+        "link.account",
+        Login,
+        "Привязка Telegram: аккаунт на сайте",
+        "Аккаунт на {site}: {account}",
+        &[SITE, MASKED],
+    ),
+    text(
+        "link.who",
+        Login,
+        "Привязка Telegram: ваш Telegram",
+        "Ваш Telegram: {who}",
+        &[WHO],
+    ),
+    text(
+        "link.hint",
+        Login,
+        "Привязка Telegram: подсказка",
+        "Это не вход на сайт. После привязки бот и приложение откроют этот аккаунт, и через ваш Telegram можно будет войти в него на сайте. Если привязку начинали не вы, нажмите «Отменить».",
+        &[],
+    ),
+    button(
+        "link.btn.confirm",
+        Login,
+        "Привязка Telegram: кнопка «Привязать»",
+        "Привязать",
+        &[],
+    ),
+    button(
+        "link.btn.cancel",
+        Login,
+        "Привязка Telegram: кнопка «Отменить»",
+        "Отменить",
+        &[],
+    ),
+    text(
+        "link.done",
+        Login,
+        "Привязка Telegram: готово",
+        "Telegram привязан. Подписка и оплата теперь доступны и здесь, в боте.",
+        &[],
+    ),
+    text(
+        "link.same",
+        Login,
+        "Привязка Telegram: уже привязан",
+        "Этот Telegram уже привязан к вашему аккаунту.",
+        &[],
+    ),
+    text(
+        "link.canceled",
+        Login,
+        "Привязка Telegram: отмена",
+        "Привязка отменена, ничего не изменилось.",
+        &[],
+    ),
+    text(
+        "link.error",
+        Login,
+        "Привязка Telegram: ошибка",
+        "Привязка Telegram: {error}",
+        &[ERROR],
     ),
     text(
         "email.title",
