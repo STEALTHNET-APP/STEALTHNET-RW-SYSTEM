@@ -374,6 +374,14 @@ const AMOUNT: Var = Var {
     name: "amount",
     hint: "сумма",
 };
+const TOPUP_BONUS: Var = Var {
+    name: "bonus",
+    hint: "бонус за пополнение",
+};
+const TOTAL_BONUS: Var = Var {
+    name: "total",
+    hint: "сумма вместе с бонусом",
+};
 const PRICE: Var = Var {
     name: "price",
     hint: "цена",
@@ -1419,6 +1427,13 @@ pub static CATALOG: &[Entry] = &[
         "Что оплачивается: пополнение",
         "Пополнение на {amount}.",
         &[AMOUNT],
+    ),
+    text(
+        "pay.what_topup_bonus",
+        Payment,
+        "Что оплачивается: пополнение с бонусом",
+        "Пополнение на {amount}. На баланс придёт {total}: {amount} и бонус {bonus}.",
+        &[AMOUNT, TOTAL_BONUS, TOPUP_BONUS],
     ),
     text(
         "pay.ready",
@@ -2882,6 +2897,13 @@ pub static CATALOG: &[Entry] = &[
         "Баланс пополнен",
         "Баланс пополнен на {amount}.",
         &[AMOUNT],
+    ),
+    text(
+        "notify.topup_done_bonus",
+        Notify,
+        "Баланс пополнен с бонусом",
+        "На баланс пришло {total}: {amount} и бонус {bonus}.",
+        &[TOTAL_BONUS, AMOUNT, TOPUP_BONUS],
     ),
     text(
         "notify.topup_done_plain",

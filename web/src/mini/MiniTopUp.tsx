@@ -4,7 +4,7 @@ import { api, ApiError } from '../lib/api';
 import { money } from '../lib/format';
 import { t } from '../lib/i18n';
 import { heldBalance } from '../cabinet/model';
-import { finished, limitsText, parseAmount, wireAmount, type PaymentProgress, type TopUpOptions } from '../cabinet/payments';
+import { bonusMark, bonusText, finished, limitsText, parseAmount, wireAmount, type PaymentProgress, type TopUpOptions } from '../cabinet/payments';
 import { BackHead, useMini } from './MiniApp';
 import { openExternal, webApp } from './telegram';
 import { methodKey } from '../lib/methods';
@@ -111,6 +111,7 @@ export function MiniTopUp() {
       : null;
   const inTelegramWallet = chosen?.provider === 'gram' && webApp() !== null;
   const sum = amount !== null && inRange ? money({ minor: amount, currency }) : null;
+  const bonus = amount !== null && inRange ? bonusText(amount, currency, chosen) : null;
 
   useEffect(() => {
     if (!fixed || (preset !== null && fixed.some((m) => m.minor === preset) && !custom.trim())) {
@@ -238,9 +239,11 @@ export function MiniTopUp() {
             {methods.map((m) => (
               <button key={methodKey(m)} type="button" role="radio" aria-checked={chosen === m} className="mn-chip press" onClick={() => setMethod(methodKey(m))}>
                 {m.title}
+                {bonusMark(m, inRange ? amount : null) ? ` ${bonusMark(m, inRange ? amount : null)}` : null}
               </button>
             ))}
           </div>
+          {bonus ? <p className="mn-note">{bonus}</p> : null}
           {error ? <p className="mn-error">{error}</p> : null}
           {note ? (
             <p role="status" className="mn-note">

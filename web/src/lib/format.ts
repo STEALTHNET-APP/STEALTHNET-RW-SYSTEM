@@ -30,6 +30,17 @@ export function money(value: Money | null | undefined, compact = false): string 
   return `${sign}$${groupDigits(whole)}.${cents.toString().padStart(2, '0')}`;
 }
 
+export function moneyExact(value: Money): string {
+  if (value.currency !== 'RUB' || value.minor % 100 === 0) {
+    return money(value);
+  }
+  const abs = Math.abs(value.minor);
+  const sign = value.minor < 0 ? MINUS : '';
+  const whole = groupDigits(Math.floor(abs / 100));
+  const cents = (abs % 100).toString().padStart(2, '0');
+  return lang() === 'en' ? `${sign}₽${whole}.${cents}` : `${sign}${whole},${cents}${NBSP}₽`;
+}
+
 export function plural(n: number, one: string, few: string, many: string): string {
   const english = pluralEn(one);
   if (english) {

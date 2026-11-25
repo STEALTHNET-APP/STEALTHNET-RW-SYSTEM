@@ -100,6 +100,7 @@ async fn история_оплат_только_свои_постранично_
         let mut conn = h.services().store().conn().await.unwrap();
         conn.refunds()
             .create(&NewRefund {
+                bonus_minor: 0,
                 payment_id: topped.id,
                 amount: Amount::new(300, PayCurrency::Usd),
                 method: RefundMethod::Balance,

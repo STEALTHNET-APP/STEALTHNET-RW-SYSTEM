@@ -1169,6 +1169,7 @@ impl<'a> Fulfillment<'a> {
             .into_iter()
             .find(|p| p.status.is_paid_like())
             .ok_or_else(|| Halt::Review("у пополнения нет оплаченного платежа".into()))?;
+        let paid = tx.payments().lock(paid.id).await?;
         crate::inbox::credit_topup(&mut tx, order, &paid).await?;
         let (fulfilled, changed) = tx
             .orders()

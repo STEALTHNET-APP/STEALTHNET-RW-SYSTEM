@@ -20,6 +20,7 @@ async fn paid_at(db: &mut impl Db, id: PaymentId, at: DateTime<Utc>) {
 async fn refund(db: &mut impl Db, id: PaymentId, minor: i64, to: PaymentStatus) {
     db.refunds()
         .create(&NewRefund {
+            bonus_minor: 0,
             payment_id: id,
             amount: usd(minor),
             method: RefundMethod::Provider,

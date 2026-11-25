@@ -6,12 +6,12 @@ use crate::text;
 use crate::ui::{self, Html, Lines, Text};
 use sn_domain::bot_content::Section;
 use sn_domain::bot_layout::{Screen as LayoutScreen, SubscriptionFacts, arrange};
-use sn_domain::client::Client;
+use sn_domain::client::{Client, Locale};
 use sn_domain::ids::{SubscriptionId, TicketId};
 use sn_domain::lang;
 use sn_domain::ledger::Wallet;
 use sn_domain::money::{Currency, Money, PayCurrency, parse_units};
-use sn_domain::pricing::{topup_presets, topup_quote};
+use sn_domain::pricing::{BonusTerms, topup_presets, topup_quote};
 use sn_domain::settings::{TRIAL_NAME_MAX, TrialVariant};
 use sn_domain::traffic::{NextReset, next_reset};
 use sn_modules::catalog::antibot;
@@ -497,6 +497,24 @@ pub async fn balance(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, Bot
         .section(Section::Balance))
 }
 
+fn bonus_title(title: &str, terms: Option<BonusTerms>, amount: Money) -> String {
+    match terms {
+        Some(terms) if terms.reached(amount) => format!("{title} +{}%", terms.percent),
+        Some(BonusTerms {
+            percent,
+            min_minor: Some(min),
+            ..
+        }) => {
+            let from = text::money(Money::new(min, amount.currency));
+            match lang::current() {
+                Locale::Ru => format!("{title} +{percent}% от {from}"),
+                Locale::En => format!("{title} +{percent}% from {from}"),
+            }
+        }
+        _ => title.to_string(),
+    }
+}
+
 pub async fn topup_amount(turn: &mut Turn<'_>, minor: i64) -> Result<Screen, BotError> {
     let services = turn.services().clone();
     let content = services.bot_content_in(lang::current());
@@ -538,31 +556,29 @@ pub async fn topup_amount(turn: &mut Turn<'_>, minor: i64) -> Result<Screen, Bot
             .amount
             .and_then(sn_domain::money::Amount::as_money)
             .filter(|charged| *charged != amount);
+        let terms = services.payments().topup_bonus(
+            method.provider,
+            method.method.as_deref(),
+            settings.currency,
+        );
+        let title = bonus_title(&method.title, terms, charged.unwrap_or(amount));
         keyboard = keyboard.push(if let Some(charged) = charged {
             ui::button(
                 c,
                 "bal.btn.method_hint",
                 &[
-                    ("method", Text(&method.title)),
+                    ("method", Text(&title)),
                     ("hint", Text(&text::money(charged))),
                 ],
                 data,
             )
         } else if method.hint.is_empty() {
-            ui::button(
-                c,
-                "bal.btn.method",
-                &[("method", Text(&method.title))],
-                data,
-            )
+            ui::button(c, "bal.btn.method", &[("method", Text(&title))], data)
         } else {
             ui::button(
                 c,
                 "bal.btn.method_hint",
-                &[
-                    ("method", Text(&method.title)),
-                    ("hint", Text(&method.hint)),
-                ],
+                &[("method", Text(&title)), ("hint", Text(&method.hint))],
                 data,
             )
         });
@@ -651,11 +667,22 @@ pub async fn topup_start(
     {
         Ok(result) => {
             turn.session.topup_minor = None;
-            let what = ui::text(
-                &content,
-                "pay.what_topup",
-                &[("amount", Text(&text::money(amount)))],
-            );
+            let bonus = registry
+                .topup_bonus(provider, method, currency)
+                .map_or_else(|| Money::zero(currency), |terms| terms.bonus(amount));
+            let shown = text::money(amount);
+            let what = match amount.checked_add(bonus) {
+                Ok(total) if !bonus.is_zero() => ui::text(
+                    &content,
+                    "pay.what_topup_bonus",
+                    &[
+                        ("amount", Text(&shown)),
+                        ("total", Text(&text::money_exact(total))),
+                        ("bonus", Text(&text::money_exact(bonus))),
+                    ],
+                ),
+                _ => ui::text(&content, "pay.what_topup", &[("amount", Text(&shown))]),
+            };
             Ok(payment_screen(&content, &result, &what))
         }
         Err(err) => Ok(Screen::notice(text::user_error(&err))),

@@ -157,6 +157,23 @@ pub fn money_in(value: Money, locale: Locale) -> String {
     }
 }
 
+pub fn money_exact_in(value: Money, locale: Locale) -> String {
+    if value.currency != Currency::Rub || value.minor % 100 == 0 {
+        return money_in(value, locale);
+    }
+    let sign = if value.minor < 0 { "-" } else { "" };
+    let abs = value.minor.unsigned_abs();
+    let whole = group_digits_in(abs / 100, locale);
+    match locale {
+        Locale::Ru => format!("{sign}{whole},{:02}{NBSP}₽", abs % 100),
+        Locale::En => format!("{sign}₽{whole}.{:02}", abs % 100),
+    }
+}
+
+pub fn money_exact(value: Money) -> String {
+    money_exact_in(value, Locale::Ru)
+}
+
 pub fn money_compact_in(value: Money, locale: Locale) -> String {
     match value.currency {
         Currency::Usd if value.minor % 100 == 0 => {
@@ -239,6 +256,16 @@ pub fn gigabytes_in(gb: u64, locale: Locale) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn точная_сумма_показывает_копейки_только_когда_они_есть() {
+        let rub = |minor| Money::new(minor, Currency::Rub);
+        assert_eq!(money_exact(rub(2_500)), "25\u{a0}₽");
+        assert_eq!(money_exact(rub(535)), "5,35\u{a0}₽");
+        assert_eq!(money_exact(rub(-100_505)), "-1\u{a0}005,05\u{a0}₽");
+        assert_eq!(money_exact_in(rub(535), Locale::En), "₽5.35");
+        assert_eq!(money_exact(Money::new(535, Currency::Usd)), "$5.35");
+    }
 
     #[test]
     fn дата_словами_на_двух_языках() {

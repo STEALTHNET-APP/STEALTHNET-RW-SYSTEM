@@ -1,4 +1,4 @@
-import { count, dateLong, money, NBSP, plural, timeHM, type Money } from '../../lib/format';
+import { count, dateLong, money, moneyExact, NBSP, plural, timeHM, type Money } from '../../lib/format';
 import { amountText, lowerFirst, methodText } from '../client/history';
 import type { Amount, OrderBrief } from '../client/types';
 import type { Attention } from '../money/journal';
@@ -327,7 +327,9 @@ export function feedLine(item: FeedItem, nodes: NodeBrief[]): FeedLine | null {
         return { ...base, who, what: 'ответ поддержки', note: item.ticket?.subject ? `«${item.ticket.subject}»` : '', tone: 0, icon: 'person', action: null };
       case 'balance_changed': {
         const delta = item.data?.delta as Money | undefined;
-        return { ...base, who, what: 'изменение баланса', note: delta ? money(delta) : '', tone: 0, icon: 'wallet', action: null };
+        const kind = String(item.data?.kind);
+        const what = kind === 'topup_bonus' ? 'бонус за пополнение' : kind === 'topup_bonus_reversal' ? 'бонус за пополнение снят' : 'изменение баланса';
+        return { ...base, who, what, note: delta ? (kind.startsWith('topup_bonus') ? moneyExact(delta) : money(delta)) : '', tone: 0, icon: 'wallet', action: null };
       }
       default:
         return { ...base, who, what: item.title, note: '', tone: 0, icon: 'person', action: null };

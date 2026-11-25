@@ -26,6 +26,7 @@ use std::sync::{Arc, Mutex};
 
 mod actions;
 mod blocked;
+mod bonus;
 mod gate;
 mod holds;
 mod journal;

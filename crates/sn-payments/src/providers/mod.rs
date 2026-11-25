@@ -222,6 +222,7 @@ mod tests {
                         channels: sn_domain::payment::PaymentChannels::ALL,
                         methods: Vec::new(),
                         label: Default::default(),
+                        topup_bonus: Default::default(),
                     },
                 )
             })

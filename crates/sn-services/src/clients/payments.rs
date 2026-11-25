@@ -34,6 +34,8 @@ pub struct ClientPayment {
     pub status: PaymentStatus,
     pub amount: Amount,
     pub refunded: Option<Amount>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bonus: Option<Amount>,
     pub method: String,
     pub autorenew: bool,
     pub repeat: Option<&'static str>,
@@ -205,6 +207,8 @@ impl ClientOps<'_> {
                     amount: payment.amount,
                     refunded: (outcome.refunded_minor > 0)
                         .then(|| Amount::new(outcome.refunded_minor, payment.amount.currency)),
+                    bonus: (outcome.bonus_minor > 0)
+                        .then(|| Amount::new(outcome.bonus_minor, payment.amount.currency)),
                     method: method_title(registry, settings.currency, &payment),
                     autorenew: payment.method.as_deref() == Some(AUTORENEW_METHOD),
                     repeat: outcome.repeat.map(|action| action.as_str()),

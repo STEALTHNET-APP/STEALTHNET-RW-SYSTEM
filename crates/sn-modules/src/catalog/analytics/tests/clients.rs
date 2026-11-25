@@ -78,3 +78,54 @@ async fn регистрации_пробные_и_состояние_клиен�
     assert_eq!(value(&r, "registrations"), 1.0);
     assert_eq!(value(&r, "english"), 1.0);
 }
+
+#[tokio::test]
+async fn бонусы_за_пополнения_видны_отдельно_и_не_попадают_в_выручку() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let s = scene(db.store.clone()).await;
+    let before = ctx_report(&db.store, "clients", month(3, Compare::None)).await;
+    assert_eq!(table(&before, "balances").len(), 2);
+    let money_before = ctx_report(&db.store, "money", month(3, Compare::None)).await;
+    s.seed
+        .exec(&format!(
+            "INSERT INTO balance_entries (client_id, wallet, currency, delta_minor, balance_after_minor, kind, created_at) VALUES \
+               ({a}, 'main', 'RUB', 2500, 2500, 'topup_bonus', '2026-03-04 10:00+00'), \
+               ({a}, 'main', 'RUB', -1000, 1500, 'topup_bonus_reversal', '2026-03-05 10:00+00'), \
+               ({c}, 'main', 'RUB', 700, 700, 'topup_bonus', '2026-03-06 10:00+00'), \
+               ({c}, 'main', 'RUB', 900, 1600, 'topup_bonus', '2026-02-06 10:00+00')",
+            a = s.a,
+            c = s.c
+        ))
+        .await;
+    let report = ctx_report(&db.store, "clients", month(3, Compare::None)).await;
+    assert_eq!(
+        table(&report, "balances")[2],
+        (
+            "Бонусы за пополнения".to_string(),
+            vec![Some(2_200.0), Some(2.0)]
+        )
+    );
+    assert_eq!(value(&report, "balances"), value(&before, "balances"));
+    let money = ctx_report(&db.store, "money", month(3, Compare::None)).await;
+    for group in &money.groups {
+        for m in &group.metrics {
+            assert_eq!(m.value, metric(&money_before, m.key).value, "{}", m.key);
+        }
+    }
+    let costs = ctx_report(&db.store, "economy", month(3, Compare::None)).await;
+    let rows = table(&costs, "margin");
+    let cell = |label: &str| {
+        rows.iter()
+            .find(|(name, _)| name == label)
+            .and_then(|(_, cells)| cells[0])
+    };
+    assert_eq!(cell("Бонусы за пополнения"), Some(-2_200.0));
+    let parts: f64 = rows
+        .iter()
+        .filter(|(name, _)| name != "Маржа")
+        .filter_map(|(_, cells)| cells[0])
+        .sum();
+    assert_eq!(cell("Маржа"), Some(parts));
+}

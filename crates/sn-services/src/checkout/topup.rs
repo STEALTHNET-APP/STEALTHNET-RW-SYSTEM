@@ -4,9 +4,29 @@ use serde::Serialize;
 use sn_domain::ids::ClientId;
 use sn_domain::ledger::Wallet;
 use sn_domain::money::{Currency, Money};
-use sn_domain::pricing::topup_presets;
+use sn_domain::pricing::{BonusTerms, topup_presets};
 use sn_payments::{MethodsContext, ProviderKind};
 use sn_store::Db;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct MethodBonus {
+    pub percent: u8,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min: Option<Money>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max: Option<Money>,
+}
+
+impl MethodBonus {
+    fn of(terms: BonusTerms, currency: Currency) -> Self {
+        let money = |minor: i64| Money::new(minor, currency);
+        MethodBonus {
+            percent: terms.percent,
+            min: terms.min_minor.map(money),
+            max: terms.max_minor.map(money),
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TopUpMethod {
@@ -16,6 +36,8 @@ pub struct TopUpMethod {
     pub hint: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub amounts: Option<Vec<Money>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bonus: Option<MethodBonus>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -92,6 +114,9 @@ impl Checkout<'_> {
                     }
                 };
                 Some(TopUpMethod {
+                    bonus: registry
+                        .topup_bonus(method.provider, method.method.as_deref(), currency)
+                        .map(|terms| MethodBonus::of(terms, currency)),
                     provider: method.provider,
                     method: method.method,
                     title: method.title,

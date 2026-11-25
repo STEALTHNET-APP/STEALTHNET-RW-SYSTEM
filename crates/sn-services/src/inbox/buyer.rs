@@ -4,7 +4,7 @@ use sn_domain::client::{Client, IdentityKind};
 use sn_domain::ids::{PeriodId, SubscriptionId, TariffId};
 use sn_domain::order::NewOrder;
 use sn_domain::payment::ProviderId;
-use sn_domain::pricing::{TopUpLimits, topup_quote};
+use sn_domain::pricing::{BonusTerms, TopUpLimits, topup_quote};
 use sn_payments::{BuyerPurpose, PlanBinding};
 
 pub const PAID_FROM_BALANCE: &str = "заказ оплачен с баланса после пополнения";
@@ -172,6 +172,16 @@ impl PaymentInbox<'_> {
                 .accept_paid(provider, &PaymentRef::Payment(payment.id), outcome, None)
                 .await;
         }
+        let terms = if latest
+            .as_ref()
+            .is_none_or(|(_, order)| order.kind == OrderKind::TopUp)
+        {
+            self.services
+                .payments()
+                .topup_bonus(provider, None, amount.currency)
+        } else {
+            None
+        };
         let result = self
             .record_external(
                 provider,
@@ -179,6 +189,7 @@ impl PaymentInbox<'_> {
                 topup_order(client.id, amount)?,
                 amount,
                 &buyer.txid,
+                terms,
             )
             .await?;
         if let Some((payment, order)) = latest.filter(|(_, order)| {
@@ -224,6 +235,7 @@ impl PaymentInbox<'_> {
                     topup_order(client.id, amount)?,
                     amount,
                     &buyer.txid,
+                    None,
                 )
                 .await;
         };
@@ -239,7 +251,7 @@ impl PaymentInbox<'_> {
         };
         match self.services.checkout().plan_order(client.id, &cart).await {
             Ok(order) => {
-                self.record_external(provider, client.id, order, amount, &buyer.txid)
+                self.record_external(provider, client.id, order, amount, &buyer.txid, None)
                     .await
             }
             Err(err) => {
@@ -251,6 +263,7 @@ impl PaymentInbox<'_> {
                         topup_order(client.id, amount)?,
                         amount,
                         &buyer.txid,
+                        None,
                     )
                     .await?;
                 self.waiting_credit(
@@ -307,6 +320,7 @@ impl PaymentInbox<'_> {
         order: NewOrder,
         amount: Money,
         txid: &str,
+        bonus: Option<BonusTerms>,
     ) -> ServiceResult<AcceptResult> {
         let mut tx = self.services.store().begin().await?;
         let created = tx.orders().create(&order).await?;
@@ -321,6 +335,9 @@ impl PaymentInbox<'_> {
                 expires_at: None,
             })
             .await?;
+        if let Some(terms) = bonus {
+            tx.payments().promise_bonus(payment.id, &terms).await?;
+        }
         let ctx = self.services.module_context();
         self.services
             .modules()

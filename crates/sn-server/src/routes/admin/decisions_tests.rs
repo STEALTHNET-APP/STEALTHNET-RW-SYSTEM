@@ -333,6 +333,7 @@ impl Harness {
         let mut conn = self.services().store().conn().await.unwrap();
         conn.payments()
             .create_provider_refund(&NewProviderRefund {
+                bonus_minor: 0,
                 payment_id: payment.id,
                 amount: payment.amount,
                 subscription_action: RefundSubscriptionAction::Disable,

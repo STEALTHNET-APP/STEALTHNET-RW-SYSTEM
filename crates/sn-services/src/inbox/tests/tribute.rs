@@ -530,3 +530,77 @@ async fn tribute_возврат_потраченного_пополнения_у
     );
     kit.db.cleanup().await;
 }
+
+async fn promise(kit: &Kit, products: serde_json::Value, percent: i64) {
+    {
+        let mut conn = kit.services.store().conn().await.unwrap();
+        conn.settings()
+            .set(
+                &keys::provider(providers::TRIBUTE),
+                &serde_json::json!({
+                    "enabled": true,
+                    "config": {"products": products, "plans": []},
+                    "topup_bonus": {"enabled": percent > 0, "percent": percent}
+                }),
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    kit.services.reload().await.unwrap();
+    kit.services.set_remna(Some(kit.remna.clone()));
+}
+
+#[tokio::test]
+async fn tribute_бонус_только_за_пополнение_а_не_за_покупку_тарифа() {
+    let Some(kit) = tribute_kit(products(), serde_json::json!([])).await else {
+        return;
+    };
+    promise(&kit, products(), 10).await;
+    let client_id = client(&kit.services, BUYER).await;
+    let tariff = standard(&kit.services).await;
+    kit.services
+        .checkout()
+        .topup(
+            client_id,
+            Money::new(700, Currency::Usd),
+            providers::TRIBUTE,
+            None,
+            Channel::Miniapp,
+        )
+        .await
+        .unwrap();
+    promise(&kit, products(), 0).await;
+    status(&kit, &purchase(911, BUYER, 1000, "2026-11-18T10:00:01Z")).await;
+    status(&kit, &purchase(911, BUYER, 1000, "2026-11-18T10:05:00Z")).await;
+    assert_eq!(balance(&kit.services, client_id).await, 1_100);
+
+    promise(&kit, products(), 10).await;
+    status(&kit, &purchase(912, BUYER, 500, "2026-11-18T11:00:01Z")).await;
+    assert_eq!(balance(&kit.services, client_id).await, 1_650);
+
+    kit.services
+        .checkout()
+        .start(
+            client_id,
+            &CheckoutRequest {
+                cart: cart(&tariff, 30, None),
+                provider: providers::TRIBUTE.into(),
+                method: None,
+                channel: Channel::Bot,
+                return_url: None,
+            },
+        )
+        .await
+        .unwrap();
+    status(&kit, &purchase(913, BUYER, 500, "2026-11-18T12:00:01Z")).await;
+    assert_eq!(balance(&kit.services, client_id).await, 1_650 + 500 - 299);
+
+    status(&kit, &refund(911, 1000)).await;
+    status(&kit, &refund(911, 1000)).await;
+    assert_eq!(
+        balance(&kit.services, client_id).await,
+        1_650 + 500 - 299 - 1_100
+    );
+    kit.db.cleanup().await;
+}

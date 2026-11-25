@@ -123,6 +123,7 @@ pub struct NewRefund {
     pub reason: Option<String>,
     pub admin_id: Option<AdminId>,
     pub provider_refund_id: Option<String>,
+    pub bonus_minor: i64,
 }
 
 fn refund_method(value: &str) -> StoreResult<RefundMethod> {
@@ -153,6 +154,7 @@ struct RefundRow {
     reason: Option<String>,
     admin_id: Option<i64>,
     provider_refund_id: Option<String>,
+    bonus_minor: i64,
     created_at: DateTime<Utc>,
 }
 
@@ -167,8 +169,8 @@ impl<'c> RefundsRepo<'c> {
 
     pub async fn create(&mut self, refund: &NewRefund) -> StoreResult<RefundId> {
         let id: i64 = sqlx::query_scalar(
-            "INSERT INTO refunds (payment_id, amount_minor, currency, method, subscription_action, reason, admin_id, provider_refund_id) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id",
+            "INSERT INTO refunds (payment_id, amount_minor, currency, method, subscription_action, reason, admin_id, \
+             provider_refund_id, bonus_minor) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id",
         )
         .bind(refund.payment_id.0)
         .bind(refund.amount.minor)
@@ -185,6 +187,7 @@ impl<'c> RefundsRepo<'c> {
         .bind(&refund.reason)
         .bind(refund.admin_id.map(|a| a.0))
         .bind(&refund.provider_refund_id)
+        .bind(refund.bonus_minor)
         .fetch_one(&mut *self.conn)
         .await?;
         sqlx::query("UPDATE payments SET refunded_minor = refunded_minor + $2 WHERE id = $1")
@@ -231,7 +234,7 @@ impl<'c> RefundsRepo<'c> {
     pub async fn for_payment(&mut self, payment_id: PaymentId) -> StoreResult<Vec<Refund>> {
         let rows: Vec<RefundRow> = sqlx::query_as(
             "SELECT id, payment_id, amount_minor, currency, method, subscription_action, reason, admin_id, \
-             provider_refund_id, created_at FROM refunds WHERE payment_id = $1 ORDER BY id",
+             provider_refund_id, bonus_minor, created_at FROM refunds WHERE payment_id = $1 ORDER BY id",
         )
         .bind(payment_id.0)
         .fetch_all(&mut *self.conn)
@@ -247,6 +250,7 @@ impl<'c> RefundsRepo<'c> {
                     reason: row.reason,
                     admin_id: row.admin_id.map(AdminId),
                     provider_refund_id: row.provider_refund_id,
+                    bonus_minor: row.bonus_minor,
                     created_at: row.created_at,
                 })
             })

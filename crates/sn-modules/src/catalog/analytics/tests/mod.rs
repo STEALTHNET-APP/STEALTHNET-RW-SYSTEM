@@ -260,6 +260,10 @@ pub async fn ctx_report(store: &Store, tab: &str, query: TabQuery) -> TabReport 
         "payments" => super::payments::build(&c).await.unwrap(),
         "sources" => super::sources::build(&c).await.unwrap(),
         "tariffs" => super::tariffs::build(&c).await.unwrap(),
+        "economy" => {
+            let core = crate::catalog::testing::TestCore::new(store);
+            super::economy::build(&c, core.as_ref()).await.unwrap()
+        }
         _ => super::support::build(&c).await.unwrap(),
     };
     TabReport {

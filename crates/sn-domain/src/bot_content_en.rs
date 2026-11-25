@@ -150,6 +150,9 @@ pub fn default(key: &str) -> Option<&'static str> {
         "buy.btn.no_promo" => "No promo code",
         "pay.what_tariff" => "{tariff}, {term}.",
         "pay.what_topup" => "Top-up of {amount}.",
+        "pay.what_topup_bonus" => {
+            "Top-up of {amount}. {total} will be on your balance: {amount} and a {bonus} bonus."
+        }
         "pay.ready" => {
             "{what}\nYour invoice is ready: tap “Pay”. We'll confirm here once it's paid."
         }
@@ -479,6 +482,7 @@ pub fn default(key: &str) -> Option<&'static str> {
             "Payment received. The subscription will update within a minute."
         }
         "notify.topup_done" => "Your balance is topped up by {amount}.",
+        "notify.topup_done_bonus" => "{total} is on your balance: {amount} and a {bonus} bonus.",
         "notify.topup_done_plain" => "Your balance is topped up.",
         "notify.subscription_ready" => {
             "Your subscription is ready and runs until {date}. The link is under “Subscription”."

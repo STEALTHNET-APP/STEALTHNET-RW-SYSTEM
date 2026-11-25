@@ -151,6 +151,7 @@ async fn сто_неопрашиваемых_заявок_не_мешают_по
         for n in 0..100 {
             conn.payments()
                 .create_provider_refund(&NewProviderRefund {
+                    bonus_minor: 0,
                     payment_id: mute.id,
                     amount: Amount::new(1, PayCurrency::Usd),
                     subscription_action: RefundSubscriptionAction::Keep,
@@ -276,6 +277,7 @@ async fn заявка_без_номера_возврата_в_опрос_не_п
         let mut conn = kit.services.store().conn().await.unwrap();
         conn.payments()
             .create_provider_refund(&NewProviderRefund {
+                bonus_minor: 0,
                 payment_id: topped.id,
                 amount: Amount::new(500, PayCurrency::Usd),
                 subscription_action: RefundSubscriptionAction::Keep,

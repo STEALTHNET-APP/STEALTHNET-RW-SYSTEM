@@ -88,7 +88,15 @@ async fn downtime(c: &Ctx<'_>) -> StoreResult<Vec<(String, i64, i64)>> {
     Ok(out)
 }
 
-async fn money_side(c: &Ctx<'_>) -> StoreResult<(f64, f64, f64, f64)> {
+struct MoneySide {
+    net: f64,
+    referral: f64,
+    prizes: f64,
+    paying: f64,
+    bonuses: f64,
+}
+
+async fn money_side(c: &Ctx<'_>) -> StoreResult<MoneySide> {
     let mut sql = Sql::default();
     let s = sql.time(c.range.start());
     let e = sql.time(c.range.end());
@@ -104,20 +112,36 @@ async fn money_side(c: &Ctx<'_>) -> StoreResult<(f64, f64, f64, f64)> {
            (SELECT COALESCE(sum(b.delta_minor), 0) FROM balance_entries b WHERE b.kind IN ('contest', 'roulette') \
               AND b.delta_minor > 0 AND b.currency = {cur} AND b.created_at >= {s} AND b.created_at < {e})::float8, \
            (SELECT count(DISTINCT sp.client_id) FROM analytics_spans sp \
-              WHERE sp.starts_at < {e} AND sp.ends_at > {s} AND {fs})::float8"
+              WHERE sp.starts_at < {e} AND sp.ends_at > {s} AND {fs})::float8, \
+           (SELECT COALESCE(sum(b.delta_minor), 0) FROM balance_entries b \
+              WHERE b.kind IN ('topup_bonus', 'topup_bonus_reversal') \
+              AND b.currency = {cur} AND b.created_at >= {s} AND b.created_at < {e})::float8"
     );
     let mut conn = c.store.conn().await?;
-    let r = grid(&mut conn, &sql, &text, 4).await?;
+    let r = grid(&mut conn, &sql, &text, 5).await?;
     let v = r
         .first()
         .map(|r| r.1.clone())
-        .unwrap_or_else(|| vec![0.0; 4]);
-    Ok((v[0], v[1], v[2], v[3]))
+        .unwrap_or_else(|| vec![0.0; 5]);
+    Ok(MoneySide {
+        net: v[0],
+        referral: v[1],
+        prizes: v[2],
+        paying: v[3],
+        bonuses: v[4],
+    })
 }
 
 pub async fn build(c: &Ctx<'_>, core: &dyn CoreApi) -> StoreResult<Vec<Group>> {
-    let (peak, by_node, down, (net, referral, prizes, paying)) =
+    let (peak, by_node, down, side) =
         tokio::try_join!(peaks(c), clients_by_node(c), downtime(c), money_side(c))?;
+    let MoneySide {
+        net,
+        referral,
+        prizes,
+        paying,
+        bonuses,
+    } = side;
     let online: Result<Vec<NodeOnline>, _> = core.nodes_online().await;
     let traffic: Result<Vec<NodeTraffic>, _> = core
         .nodes_traffic(c.range.dates.from, c.range.dates.to)
@@ -292,7 +316,21 @@ pub async fn build(c: &Ctx<'_>, core: &dyn CoreApi) -> StoreResult<Vec<Group>> {
         (Some(h), Some(t)) if t > 0.0 => Some((h / (t / TB)).round()),
         _ => None,
     };
-    let margin = net - hosting_sum.unwrap_or(0.0) - referral - prizes;
+    let margin = net - hosting_sum.unwrap_or(0.0) - referral - prizes - bonuses;
+    let mut margin_rows = vec![
+        row("Выручка без возвратов".into(), None, vec![Some(net)]),
+        row("Хостинг".into(), None, vec![hosting_sum.map(|h| -h)]),
+        row("Начислено рефералам".into(), None, vec![Some(-referral)]),
+        row("Денежные призы".into(), None, vec![Some(-prizes)]),
+    ];
+    if bonuses != 0.0 {
+        margin_rows.push(row(
+            "Бонусы за пополнения".into(),
+            None,
+            vec![Some(-bonuses)],
+        ));
+    }
+    margin_rows.push(row("Маржа".into(), None, vec![Some(margin)]));
     let cost_client = Metric::new(
         "cost_client",
         "Хостинг на платящего",
@@ -308,13 +346,7 @@ pub async fn build(c: &Ctx<'_>, core: &dyn CoreApi) -> StoreResult<Vec<Group>> {
         .hint("Без комиссий платёжек: панель их не знает")
         .detail(Detail::Table {
             columns: vec![Column::new("Сумма", Unit::Money)],
-            rows: vec![
-                row("Выручка без возвратов".into(), None, vec![Some(net)]),
-                row("Хостинг".into(), None, vec![hosting_sum.map(|h| -h)]),
-                row("Начислено рефералам".into(), None, vec![Some(-referral)]),
-                row("Денежные призы".into(), None, vec![Some(-prizes)]),
-                row("Маржа".into(), None, vec![Some(margin)]),
-            ],
+            rows: margin_rows,
             note: None,
         });
     Ok(vec![

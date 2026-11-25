@@ -1,10 +1,10 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router';
 import { api, ApiError } from '../../lib/api';
-import { ago, money, plural, type Money } from '../../lib/format';
+import { ago, money, moneyExact, plural, type Money } from '../../lib/format';
 import { Icon } from '../../lib/icons';
 import type { Currency } from '../../lib/types';
-import { ConfirmDialog } from '../client/dialogs';
+import { ConfirmDialog, parseMinor } from '../client/dialogs';
 import { changedConfig, initialValues, missingRequired, SchemaFields, type FieldValues, type SecretState, type SettingField } from '../SchemaFields';
 import { useSession } from '../session';
 import { Switch } from '../ui';
@@ -38,6 +38,74 @@ type InboxTrace = { verified_at: string | null; rejected_at: string | null };
 
 type CheckRecord = { at: string; status: CheckStatus; summary: string; details: string[]; hooks: HookCheck[]; inbox?: InboxTrace | null };
 
+type TopupBonus = { enabled: boolean; percent: number; min?: Money | null; max?: Money | null; methods?: string[] };
+
+type BonusForm = { on: boolean; percent: string; min: string; max: string; methods: string[] };
+
+const NO_BONUS: BonusForm = { on: false, percent: '', min: '', max: '', methods: [] };
+
+function limitText(limit: Money | null | undefined, currency: Currency): string {
+  if (!limit || limit.currency !== currency) {
+    return '';
+  }
+  return limit.minor % 100 ? (limit.minor / 100).toFixed(2) : String(limit.minor / 100);
+}
+
+function bonusForm(bonus: TopupBonus | undefined, currency: Currency): BonusForm {
+  return bonus
+    ? {
+        on: bonus.enabled,
+        percent: bonus.percent ? String(bonus.percent) : '',
+        min: limitText(bonus.min, currency),
+        max: limitText(bonus.max, currency),
+        methods: bonus.methods ?? [],
+      }
+    : NO_BONUS;
+}
+
+function foreignLimits(bonus: TopupBonus | undefined, currency: Currency): boolean {
+  return [bonus?.min, bonus?.max].some((limit) => limit && limit.currency !== currency);
+}
+
+function bonusPercent(form: BonusForm): number | null {
+  const raw = form.percent.trim();
+  if (!raw) {
+    return form.on ? null : 0;
+  }
+  const value = /^\d{1,3}$/.test(raw) ? Number(raw) : null;
+  return value !== null && value <= 100 && (value > 0 || !form.on) ? value : null;
+}
+
+function bonusLimit(raw: string): number | null | 'wrong' {
+  if (!raw.trim()) {
+    return null;
+  }
+  const minor = parseMinor(raw);
+  return minor !== null && minor > 0 && minor <= 100_000_000 ? minor : 'wrong';
+}
+
+function bonusSummary(p: Provider, currency: Currency): string | null {
+  const bonus = p.topup_bonus;
+  if (!bonus?.enabled) {
+    return null;
+  }
+  if (foreignLimits(bonus, currency)) {
+    return 'Бонус к пополнению не действует: порог или предел задан в другой валюте, сохраните его заново';
+  }
+  const names = (bonus.methods ?? []).map((code) => {
+    const method = p.methods?.find((m) => m.code === code);
+    return method?.custom_title || method?.title || code;
+  });
+  return [
+    `Бонус к пополнению: ${bonus.percent}%`,
+    bonus.min ? `от ${moneyExact(bonus.min)}` : '',
+    bonus.max ? `не больше ${moneyExact(bonus.max)}` : '',
+    names.length ? `только ${names.join(', ')}` : '',
+  ]
+    .filter(Boolean)
+    .join(', ');
+}
+
 type Provider = {
   id: string;
   title: string;
@@ -53,6 +121,7 @@ type Provider = {
   methods?: MethodView[];
   label?: { title: string; hint: string };
   custom_label?: { title?: string | null; hint?: string | null };
+  topup_bonus?: TopupBonus;
   check?: CheckRecord | null;
 };
 
@@ -527,6 +596,7 @@ export function SettingsPayments() {
               </div>
               {channelLine(p.id, p.title)}
               {methodLine(p)}
+              {bonusSummary(p, base.currency) ? <p className="pay-mline muted">{bonusSummary(p, base.currency)}</p> : null}
               {p.issue ? (
                 <p className="pay-issue" role="status">
                   <span className="pay-issue-at">Проверка оплат, {issueTime(p.issue.at)}</span>
@@ -735,9 +805,21 @@ function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved, onChec
   const [check, setCheck] = useState<CheckRecord | null>(provider.check ?? null);
   const [checking, setChecking] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [bonus, setBonus] = useState<BonusForm>(NO_BONUS);
+  const [savedBonus, setSavedBonus] = useState(JSON.stringify(NO_BONUS));
+  const [foreign, setForeign] = useState(false);
   const [tribute, setTribute] = useState<TributeValue>({ products: [], plans: [] });
   const [savedTribute, setSavedTribute] = useState(JSON.stringify({ products: [], plans: [] }));
   const withTribute = provider.id === 'tribute';
+  const withBonus = provider.kind === 'external';
+  const percent = bonusPercent(bonus);
+  const minLimit = bonusLimit(bonus.min);
+  const maxLimit = bonusLimit(bonus.max);
+  const offered = rows.filter((r) => r.on);
+  const pickable = offered.length > 1 || bonus.methods.length > 0;
+  const covers = (code: string) => bonus.methods.length === 0 || bonus.methods.includes(code);
+  const nowhere = bonus.methods.length > 0 && !offered.some((r) => bonus.methods.includes(r.code));
+  const bonusPending = withBonus && JSON.stringify(bonus) !== savedBonus;
 
   useEffect(() => {
     api<{ provider: Provider; schema: SettingField[] }>(`/api/admin/payments/providers/${provider.id}`)
@@ -756,9 +838,13 @@ function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved, onChec
         setLabelTitle(title);
         setLabelHint(hint);
         setSavedLabel(JSON.stringify([title.trim(), hint.trim()]));
+        const loadedBonus = bonusForm(d.provider.topup_bonus, currency);
+        setBonus(loadedBonus);
+        setSavedBonus(JSON.stringify(loadedBonus));
+        setForeign(foreignLimits(d.provider.topup_bonus, currency));
       })
       .catch((err) => setError(failText(err, 'Настройки системы не загрузились')));
-  }, [provider.id]);
+  }, [provider.id, currency]);
 
   const origin = (publicUrl ?? window.location.origin).replace(/\/+$/, '');
   const ownHooks = OWN_HOOKS[provider.id];
@@ -778,6 +864,16 @@ function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved, onChec
   };
 
   const toggle = (code: string) => setRows((list) => settle(list.map((r) => (r.code === code ? { ...r, on: !r.on } : r))));
+
+  const toggleBonus = (code: string) => {
+    const codes = offered.map((r) => r.code);
+    const picked = bonus.methods.length ? bonus.methods : codes;
+    const next = covers(code) ? picked.filter((c) => c !== code) : [...picked, code];
+    if (next.length > 0) {
+      const all = next.length === codes.length && codes.every((c) => next.includes(c));
+      setBonus({ ...bonus, methods: all ? [] : next });
+    }
+  };
 
   const rename = (code: string, custom: string) => setRows((list) => list.map((r) => (r.code === code ? { ...r, custom } : r)));
 
@@ -800,6 +896,7 @@ function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved, onChec
   const pending =
     keysPending ||
     tributePending ||
+    bonusPending ||
     JSON.stringify(chosenMethods(rows)) !== savedRows ||
     JSON.stringify([labelTitle.trim(), labelHint.trim()]) !== savedLabel;
   const checkable = provider.kind !== 'balance';
@@ -827,6 +924,16 @@ function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved, onChec
       setError(`Заполните: ${lacking.map((f) => f.label).join(', ')}`);
       return;
     }
+    if (withBonus && bonusPending) {
+      if (percent === null) {
+        setError('Процент бонуса — целое число от 1 до 100');
+        return;
+      }
+      if (minLimit === 'wrong' || maxLimit === 'wrong') {
+        setError('Сумма в настройках бонуса — число больше нуля, пустое поле — без ограничения');
+        return;
+      }
+    }
     setBusy(true);
     setError(null);
     try {
@@ -839,6 +946,17 @@ function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved, onChec
           config: { ...changedConfig(schema, config, values), ...(tributePending ? { products: tribute.products, plans: tribute.plans } : {}) },
           clear: secrets.clear,
           ...(JSON.stringify(methods) !== savedRows ? { methods } : {}),
+          ...(bonusPending
+            ? {
+                topup_bonus: {
+                  enabled: bonus.on,
+                  percent,
+                  min_minor: minLimit,
+                  max_minor: maxLimit,
+                  methods: bonus.methods.filter((code) => rows.some((r) => r.code === code)),
+                },
+              }
+            : {}),
           ...(JSON.stringify(label) !== savedLabel ? { label: { title: label[0] || null, hint: label[1] || null } } : {}),
         },
       });
@@ -853,6 +971,10 @@ function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved, onChec
       setSecrets({ clear: [], replacing: [] });
       setSavedRows(JSON.stringify(methods));
       setSavedLabel(JSON.stringify(label));
+      const keptBonus = bonusForm(result.provider.topup_bonus, currency);
+      setBonus(keptBonus);
+      setSavedBonus(JSON.stringify(keptBonus));
+      setForeign(foreignLimits(result.provider.topup_bonus, currency));
       setConnected(true);
       setCheck(null);
       setSaved(true);
@@ -938,6 +1060,87 @@ function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved, onChec
               disabled={busy}
             />
           </span>
+        </div>
+      ) : null}
+      {schema && withBonus ? (
+        <div className="sf-field pay-bonus" role="group" aria-labelledby={`pay-b-${provider.id}`}>
+          <span className="pay-bonus-head">
+            <span className="sf-label" id={`pay-b-${provider.id}`}>
+              Бонус к пополнению
+            </span>
+            <Switch
+              on={bonus.on}
+              onToggle={() => setBonus({ ...bonus, on: !bonus.on })}
+              label={`Бонус к пополнению через ${provider.title}`}
+              describedBy={`pay-bh-${provider.id}`}
+              disabled={busy}
+            />
+          </span>
+          <span className="cap" id={`pay-bh-${provider.id}`}>
+            Процент от суммы придёт на баланс сверх пополнения этим способом. При возврате бонус снимается.
+          </span>
+          {foreign ? <span className="warn-line">Порог или предел задан в другой валюте. Бонус не действует, пока настройки не сохранены заново.</span> : null}
+          {bonus.on ? (
+            <>
+              <span className="pay-lrow">
+                <label className="pay-bonus-field">
+                  <span className="cap">Процент</span>
+                  <input
+                    className="field num"
+                    inputMode="numeric"
+                    maxLength={3}
+                    placeholder="5"
+                    value={bonus.percent}
+                    onChange={(e) => setBonus({ ...bonus, percent: e.target.value })}
+                    aria-invalid={(bonus.percent.trim() !== '' && percent === null) || undefined}
+                    disabled={busy}
+                  />
+                </label>
+                <label className="pay-bonus-field wide">
+                  <span className="cap">Действует от суммы пополнения, {currency === 'RUB' ? '₽' : '$'}</span>
+                  <input
+                    className="field num"
+                    inputMode="decimal"
+                    maxLength={12}
+                    placeholder="Без ограничения"
+                    value={bonus.min}
+                    onChange={(e) => setBonus({ ...bonus, min: e.target.value })}
+                    aria-invalid={minLimit === 'wrong' || undefined}
+                    disabled={busy}
+                  />
+                </label>
+                <label className="pay-bonus-field wide">
+                  <span className="cap">Бонус не больше, {currency === 'RUB' ? '₽' : '$'}</span>
+                  <input
+                    className="field num"
+                    inputMode="decimal"
+                    maxLength={12}
+                    placeholder="Без ограничения"
+                    value={bonus.max}
+                    onChange={(e) => setBonus({ ...bonus, max: e.target.value })}
+                    aria-invalid={maxLimit === 'wrong' || undefined}
+                    disabled={busy}
+                  />
+                </label>
+              </span>
+              {bonus.percent.trim() !== '' && percent === null ? <span className="err">Процент — целое число от 1 до 100</span> : null}
+              {minLimit === 'wrong' || maxLimit === 'wrong' ? <span className="err">Сумма — число больше нуля, пустое поле — без ограничения</span> : null}
+              {pickable ? (
+                <span className="pay-bonus-methods" role="group" aria-label="Для каких способов действует бонус">
+                  <span className="cap">Для каких способов</span>
+                  {rows
+                    .filter((r) => r.on || bonus.methods.includes(r.code))
+                    .map((r) => (
+                      <label key={r.code} className="pay-check">
+                        <input type="checkbox" checked={covers(r.code)} onChange={() => toggleBonus(r.code)} disabled={busy} />
+                        {r.custom.trim() || r.title}
+                      </label>
+                    ))}
+                </span>
+              ) : null}
+              {nowhere ? <span className="warn-line">Выбранные способы не показываются клиентам, бонус никто не получит</span> : null}
+            </>
+          ) : null}
         </div>
       ) : null}
       {hooks.length ? (

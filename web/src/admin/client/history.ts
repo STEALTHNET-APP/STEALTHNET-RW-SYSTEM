@@ -1,4 +1,4 @@
-import { count, dateLong, days, money, periodLabel, timeHM, type Money } from '../../lib/format';
+import { count, dateLong, days, money, moneyExact, periodLabel, timeHM, type Money } from '../../lib/format';
 import { START_VIA_TEXT, startMark, startVia } from '../../lib/utmTags';
 import type { Amount, HistoryItem, OrderBrief, Person } from './types';
 
@@ -246,8 +246,8 @@ export function historyLine(item: HistoryItem, index: number, referrer: Person |
         case 'balance_changed': {
           const delta = event.delta as Money | undefined;
           const plus = (delta?.minor ?? 0) >= 0;
-          const sum = delta ? `${plus ? '+' : ''}${money(delta)}` : '';
           const kind = String(event.kind);
+          const sum = delta ? `${plus ? '+' : ''}${kind.startsWith('topup_bonus') ? moneyExact(delta) : money(delta)}` : '';
           const what =
             kind === 'admin_adjust'
               ? plus
@@ -257,7 +257,11 @@ export function historyLine(item: HistoryItem, index: number, referrer: Person |
                 ? 'Начислено за приглашённого друга'
                 : kind === 'refund'
                   ? 'Возврат на баланс'
-                  : 'Изменение баланса';
+                  : kind === 'topup_bonus'
+                    ? 'Бонус за пополнение'
+                    : kind === 'topup_bonus_reversal'
+                      ? 'Бонус за пополнение снят'
+                      : 'Изменение баланса';
           return { ...base, what, note: event.wallet === 'referral' ? 'Реферальный баланс' : '', sum };
         }
         default:

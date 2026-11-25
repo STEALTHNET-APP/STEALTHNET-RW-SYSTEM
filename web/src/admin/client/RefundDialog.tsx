@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, useState } from 'react';
 import { api, ApiError } from '../../lib/api';
-import { days } from '../../lib/format';
+import { bonusTaken } from '../../lib/bonus';
+import { days, moneyExact, type Money } from '../../lib/format';
 import { amountText } from './history';
 import { Dialog, parseMinor } from './dialogs';
 import type { Amount } from './types';
@@ -23,6 +24,7 @@ type Options = {
   to_balance: Way;
   via_provider: Way;
   outside: Way;
+  bonus?: { left: Money };
   gift: { client_id: number; subscription_id: number | null } | null;
 };
 
@@ -41,6 +43,15 @@ function units(amount: Amount): string {
   const whole = Math.trunc(amount.minor / 100);
   const cents = amount.minor % 100;
   return amount.currency === 'XTR' ? String(amount.minor) : cents ? `${whole}.${String(cents).padStart(2, '0')}` : String(whole);
+}
+
+function takenBonus(options: Options, minor: number): Money | null {
+  const { bonus, remaining } = options;
+  if (!bonus) {
+    return null;
+  }
+  const taken = minor <= remaining.minor ? bonusTaken(bonus.left.minor, remaining.minor, minor) : 0;
+  return taken > 0 ? { minor: taken, currency: bonus.left.currency } : null;
 }
 
 function newKey(): string {
@@ -102,6 +113,7 @@ export function RefundDialog({ paymentId, onClose, onDone }: Props) {
     : [];
   const open = ways.filter(([, , way]) => way.available);
   const closedNotes = ways.filter(([, , way]) => !way.available && way.note).map(([, , way]) => way.note as string);
+  const bonus = options && minor !== null ? takenBonus(options, minor) : null;
   const shown = minor !== null && options ? amountText({ minor, currency: options.amount.currency }) : '';
 
   const explain: Record<Target, string> = {
@@ -194,7 +206,11 @@ export function RefundDialog({ paymentId, onClose, onDone }: Props) {
               ))}
             </div>
             <span className="cap">{explain[target]}</span>
-            {options.topup && target !== 'balance' ? <span className="cap">Эта сумма спишется с баланса клиента: пополнение отменяется.</span> : null}
+            {options.topup && target !== 'balance' ? (
+              <span className="cap">
+                Эта сумма спишется с баланса клиента: пополнение отменяется.{bonus ? ` Вместе с ней снимется бонус ${moneyExact(bonus)}.` : ''}
+              </span>
+            ) : null}
             {closedNotes.map((note) => (
               <span key={note} className="cap">
                 {note}

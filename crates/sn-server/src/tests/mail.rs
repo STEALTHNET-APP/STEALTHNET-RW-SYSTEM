@@ -70,7 +70,7 @@ async fn шаблоны_писем_правит_только_администр�
     assert_eq!(body["error"]["code"], "mail_letters.invalid");
     assert_eq!(
         body["error"]["message"],
-        "«Баланс пополнен», тема: подстановки {balance} в этом письме нет, можно: {amount}, {brand}, {email}"
+        "«Баланс пополнен», тема: подстановки {balance} в этом письме нет, можно: {amount}, {bonus}, {total}, {brand}, {email}"
     );
     let (status, body) = h
         .write(

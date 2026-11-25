@@ -1839,6 +1839,18 @@ impl<'a> Checkout<'a> {
         if let Some(code) = method.as_deref() {
             tx.payments().set_pay_method(payment.id, code).await?;
         }
+        if created.kind == OrderKind::TopUp {
+            let terms = amount.as_money().and_then(|money| {
+                self.services.payments().topup_bonus(
+                    provider.id(),
+                    method.as_deref(),
+                    money.currency,
+                )
+            });
+            if let Some(terms) = terms {
+                tx.payments().promise_bonus(payment.id, &terms).await?;
+            }
+        }
         let replaced = detach_unpaid(modules, &mut tx, &created).await?;
         modules
             .order_created(&ctx, &mut tx, &created, &payment)

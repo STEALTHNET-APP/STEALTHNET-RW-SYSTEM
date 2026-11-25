@@ -31,6 +31,7 @@ use std::net::IpAddr;
 use uuid::Uuid;
 
 pub(crate) mod blocked_refund;
+mod bonus;
 mod buyer;
 mod journal;
 mod masking;
@@ -43,6 +44,7 @@ pub use blocked_refund::{
     BLOCKED_REFUND_AUDIT, BLOCKED_REFUND_REASON, BLOCKED_REFUND_REQUESTED_AUDIT,
     BLOCKED_REFUND_TEMPLATE, BlockedRefund,
 };
+pub use bonus::RefundBonus;
 pub use journal::{
     ATTENTION_HOURS, BodyView, Fact, JournalCard, JournalItem, JournalPage, JournalPaymentView,
     JournalQuery, OutcomeGroup, ProviderOption, RETRY_REVERSED, RETRY_STALE_MINUTES,
@@ -342,6 +344,8 @@ pub struct RefundOptions {
     pub to_balance: RefundWay,
     pub via_provider: RefundWay,
     pub outside: RefundWay,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bonus: Option<RefundBonus>,
     pub gift: Option<GiftRecipient>,
 }
 
@@ -355,6 +359,7 @@ struct RecordedRefund {
     refund_id: RefundId,
     status: PaymentStatus,
     order: Order,
+    bonus_minor: i64,
 }
 
 enum RefundStep {
@@ -377,7 +382,8 @@ struct RefundSpec<'r> {
     reason: Option<&'r str>,
     admin: Option<AdminId>,
     provider_refund_id: Option<&'r str>,
-    held: bool,
+    held_bonus: Option<i64>,
+    request: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -422,17 +428,23 @@ pub(crate) async fn credit_topup(
                 delta: amount,
             })
             .await?;
+        let bonus = bonus::credit(tx, order, paid, amount).await?;
         if !tx.clients().get(paid.client_id).await?.is_blocked() {
+            let mut params = serde_json::json!({
+                "amount": amount,
+                "order_id": order.id,
+                "payment_id": paid.id,
+            });
+            if let Some(bonus) = bonus {
+                params["bonus"] = serde_json::json!(bonus);
+                params["total"] = serde_json::json!(amount.checked_add(bonus)?);
+            }
             tx.jobs()
                 .enqueue(
                     &JobPayload::Notify {
                         client_id: paid.client_id,
                         template: TOPUP_TEMPLATE.into(),
-                        params: serde_json::json!({
-                            "amount": amount,
-                            "order_id": order.id,
-                            "payment_id": paid.id,
-                        }),
+                        params,
                     },
                     None,
                 )
@@ -2199,7 +2211,8 @@ impl<'a> PaymentInbox<'a> {
                     reason: Some("возврат по уведомлению платёжной системы"),
                     admin: None,
                     provider_refund_id: Some(&outcome.event_key),
-                    held: false,
+                    held_bonus: None,
+                    request: None,
                 },
             )
             .await?;
@@ -2271,8 +2284,14 @@ impl<'a> PaymentInbox<'a> {
                     now,
                 )
                 .await?;
-            self.release_hold(&mut tx, payment, request, request.amount.minor)
-                .await?;
+            self.release_hold(
+                &mut tx,
+                payment,
+                request,
+                request.amount.minor,
+                request.bonus_minor,
+            )
+            .await?;
             tx.commit().await?;
             return Ok(AcceptResult::AlreadyApplied {
                 payment_id: payment.id,
@@ -2281,6 +2300,15 @@ impl<'a> PaymentInbox<'a> {
         let refund_key = match request.provider_refund_id.as_deref() {
             Some(id) if same_refund(id, event_key) => id.to_string(),
             _ => event_key.to_string(),
+        };
+        let held_bonus = match request.hold_entry_id {
+            None => None,
+            Some(_) if minor == request.amount.minor => Some(request.bonus_minor),
+            Some(_) => Some(
+                bonus::due(&mut tx, payment, minor, Some(request.id))
+                    .await?
+                    .min(request.bonus_minor),
+            ),
         };
         let recorded = self
             .record_refund(
@@ -2293,7 +2321,8 @@ impl<'a> PaymentInbox<'a> {
                     reason: request.reason.as_deref(),
                     admin: request.admin_id,
                     provider_refund_id: Some(&refund_key),
-                    held: request.hold_entry_id.is_some(),
+                    held_bonus,
+                    request: Some(request.id),
                 },
             )
             .await?;
@@ -2306,8 +2335,14 @@ impl<'a> PaymentInbox<'a> {
                 now,
             )
             .await?;
-        self.release_hold(&mut tx, payment, request, request.amount.minor - minor)
-            .await?;
+        self.release_hold(
+            &mut tx,
+            payment,
+            request,
+            request.amount.minor - minor,
+            request.bonus_minor - recorded.bonus_minor,
+        )
+        .await?;
         let acts = request.subscription_action != RefundSubscriptionAction::Keep
             && recorded.order.subscription_id.is_some()
             && tx.payments().arm_refund_action(request.id, now).await?;
@@ -2331,6 +2366,7 @@ impl<'a> PaymentInbox<'a> {
                     "request_id": request.id,
                     "refund_id": recorded.refund_id,
                     "amount": Amount::new(minor, payment.amount.currency),
+                    "bonus": bonus::shown(recorded.bonus_minor, payment.amount),
                     "provider_refund_id": refund_key,
                     "requested_by": request.admin_id,
                 }),
@@ -2377,8 +2413,14 @@ impl<'a> PaymentInbox<'a> {
                 self.services.now(),
             )
             .await?;
-        self.release_hold(&mut tx, &payment, request, request.amount.minor)
-            .await?;
+        self.release_hold(
+            &mut tx,
+            &payment,
+            request,
+            request.amount.minor,
+            request.bonus_minor,
+        )
+        .await?;
         self.resume_delivery(&mut tx, payment.order_id).await?;
         tx.audit()
             .record(&AuditEntry {
@@ -2437,6 +2479,14 @@ impl<'a> PaymentInbox<'a> {
         tx.payments()
             .transition(payment.id, status, None, None)
             .await?;
+        let order = tx.orders().lock(payment.order_id).await?;
+        let repeat = tx.payments().repeat_action(payment.id).await?;
+        let reverses = spec.method == RefundMethod::Provider && credits_balance(&order, repeat);
+        let bonus_minor = match spec.held_bonus {
+            Some(held) => held,
+            None if reverses => bonus::due(tx, payment, spec.amount.minor, spec.request).await?,
+            None => 0,
+        };
         let refund_id = tx
             .refunds()
             .create(&NewRefund {
@@ -2447,10 +2497,9 @@ impl<'a> PaymentInbox<'a> {
                 reason: spec.reason.map(str::to_string),
                 admin_id: spec.admin,
                 provider_refund_id: spec.provider_refund_id.map(str::to_string),
+                bonus_minor,
             })
             .await?;
-        let order = tx.orders().lock(payment.order_id).await?;
-        let repeat = tx.payments().repeat_action(payment.id).await?;
         match spec.method {
             RefundMethod::Balance => {
                 let amount = spec.amount.as_money().ok_or_else(|| {
@@ -2484,8 +2533,8 @@ impl<'a> PaymentInbox<'a> {
                         .await?;
                 }
             }
-            RefundMethod::Provider if credits_balance(&order, repeat) && !spec.held => {
-                self.reverse_topup(tx, payment, &order, spec.amount, refund_id)
+            RefundMethod::Provider if reverses && spec.held_bonus.is_none() => {
+                self.reverse_topup(tx, payment, &order, spec.amount, bonus_minor, refund_id)
                     .await?;
             }
             RefundMethod::Provider => {}
@@ -2515,6 +2564,7 @@ impl<'a> PaymentInbox<'a> {
             refund_id,
             status,
             order,
+            bonus_minor,
         })
     }
 
@@ -2524,6 +2574,7 @@ impl<'a> PaymentInbox<'a> {
         payment: &Payment,
         order: &Order,
         amount: Amount,
+        bonus_minor: i64,
         refund_id: RefundId,
     ) -> ServiceResult<()> {
         let Some(refunded) = amount.as_money() else {
@@ -2564,9 +2615,34 @@ impl<'a> PaymentInbox<'a> {
                     .await?;
             }
         }
-        if debit.minor < refunded.minor {
+        let bonus = Money::new(bonus_minor, refunded.currency);
+        let bonus_debit = Money::new(
+            (balance.minor - debit.minor).min(bonus.minor).max(0),
+            refunded.currency,
+        );
+        bonus::take(
+            tx,
+            payment,
+            order.id,
+            bonus_debit,
+            format!("topup_bonus_reversal:{refund_id}"),
+        )
+        .await?;
+        let short = Money::new(
+            refunded.minor - debit.minor + bonus.minor - bonus_debit.minor,
+            refunded.currency,
+        );
+        if short.minor > 0 {
             tracing::warn!(payment = %payment.id, "возврат пополнения больше остатка на балансе");
-            let short = Money::new(refunded.minor - debit.minor, refunded.currency);
+            let taken = debit.checked_add(bonus_debit)?;
+            let wanted = if bonus.is_zero() {
+                String::new()
+            } else {
+                format!(
+                    " (вместе с возвратом снимается и бонус за пополнение {})",
+                    format::money_exact(bonus)
+                )
+            };
             tx.payment_notices()
                 .record(&NewPaymentNotice {
                     provider: payment.provider.as_str().to_string(),
@@ -2577,10 +2653,10 @@ impl<'a> PaymentInbox<'a> {
                     amount: Some(short.into()),
                     text: format!(
                         "Платёжная система вернула покупателю {}, но клиент уже потратил часть \
-                         пополнения: с баланса списано {}, не хватило {}. Решите вручную",
+                         пополнения: с баланса списано {}, не хватило {}{wanted}. Решите вручную",
                         format::money(refunded),
-                        format::money(debit),
-                        format::money(short)
+                        format::money_exact(taken),
+                        format::money_exact(short)
                     ),
                 })
                 .await?;
@@ -2595,6 +2671,8 @@ impl<'a> PaymentInbox<'a> {
                         "refund_id": refund_id,
                         "refunded": refunded,
                         "debited": debit,
+                        "bonus": bonus,
+                        "bonus_debited": bonus_debit,
                     }),
                     ip: None,
                 })
@@ -2610,11 +2688,24 @@ impl<'a> PaymentInbox<'a> {
         order: &Order,
         money: Money,
         admin: Option<AdminId>,
-    ) -> ServiceResult<LedgerEntryId> {
+    ) -> ServiceResult<bonus::Hold> {
+        let bonus = Money::new(
+            bonus::due(tx, payment, money.minor, None).await?,
+            money.currency,
+        );
+        let needed = money.checked_add(bonus)?;
         let spent = || {
             ServiceError::rejected(
                 "refund.topup_spent",
-                "Клиент уже потратил пополнение: на балансе меньше суммы возврата",
+                if bonus.is_zero() {
+                    "Клиент уже потратил пополнение: на балансе меньше суммы возврата".to_string()
+                } else {
+                    format!(
+                        "Клиент уже потратил пополнение: вместе с возвратом снимается бонус {}, на балансе нужно {}",
+                        format::money_exact(bonus),
+                        format::money_exact(needed)
+                    )
+                },
             )
         };
         let unheld = tx
@@ -2625,7 +2716,7 @@ impl<'a> PaymentInbox<'a> {
             .ledger()
             .balance(payment.client_id, Wallet::Main, money.currency)
             .await?;
-        if balance.minor - unheld < money.minor {
+        if balance.minor - unheld < needed.minor {
             return Err(spent());
         }
         let delta = money.checked_neg()?;
@@ -2658,7 +2749,23 @@ impl<'a> PaymentInbox<'a> {
                 delta,
             })
             .await?;
-        Ok(appended.entry_id)
+        bonus::take(
+            tx,
+            payment,
+            order.id,
+            bonus,
+            format!("topup_bonus_hold:{}", appended.entry_id),
+        )
+        .await
+        .map_err(|err| match err {
+            ServiceError::Store(StoreError::InsufficientFunds)
+            | ServiceError::InsufficientFunds => spent(),
+            other => other,
+        })?;
+        Ok(bonus::Hold {
+            entry: appended.entry_id,
+            bonus_minor: bonus.minor,
+        })
     }
 
     async fn release_hold(
@@ -2667,13 +2774,18 @@ impl<'a> PaymentInbox<'a> {
         payment: &Payment,
         request: &ProviderRefund,
         minor: i64,
+        bonus_minor: i64,
     ) -> ServiceResult<()> {
-        if request.hold_entry_id.is_none() || minor <= 0 {
+        if request.hold_entry_id.is_none() {
             return Ok(());
         }
         let Some(currency) = request.amount.currency.as_currency() else {
             return Ok(());
         };
+        bonus::release(tx, payment, request.id, Money::new(bonus_minor, currency)).await?;
+        if minor <= 0 {
+            return Ok(());
+        }
         let amount = Money::new(minor, currency);
         let appended = tx
             .ledger()
@@ -2772,6 +2884,7 @@ impl<'a> PaymentInbox<'a> {
                         details: serde_json::json!({
                             "refund_id": recorded.refund_id,
                             "amount": amount,
+                            "bonus": bonus::shown(recorded.bonus_minor, amount),
                             "method": command.method,
                             "subscription_action": command.subscription_action,
                         }),
@@ -2948,7 +3061,8 @@ impl<'a> PaymentInbox<'a> {
                     reason: command.reason.clone(),
                     admin_id: admin,
                     provider_refund_id: provider_refund_id.clone(),
-                    hold_entry_id: hold,
+                    hold_entry_id: hold.map(|h| h.entry),
+                    bonus_minor: hold.map_or(0, |h| h.bonus_minor),
                     requested_at: now,
                 })
                 .await?;
@@ -2967,7 +3081,7 @@ impl<'a> PaymentInbox<'a> {
                 request_id: request.id,
                 amount,
                 provider_refund_id,
-                hold,
+                hold: hold.map(|h| h.entry),
             });
         }
         let recorded = self
@@ -2981,7 +3095,8 @@ impl<'a> PaymentInbox<'a> {
                     reason: command.reason.as_deref(),
                     admin,
                     provider_refund_id: provider_refund_id.as_deref(),
-                    held: hold.is_some(),
+                    held_bonus: hold.map(|h| h.bonus_minor),
+                    request: None,
                 },
             )
             .await?;
@@ -3022,6 +3137,11 @@ impl<'a> PaymentInbox<'a> {
         let order = conn.orders().get(payment.order_id).await?;
         let grant = refund_action::gift_grant(&mut conn, order.id).await?;
         let topup = credits_balance(&order, conn.payments().repeat_action(payment.id).await?);
+        let bonus = if topup {
+            bonus::left(&mut conn, &payment).await?
+        } else {
+            None
+        };
         let registry = self.services.payments();
         let provider = registry.get(payment.provider.as_str());
         let title = provider.as_ref().map_or_else(
@@ -3091,6 +3211,7 @@ impl<'a> PaymentInbox<'a> {
             to_balance,
             via_provider,
             outside,
+            bonus,
             gift: grant.as_ref().map(|grant| GiftRecipient {
                 client_id: grant.client_id,
                 subscription_id: grant.subscription_id,

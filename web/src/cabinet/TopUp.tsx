@@ -6,7 +6,7 @@ import { t } from '../lib/i18n';
 import { Icon } from '../lib/icons';
 import { Card, useCabinet } from './CabinetApp';
 import { heldBalance } from './model';
-import { finished, limitsText, parseAmount, wireAmount, type PaymentProgress, type TopUpOptions } from './payments';
+import { bonusMark, bonusText, finished, limitsText, parseAmount, topUpBonus, wireAmount, type PaymentProgress, type TopUpOptions } from './payments';
 import { methodKey } from '../lib/methods';
 
 const TOPUP_KEY = 'sn.cabinet.topup';
@@ -126,7 +126,8 @@ export function TopUpPage() {
           : null
       : null;
   const sum = amount !== null && inRange ? money({ minor: amount, currency }) : null;
-  const after = amount !== null && inRange ? money({ minor: me.balance.minor + amount, currency }) : null;
+  const bonus = amount !== null && inRange ? bonusText(amount, currency, chosen) : null;
+  const after = amount !== null && inRange ? money({ minor: me.balance.minor + amount + topUpBonus(amount, chosen), currency }) : null;
 
   useEffect(() => {
     if (!fixed || (preset !== null && fixed.some((m) => m.minor === preset) && !custom.trim())) {
@@ -310,6 +311,11 @@ export function TopUpPage() {
                     <strong>{m.title}</strong>
                     {m.hint ? <span>{m.hint}</span> : null}
                   </span>
+                  {bonusMark(m, inRange ? amount : null) ? (
+                    <span className="cb-method-bonus num" title={t('Бонус к пополнению')}>
+                      {bonusMark(m, inRange ? amount : null)}
+                    </span>
+                  ) : null}
                 </button>
               ))}
             </div>
@@ -327,6 +333,7 @@ export function TopUpPage() {
               <strong>{t('К оплате')}</strong>
               <span className="cb-due-sum">{sum ?? ''}</span>
             </div>
+            {bonus ? <p className="cb-bonus">{bonus}</p> : null}
             {error ? (
               <p className="cb-error" role="alert">
                 {error}

@@ -103,8 +103,14 @@ impl PaymentInbox<'_> {
                 self.services.now(),
             )
             .await?;
-        self.release_hold(&mut tx, &payment, &request, request.amount.minor)
-            .await?;
+        self.release_hold(
+            &mut tx,
+            &payment,
+            &request,
+            request.amount.minor,
+            request.bonus_minor,
+        )
+        .await?;
         self.resume_delivery(&mut tx, payment.order_id).await?;
         tx.audit()
             .record(&AuditEntry {

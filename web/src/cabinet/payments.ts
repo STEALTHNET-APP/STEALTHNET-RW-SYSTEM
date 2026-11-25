@@ -1,4 +1,5 @@
-import { count, dateTime, money, periodLabel, timeHM, type Money } from '../lib/format';
+import { bonusOf, bonusReached } from '../lib/bonus';
+import { count, dateTime, money, moneyExact, periodLabel, timeHM, type Money } from '../lib/format';
 import { t } from '../lib/i18n';
 import type { Currency } from '../lib/types';
 import { stars } from './model';
@@ -21,6 +22,7 @@ export type ClientPayment = {
   status: PaymentStatus;
   amount: Amount;
   refunded: Amount | null;
+  bonus?: Amount;
   method: string;
   autorenew: boolean;
   repeat: 'balance' | 'review' | null;
@@ -33,7 +35,7 @@ export type ClientPayment = {
 
 export type PaymentsPage = { items: ClientPayment[]; next: string | null };
 
-export type TopUpMethod = { provider: string; method: string | null; title: string; hint: string; amounts?: Money[] };
+export type TopUpMethod = { provider: string; method: string | null; title: string; hint: string; amounts?: Money[]; bonus?: { percent: number; min?: Money; max?: Money } };
 
 export type TopUpOptions = {
   currency: Currency;
@@ -107,6 +109,9 @@ export function paymentNote(payment: ClientPayment): string {
   } else if (expired(payment)) {
     parts.push(t('время оплаты вышло'));
   }
+  if (payment.bonus && payment.bonus.currency !== 'XTR') {
+    parts.push(t('бонус за пополнение {bonus}', { bonus: moneyExact({ minor: payment.bonus.minor, currency: payment.bonus.currency }) }));
+  }
   if (payment.repeat === 'balance') {
     parts.push(t('повторная оплата, деньги на балансе'));
   } else if (payment.repeat === 'review') {
@@ -157,6 +162,36 @@ export function parseAmount(raw: string, currency: Currency): number | null {
 
 export function wireAmount(minor: number, currency: Currency): string {
   return currency === 'RUB' ? String(Math.round(minor / 100)) : (minor / 100).toFixed(2);
+}
+
+export function topUpBonus(minor: number, method: TopUpMethod | null): number {
+  return bonusOf(minor, method?.bonus);
+}
+
+export function bonusMark(method: TopUpMethod, minor: number | null): string | null {
+  const bonus = method.bonus;
+  if (!bonus) {
+    return null;
+  }
+  if (bonus.min && (minor === null || !bonusReached(minor, bonus))) {
+    return t('+{percent}% от\u00a0{min}', { percent: bonus.percent, min: money(bonus.min) });
+  }
+  return `+${bonus.percent}%`;
+}
+
+export function bonusText(minor: number, currency: Currency, method: TopUpMethod | null): string | null {
+  if (method?.bonus?.min && !bonusReached(minor, method.bonus)) {
+    return t('Бонус от {min}', { min: money(method.bonus.min) });
+  }
+  const bonus = topUpBonus(minor, method);
+  if (bonus <= 0) {
+    return null;
+  }
+  return t('На баланс придёт {total}: {amount} и бонус {bonus}', {
+    total: moneyExact({ minor: minor + bonus, currency }),
+    amount: money({ minor, currency }),
+    bonus: moneyExact({ minor: bonus, currency }),
+  });
 }
 
 export function finished(progress: PaymentProgress): boolean {

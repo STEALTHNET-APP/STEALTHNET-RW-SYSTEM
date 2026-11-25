@@ -192,6 +192,7 @@ async fn active_subs(c: &Ctx<'_>) -> StoreResult<Vec<SubRow>> {
 struct Wallets {
     main: (f64, f64),
     referral: (f64, f64),
+    topup_bonus: (f64, f64),
     blocked_now: f64,
     blocked_in: f64,
     bot: f64,
@@ -205,14 +206,18 @@ async fn wallets(c: &Ctx<'_>) -> StoreResult<Wallets> {
     let s = sql.time(c.range.start());
     let e = sql.time(c.range.end());
     let fb = c.filters.client(&mut sql, "b.client_id");
+    let fe = c.filters.client(&mut sql, "be.client_id");
     let fc = c.filters.client(&mut sql, "cl.id");
     let text = format!(
-        "SELECT 0, w.*, k.* FROM \
+        "SELECT 0, w.*, tb.*, k.* FROM \
            (SELECT COALESCE(sum(b.amount_minor) FILTER (WHERE b.wallet = 'main'), 0)::float8, \
               count(*) FILTER (WHERE b.wallet = 'main' AND b.amount_minor > 0)::float8, \
               COALESCE(sum(b.amount_minor) FILTER (WHERE b.wallet = 'referral'), 0)::float8, \
               count(*) FILTER (WHERE b.wallet = 'referral' AND b.amount_minor > 0)::float8 \
             FROM client_balances b WHERE b.currency = {cur} AND {fb}) w, \
+           (SELECT COALESCE(sum(be.delta_minor), 0)::float8, count(DISTINCT be.client_id)::float8 \
+            FROM balance_entries be WHERE be.kind IN ('topup_bonus', 'topup_bonus_reversal') \
+              AND be.currency = {cur} AND be.created_at >= {s} AND be.created_at < {e} AND {fe}) tb, \
            (SELECT count(*) FILTER (WHERE cl.status = 'blocked' AND cl.deleted_at IS NULL)::float8, \
               count(*) FILTER (WHERE cl.blocked_at >= {s} AND cl.blocked_at < {e})::float8, \
               count(*) FILTER (WHERE cl.bot_unreachable AND cl.deleted_at IS NULL)::float8, \
@@ -221,19 +226,20 @@ async fn wallets(c: &Ctx<'_>) -> StoreResult<Wallets> {
             FROM clients cl WHERE {fc}) k"
     );
     let mut conn = c.store.conn().await?;
-    let r = grid(&mut conn, &sql, &text, 9).await?;
+    let r = grid(&mut conn, &sql, &text, 11).await?;
     let v = r
         .first()
         .map(|r| r.1.clone())
-        .unwrap_or_else(|| vec![0.0; 9]);
+        .unwrap_or_else(|| vec![0.0; 11]);
     Ok(Wallets {
         main: (v[0], v[1]),
         referral: (v[2], v[3]),
-        blocked_now: v[4],
-        blocked_in: v[5],
-        bot: v[6],
-        en: v[7],
-        ru: v[8],
+        topup_bonus: (v[4], v[5]),
+        blocked_now: v[6],
+        blocked_in: v[7],
+        bot: v[8],
+        en: v[9],
+        ru: v[10],
     })
 }
 
@@ -574,6 +580,31 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
             ),
             note: None,
         });
+    let mut balance_rows = vec![
+        Row {
+            label: "Основной баланс".into(),
+            sub: None,
+            cells: vec![Some(wal.main.0), Some(wal.main.1)],
+            list: Some(ListRef::clients("balance")),
+            children: Vec::new(),
+        },
+        Row {
+            label: "Реферальный баланс".into(),
+            sub: None,
+            cells: vec![Some(wal.referral.0), Some(wal.referral.1)],
+            list: Some(ListRef::clients("referral_balance")),
+            children: Vec::new(),
+        },
+    ];
+    if wal.topup_bonus.1 > 0.0 {
+        balance_rows.push(Row {
+            label: "Бонусы за пополнения".into(),
+            sub: Some("за период, за вычетом снятых при возвратах".into()),
+            cells: vec![Some(wal.topup_bonus.0), Some(wal.topup_bonus.1)],
+            list: None,
+            children: Vec::new(),
+        });
+    }
     let balances = Metric::new(
         "balances",
         "Деньги на балансах",
@@ -589,22 +620,7 @@ pub async fn build(c: &Ctx<'_>) -> StoreResult<Vec<Group>> {
             Column::new("Сумма", Unit::Money),
             Column::new("Клиентов", Unit::Count),
         ],
-        rows: vec![
-            Row {
-                label: "Основной баланс".into(),
-                sub: None,
-                cells: vec![Some(wal.main.0), Some(wal.main.1)],
-                list: Some(ListRef::clients("balance")),
-                children: Vec::new(),
-            },
-            Row {
-                label: "Реферальный баланс".into(),
-                sub: None,
-                cells: vec![Some(wal.referral.0), Some(wal.referral.1)],
-                list: Some(ListRef::clients("referral_balance")),
-                children: Vec::new(),
-            },
-        ],
+        rows: balance_rows,
         note: None,
     });
     let blocked = Metric::new(

@@ -1188,6 +1188,19 @@
   color: var(--muted);
 }
 
+.cb-method-bonus {
+  flex: 0 1 auto;
+  max-width: 6em;
+  margin-left: auto;
+  font-weight: 700;
+  text-align: right;
+}
+
+.cb-bonus {
+  margin: 0;
+  color: var(--ink-2);
+}
+
 .cb-method.off .cb-method-text span {
   color: var(--ink-2);
 }

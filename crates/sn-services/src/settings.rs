@@ -7,6 +7,7 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sn_domain::client::Languages;
+use sn_domain::format;
 use sn_domain::ids::AdminId;
 use sn_domain::landing::LandingConfig;
 use sn_domain::ledger::Wallet;
@@ -14,8 +15,10 @@ use sn_domain::miniapp::MiniAppConfig;
 use sn_domain::module::ModuleId;
 use sn_domain::money::{Currency, Money};
 use sn_domain::payment::{
-    ButtonLabel, LABEL_HINT_MAX, METHOD_TITLE_MAX, MethodChoice, PaymentChannels, providers,
+    ButtonLabel, LABEL_HINT_MAX, METHOD_TITLE_MAX, MethodChoice, PaymentChannels, TopupBonus,
+    providers,
 };
+use sn_domain::pricing::TOPUP_BONUS_MAX;
 use sn_domain::settings::{
     Appearance, AutoRenewSettings, ClientAccess, ConnectSettings, CoreSettings, FieldKind,
     ImageMeta, MultiSubscriptions, PaymentOrder, SettingField, SiteSettings, SupportMode,
@@ -46,6 +49,7 @@ pub const MAX_REMARK_CHARS: usize = 200;
 pub const PROVIDER_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(40);
 pub const CHECK_UNCONFIGURED: &str = "settings.provider_check_unconfigured";
 pub const SECRETS_AGAIN: &str = "settings.secrets_again";
+pub const TOPUP_BONUS_LIMIT: i64 = 100_000_000;
 pub const INBOX_TRACE_DAYS: i64 = 30;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -60,6 +64,8 @@ pub struct ProviderSettings {
     pub methods: Vec<MethodChoice>,
     #[serde(default)]
     pub label: ButtonLabel,
+    #[serde(default)]
+    pub topup_bonus: TopupBonus,
 }
 
 fn parse<T: serde::de::DeserializeOwned>(key: &str, value: Value) -> Option<T> {
@@ -680,6 +686,108 @@ pub fn clean_methods(
     Ok(cleaned)
 }
 
+pub fn clean_topup_bonus(
+    provider: &dyn PaymentProvider,
+    update: &TopupBonusUpdate,
+    currency: Currency,
+) -> ServiceResult<TopupBonus> {
+    if update.enabled && provider.kind() != ProviderKind::External {
+        return Err(ServiceError::rejected(
+            "settings.topup_bonus_kind",
+            "Этим способом баланс не пополняют, бонус для него не задаётся",
+        ));
+    }
+    let percent = u8::try_from(update.percent)
+        .ok()
+        .filter(|percent| *percent <= TOPUP_BONUS_MAX && (*percent > 0 || !update.enabled))
+        .ok_or_else(|| {
+            ServiceError::rejected(
+                "settings.topup_bonus_percent",
+                format!("Процент бонуса — целое число от 1 до {TOPUP_BONUS_MAX}"),
+            )
+        })?;
+    let limit = |minor: Option<i64>, code: &'static str, title: &str| match minor {
+        None => Ok(None),
+        Some(minor) if (1..=TOPUP_BONUS_LIMIT).contains(&minor) => {
+            Ok(Some(Money::new(minor, currency)))
+        }
+        Some(_) => Err(ServiceError::rejected(
+            code,
+            format!(
+                "«{title}» — сумма больше нуля и не больше {}, пустое поле — без ограничения",
+                format::money(Money::new(TOPUP_BONUS_LIMIT, currency))
+            ),
+        )),
+    };
+    let min = limit(
+        update.min_minor,
+        "settings.topup_bonus_min",
+        "Действует от суммы пополнения",
+    )?;
+    let max = limit(
+        update.max_minor,
+        "settings.topup_bonus_max",
+        "Бонус не больше",
+    )?;
+    let available = provider.methods(currency);
+    let mut methods: Vec<String> = Vec::new();
+    for code in &update.methods {
+        let code = code.trim();
+        if !available.iter().any(|m| m.code == code) {
+            return Err(ServiceError::rejected(
+                "settings.topup_bonus_methods",
+                format!("У {} нет способа оплаты «{code}»", provider.title()),
+            ));
+        }
+        if !methods.iter().any(|m| m == code) {
+            methods.push(code.to_string());
+        }
+    }
+    if methods.len() == available.len() {
+        methods.clear();
+    }
+    Ok(TopupBonus {
+        enabled: update.enabled,
+        percent,
+        min,
+        max,
+        methods,
+    })
+}
+
+fn bonus_limit(limit: Option<Money>) -> Value {
+    match limit {
+        Some(money) => serde_json::json!(money),
+        None => Value::from("без ограничения"),
+    }
+}
+
+fn bonus_audit(
+    provider: &dyn PaymentProvider,
+    bonus: &TopupBonus,
+    currency: Currency,
+    details: &mut Map<String, Value>,
+) {
+    let titles: Vec<&str> = provider
+        .methods(currency)
+        .iter()
+        .filter(|method| bonus.methods.iter().any(|code| code == method.code))
+        .map(|method| method.title)
+        .collect();
+    details.insert("topup_bonus_enabled".into(), bonus.enabled.into());
+    details.insert("topup_bonus_percent".into(), bonus.percent.into());
+    details.insert("topup_bonus_min".into(), bonus_limit(bonus.min));
+    details.insert("topup_bonus_max".into(), bonus_limit(bonus.max));
+    details.insert(
+        "topup_bonus_methods".into(),
+        if bonus.methods.is_empty() {
+            Value::from("все")
+        } else {
+            serde_json::json!(titles)
+        },
+    );
+}
+
 pub fn clean_label(label: &ButtonLabel) -> ServiceResult<ButtonLabel> {
     let tidy = |value: &Option<String>| {
         value
@@ -750,6 +858,7 @@ pub async fn registry_snapshot(
                 channels: stored.channels,
                 methods: stored.methods,
                 label: stored.label,
+                topup_bonus: stored.topup_bonus,
             },
         );
     }
@@ -1155,6 +1264,20 @@ pub struct PaymentsUpdate {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+pub struct TopupBonusUpdate {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub percent: i64,
+    #[serde(default)]
+    pub min_minor: Option<i64>,
+    #[serde(default)]
+    pub max_minor: Option<i64>,
+    #[serde(default)]
+    pub methods: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 pub struct ProviderUpdate {
     #[serde(default)]
     pub enabled: Option<bool>,
@@ -1168,6 +1291,8 @@ pub struct ProviderUpdate {
     pub methods: Option<Vec<MethodChoice>>,
     #[serde(default)]
     pub label: Option<ButtonLabel>,
+    #[serde(default)]
+    pub topup_bonus: Option<TopupBonusUpdate>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -2016,6 +2141,10 @@ impl<'a> SettingsOps<'a> {
         if let Some(label) = &update.label {
             stored.label = clean_label(label)?;
         }
+        if let Some(bonus) = &update.topup_bonus {
+            stored.topup_bonus =
+                clean_topup_bonus(provider.as_ref(), bonus, self.services.settings().currency)?;
+        }
         let secrets = self.services.secrets();
         let mut merged = stored.config.clone();
         let mut saved = Vec::new();
@@ -2099,21 +2228,27 @@ impl<'a> SettingsOps<'a> {
                 SecretChange::Set(key, _) | SecretChange::Delete(key) => key.as_str(),
             })
             .collect();
+        let mut details = serde_json::json!({
+            "provider": id,
+            "enabled": stored.enabled,
+            "channels": update.channels,
+            "methods": update.methods,
+            "label": update.label,
+            "fields": update.config.keys().collect::<Vec<_>>(),
+            "secrets": changed_secrets,
+        });
+        if update.topup_bonus.is_some()
+            && let Some(details) = details.as_object_mut()
+        {
+            bonus_audit(
+                provider.as_ref(),
+                &stored.topup_bonus,
+                self.services.settings().currency,
+                details,
+            );
+        }
         tx.audit()
-            .record(&Actor::Admin(admin).audit(
-                "settings.provider",
-                "provider",
-                None,
-                serde_json::json!({
-                    "provider": id,
-                    "enabled": stored.enabled,
-                    "channels": update.channels,
-                    "methods": update.methods,
-                    "label": update.label,
-                    "fields": update.config.keys().collect::<Vec<_>>(),
-                    "secrets": changed_secrets,
-                }),
-            ))
+            .record(&Actor::Admin(admin).audit("settings.provider", "provider", None, details))
             .await?;
         tx.commit().await?;
         self.saved().await?;

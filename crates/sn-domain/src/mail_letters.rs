@@ -200,6 +200,12 @@ const DATE: Var = var(
 const AMOUNT: Var = var("amount", "сумма", Sample::Money(699));
 const AMOUNT_MAYBE: Var = maybe("amount", "сумма", Sample::Money(699));
 const TOPUP: Var = var("amount", "сумма пополнения", Sample::Money(1000));
+const TOPUP_BONUS: Var = maybe("bonus", "бонус за пополнение", Sample::Money(100));
+const TOPUP_TOTAL: Var = maybe(
+    "total",
+    "сколько пришло на баланс вместе с бонусом",
+    Sample::Money(1100),
+);
 const DETAILS_CREDITED: Var = var(
     "details",
     "что случилось с оплатой",
@@ -466,17 +472,23 @@ pub const CATALOG: [Spec; 28] = [
         group: Group::Payments,
         title: "Баланс пополнен",
         when: "Пополнение баланса оплачено",
-        vars: &[TOPUP],
+        vars: &[TOPUP, TOPUP_BONUS, TOPUP_TOTAL],
         required: &[],
         path: &["/cabinet/payments"],
         ru: Texts {
             subject: &["Баланс пополнен"],
-            text: &["Баланс пополнен на {amount}."],
+            text: &[
+                "На баланс пришло {total}: {amount} и бонус {bonus}.",
+                "Баланс пополнен на {amount}.",
+            ],
             button: "История оплат",
         },
         en: Texts {
             subject: &["Balance topped up"],
-            text: &["Your balance is topped up by {amount}."],
+            text: &[
+                "{total} is on your balance: {amount} and a {bonus} bonus.",
+                "Your balance is topped up by {amount}.",
+            ],
             button: "Payment history",
         },
     },
@@ -1445,7 +1457,7 @@ mod tests {
         let ru = samples(spec, Locale::Ru, Currency::Rub, "STEALTHNET");
         let en = samples(spec, Locale::En, Currency::Usd, "STEALTHNET");
         assert_eq!(
-            fill_plain(spec.ru.text[0], &ru).unwrap(),
+            fill_plain(spec.ru.text[1], &ru).unwrap(),
             format!(
                 "Баланс пополнен на {}.",
                 format::money_in(
@@ -1458,8 +1470,16 @@ mod tests {
             )
         );
         assert_eq!(
-            fill_plain(spec.en.text[0], &en).unwrap(),
+            fill_plain(spec.en.text[1], &en).unwrap(),
             "Your balance is topped up by $10.00."
+        );
+        assert_eq!(
+            fill_plain(spec.en.text[0], &en).unwrap(),
+            "$11.00 is on your balance: $10.00 and a $1.00 bonus."
+        );
+        assert_eq!(
+            fill_plain(spec.ru.text[0], &Values::new().with("amount", "10")),
+            None
         );
         assert_eq!(
             fill_plain(

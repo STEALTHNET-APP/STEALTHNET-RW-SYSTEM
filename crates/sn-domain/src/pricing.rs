@@ -396,6 +396,47 @@ pub fn topup_presets(limits: TopUpLimits) -> Vec<Money> {
         .collect()
 }
 
+pub const TOPUP_BONUS_MAX: u8 = 100;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BonusTerms {
+    pub percent: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_minor: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_minor: Option<i64>,
+}
+
+impl BonusTerms {
+    pub fn reached(&self, amount: Money) -> bool {
+        amount.minor > 0 && self.min_minor.is_none_or(|min| amount.minor >= min)
+    }
+
+    pub fn bonus(&self, amount: Money) -> Money {
+        if !self.reached(amount) {
+            return Money::zero(amount.currency);
+        }
+        let percent = self.percent.min(TOPUP_BONUS_MAX);
+        let share = i128::from(amount.minor) * i128::from(percent) / 100;
+        let minor = i64::try_from(share).unwrap_or(0);
+        Money::new(
+            self.max_minor.map_or(minor, |max| minor.min(max)).max(0),
+            amount.currency,
+        )
+    }
+}
+
+pub fn bonus_taken(left: i64, remaining: i64, refund: i64) -> i64 {
+    if left <= 0 || refund <= 0 {
+        return 0;
+    }
+    if refund >= remaining {
+        return left;
+    }
+    let kept = i128::from(left) * i128::from(remaining - refund) / i128::from(remaining);
+    left - i64::try_from(kept).unwrap_or(left)
+}
+
 pub fn topup_quote(amount: Money, limits: TopUpLimits) -> Result<Quote, DomainError> {
     if amount.currency != limits.min.currency {
         return Err(DomainError::CurrencyMismatch {
@@ -781,5 +822,92 @@ mod proration_tests {
             15
         );
         assert_eq!(days_left(now - Duration::hours(1), now), 0);
+    }
+
+    fn kopecks(minor: i64) -> Money {
+        Money::new(minor, Currency::Rub)
+    }
+
+    const fn terms(percent: u8) -> BonusTerms {
+        BonusTerms {
+            percent,
+            min_minor: None,
+            max_minor: None,
+        }
+    }
+
+    #[test]
+    fn бонус_к_пополнению_округляется_вниз_до_копейки() {
+        for (minor, percent, bonus) in [
+            (50_000, 5, 2_500),
+            (1_005, 7, 70),
+            (99, 1, 0),
+            (100, 1, 1),
+            (199, 1, 1),
+            (10_700, 5, 535),
+            (333, 100, 333),
+            (50_000, 0, 0),
+            (0, 5, 0),
+            (-500, 5, 0),
+            (i64::MAX, 100, i64::MAX),
+        ] {
+            assert_eq!(terms(percent).bonus(kopecks(minor)), kopecks(bonus));
+        }
+        assert_eq!(terms(200).bonus(kopecks(1_000)), kopecks(1_000));
+    }
+
+    #[test]
+    fn порог_и_предел_бонуса() {
+        let limited = BonusTerms {
+            percent: 10,
+            min_minor: Some(50_000),
+            max_minor: Some(8_000),
+        };
+        for (minor, bonus) in [
+            (49_999, 0),
+            (50_000, 5_000),
+            (79_999, 7_999),
+            (80_000, 8_000),
+            (80_001, 8_000),
+            (1_000_000, 8_000),
+        ] {
+            assert_eq!(limited.bonus(kopecks(minor)), kopecks(bonus), "{minor}");
+        }
+        assert!(!limited.reached(kopecks(49_999)));
+        assert!(limited.reached(kopecks(50_000)));
+        let stored = serde_json::to_value(limited).unwrap();
+        assert_eq!(
+            serde_json::from_value::<BonusTerms>(stored).unwrap(),
+            limited
+        );
+        assert_eq!(
+            serde_json::from_str::<BonusTerms>("{\"percent\":5}").unwrap(),
+            terms(5)
+        );
+    }
+
+    #[test]
+    fn возвраты_по_частям_снимают_ровно_начисленный_бонус() {
+        for paid in [1_i64, 7, 99, 100, 101, 1_005, 3_333] {
+            for credited in [0_i64, 1, 3, 50, 70, 1_000, 3_333] {
+                for part in [1_i64, 2, 13, 97, 400] {
+                    let (mut remaining, mut left) = (paid, credited);
+                    while remaining > 0 {
+                        let refund = part.min(remaining);
+                        let taken = bonus_taken(left, remaining, refund);
+                        assert!((0..=left).contains(&taken));
+                        left -= taken;
+                        remaining -= refund;
+                    }
+                    assert_eq!(left, 0);
+                }
+            }
+        }
+        assert_eq!(bonus_taken(70, 1_005, 333), 24);
+        assert_eq!(bonus_taken(8_000, 1_000_000, 500_000), 4_000);
+        assert_eq!(bonus_taken(70, 1_005, 2_000), 70);
+        assert_eq!(bonus_taken(70, 1_005, 0), 0);
+        assert_eq!(bonus_taken(0, 1_005, 333), 0);
+        assert_eq!(bonus_taken(i64::MAX, i64::MAX, 1), 1);
     }
 }

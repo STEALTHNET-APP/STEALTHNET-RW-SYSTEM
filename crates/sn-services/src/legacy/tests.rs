@@ -2231,6 +2231,7 @@ async fn настройки_новой_панели_не_затираются_п
         .update_provider(
             "cryptopay",
             &crate::settings::ProviderUpdate {
+                topup_bonus: None,
                 enabled: Some(false),
                 config,
                 clear: Vec::new(),

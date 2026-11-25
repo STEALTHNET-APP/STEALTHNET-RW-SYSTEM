@@ -1,7 +1,8 @@
 use crate::DomainError;
 use crate::access::ClientChannel;
 use crate::ids::{AdminId, ClientId, OrderId, PaymentId, RefundId};
-use crate::money::Amount;
+use crate::money::{Amount, Currency, Money};
+use crate::pricing::BonusTerms;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -58,6 +59,41 @@ pub struct MethodChoice {
     pub code: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TopupBonus {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub percent: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min: Option<Money>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<Money>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub methods: Vec<String>,
+}
+
+impl TopupBonus {
+    pub fn foreign_limits(&self, currency: Currency) -> bool {
+        [self.min, self.max]
+            .into_iter()
+            .flatten()
+            .any(|limit| limit.currency != currency)
+    }
+
+    pub fn terms(&self, currency: Currency, method: Option<&str>) -> Option<BonusTerms> {
+        let covered = self.methods.is_empty()
+            || method.is_some_and(|code| self.methods.iter().any(|m| m == code));
+        (self.enabled && self.percent > 0 && covered && !self.foreign_limits(currency)).then(|| {
+            BonusTerms {
+                percent: self.percent,
+                min_minor: self.min.map(|m| m.minor),
+                max_minor: self.max.map(|m| m.minor),
+            }
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -333,6 +369,8 @@ pub struct Refund {
     pub reason: Option<String>,
     pub admin_id: Option<AdminId>,
     pub provider_refund_id: Option<String>,
+    #[serde(default)]
+    pub bonus_minor: i64,
     pub created_at: DateTime<Utc>,
 }
 
@@ -340,6 +378,55 @@ pub struct Refund {
 mod tests {
     use super::*;
     use crate::money::PayCurrency;
+
+    #[test]
+    fn бонус_действует_только_включённым_для_выбранных_способов_и_в_своей_валюте() {
+        let rub = Currency::Rub;
+        let off: TopupBonus = serde_json::from_str("{}").unwrap();
+        assert_eq!(off, TopupBonus::default());
+        assert_eq!(off.terms(rub, None), None);
+        let all = TopupBonus {
+            enabled: true,
+            percent: 5,
+            ..TopupBonus::default()
+        };
+        assert_eq!(all.terms(rub, None).unwrap().percent, 5);
+        assert!(all.terms(rub, Some("sbp")).is_some());
+        assert_eq!(
+            TopupBonus {
+                enabled: false,
+                ..all.clone()
+            }
+            .terms(rub, None),
+            None
+        );
+        assert_eq!(
+            TopupBonus {
+                percent: 0,
+                ..all.clone()
+            }
+            .terms(rub, None),
+            None
+        );
+        let some = TopupBonus {
+            methods: vec!["sbp".into()],
+            min: Some(Money::new(50_000, rub)),
+            max: Some(Money::new(10_000, rub)),
+            ..all
+        };
+        assert_eq!(
+            some.terms(rub, Some("sbp")),
+            Some(BonusTerms {
+                percent: 5,
+                min_minor: Some(50_000),
+                max_minor: Some(10_000),
+            })
+        );
+        assert_eq!(some.terms(rub, Some("card")), None);
+        assert_eq!(some.terms(rub, None), None);
+        assert_eq!(some.terms(Currency::Usd, Some("sbp")), None);
+        assert!(some.foreign_limits(Currency::Usd));
+    }
 
     #[test]
     fn недоплата_никогда_не_считается_оплатой() {

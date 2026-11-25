@@ -89,6 +89,10 @@ pub fn money(value: Money) -> String {
     format::money_in(value, lang::current())
 }
 
+pub fn money_exact(value: Money) -> String {
+    format::money_exact_in(value, lang::current())
+}
+
 pub fn money_signed(value: Money) -> String {
     let shown = money(value);
     match shown.strip_prefix('-') {

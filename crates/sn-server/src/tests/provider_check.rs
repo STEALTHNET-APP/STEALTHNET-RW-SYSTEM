@@ -286,3 +286,127 @@ async fn проверка_показывает_последние_уведомл
     assert!(body["inbox"]["verified_at"].is_string(), "{body}");
     assert!(body["inbox"]["rejected_at"].is_string(), "{body}");
 }
+
+#[tokio::test]
+async fn бонус_к_пополнению_задаётся_у_платёжки_и_виден_клиенту() {
+    let api = crypto_api().await;
+    let Some(h) = check_http(&api).await else {
+        return;
+    };
+    let owner = h.owner().await;
+    set_token(&h, &owner, "1234:AAA").await;
+    let path = "/api/admin/payments/providers/cryptopay";
+    let (_, before) = h.get(path, &owner).await;
+    assert_eq!(
+        before["provider"]["topup_bonus"],
+        json!({"enabled": false, "percent": 0})
+    );
+    let terms =
+        json!({"enabled": true, "percent": 5, "min_minor": 1500, "max_minor": 300, "methods": []});
+    let (status, body) = h
+        .write(Method::PUT, path, &owner, json!({"topup_bonus": terms}))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["provider"]["topup_bonus"],
+        json!({
+            "enabled": true, "percent": 5,
+            "min": {"minor": 1500, "currency": "USD"},
+            "max": {"minor": 300, "currency": "USD"}
+        })
+    );
+    assert_eq!(body["provider"]["enabled"], true);
+    for (wrong, code) in [
+        (
+            json!({"enabled": true, "percent": 101}),
+            "settings.topup_bonus_percent",
+        ),
+        (
+            json!({"enabled": true, "percent": 0}),
+            "settings.topup_bonus_percent",
+        ),
+        (
+            json!({"enabled": true, "percent": 5, "min_minor": 0}),
+            "settings.topup_bonus_min",
+        ),
+        (
+            json!({"enabled": true, "percent": 5, "max_minor": -1}),
+            "settings.topup_bonus_max",
+        ),
+        (
+            json!({"enabled": true, "percent": 5, "methods": ["sbp"]}),
+            "settings.topup_bonus_methods",
+        ),
+    ] {
+        let (status, body) = h
+            .write(Method::PUT, path, &owner, json!({"topup_bonus": wrong}))
+            .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert_eq!(body["error"]["code"], code);
+    }
+    let (status, _) = h
+        .write(
+            Method::PUT,
+            path,
+            &owner,
+            json!({"topup_bonus": {"enabled": true, "percent": 5.5}}),
+        )
+        .await;
+    assert!(status.is_client_error());
+    for id in ["stars", "balance"] {
+        let (status, body) = h
+            .write(
+                Method::PUT,
+                &format!("/api/admin/payments/providers/{id}"),
+                &owner,
+                json!({"topup_bonus": {"enabled": true, "percent": 5}}),
+            )
+            .await;
+        assert!(status.is_client_error(), "{body}");
+        assert_eq!(body["error"]["code"], "settings.topup_bonus_kind");
+    }
+
+    let client = h.client(5_093_118_777).await;
+    let token = h.client_token(client).await;
+    let (status, options) = h.get("/api/client/topup", &token).await;
+    assert_eq!(status, StatusCode::OK, "{options}");
+    assert_eq!(options["methods"][0]["provider"], "cryptopay");
+    assert_eq!(
+        options["methods"][0]["bonus"],
+        json!({
+            "percent": 5,
+            "min": {"minor": 1500, "currency": "USD"},
+            "max": {"minor": 300, "currency": "USD"}
+        })
+    );
+    assert!(
+        options["methods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|m| m["provider"] != "stars")
+    );
+    let (status, refused) = h
+        .write(
+            Method::POST,
+            "/api/client/topup",
+            &token,
+            json!({"amount": "15", "provider": "stars"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+
+    let (_, body) = h
+        .write(
+            Method::PUT,
+            path,
+            &owner,
+            json!({"topup_bonus": {"enabled": false, "percent": 5, "min_minor": 1500}}),
+        )
+        .await;
+    assert_eq!(body["provider"]["topup_bonus"]["enabled"], false);
+    assert_eq!(body["provider"]["topup_bonus"]["percent"], 5);
+    let (_, options) = h.get("/api/client/topup", &token).await;
+    assert!(options["methods"][0].get("bonus").is_none());
+    h.db.cleanup().await;
+}

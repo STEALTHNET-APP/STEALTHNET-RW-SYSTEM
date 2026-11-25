@@ -69,6 +69,12 @@ fn raw(params: &serde_json::Value, key: &str) -> Option<String> {
     }
 }
 
+fn exact(params: &serde_json::Value, key: &str) -> Option<String> {
+    serde_json::from_value::<Money>(params.get(key)?.clone())
+        .ok()
+        .map(text::money_exact)
+}
+
 fn param(params: &serde_json::Value, key: &str) -> Option<String> {
     raw(params, key).map(|v| escape(&v))
 }
@@ -276,9 +282,17 @@ pub fn render(
             Some(("notify.btn.subscription", "subs")),
         ),
         templates::TOPUP_DONE => (
-            match &amount {
-                Some(amount) => t("notify.topup_done", &[("amount", Html(amount))]),
-                None => t("notify.topup_done_plain", &[]),
+            match (&amount, exact(params, "bonus"), exact(params, "total")) {
+                (Some(amount), Some(bonus), Some(total)) => t(
+                    "notify.topup_done_bonus",
+                    &[
+                        ("amount", Html(amount)),
+                        ("bonus", Text(&bonus)),
+                        ("total", Text(&total)),
+                    ],
+                ),
+                (Some(amount), ..) => t("notify.topup_done", &[("amount", Html(amount))]),
+                (None, ..) => t("notify.topup_done_plain", &[]),
             },
             Some(("notify.btn.balance", "bal")),
         ),
@@ -834,7 +848,13 @@ pub fn letter_of(
                     .maybe("tariff", raw(params, "tariff")),
             )
         }
-        templates::TOPUP_DONE => (LetterId::TopupDone, Values::new().maybe("amount", amount())),
+        templates::TOPUP_DONE => (
+            LetterId::TopupDone,
+            Values::new()
+                .maybe("amount", amount())
+                .maybe("bonus", exact(params, "bonus"))
+                .maybe("total", exact(params, "total")),
+        ),
         templates::PAYMENT_CREDITED | templates::REPEAT_CREDITED => (
             LetterId::PaymentCredited,
             Values::new()

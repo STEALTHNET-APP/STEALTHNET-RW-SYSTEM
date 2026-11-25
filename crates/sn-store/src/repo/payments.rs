@@ -9,6 +9,7 @@ use sn_domain::paging::{Page, PageRequest};
 use sn_domain::payment::{
     AUTORENEW_METHOD, NewPayment, Payment, PaymentStatus, ProviderId, RefundSubscriptionAction,
 };
+use sn_domain::pricing::BonusTerms;
 use sqlx::PgConnection;
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -135,6 +136,7 @@ pub struct NewProviderRefund {
     pub admin_id: Option<AdminId>,
     pub provider_refund_id: Option<String>,
     pub hold_entry_id: Option<LedgerEntryId>,
+    pub bonus_minor: i64,
     pub requested_at: DateTime<Utc>,
 }
 
@@ -153,6 +155,7 @@ pub struct ProviderRefund {
     pub created_at: DateTime<Utc>,
     pub resolved_at: Option<DateTime<Utc>>,
     pub hold_entry_id: Option<LedgerEntryId>,
+    pub bonus_minor: i64,
     pub action: RefundAction,
     pub polled_at: Option<DateTime<Utc>>,
 }
@@ -173,6 +176,7 @@ struct ProviderRefundRow {
     created_at: DateTime<Utc>,
     resolved_at: Option<DateTime<Utc>>,
     hold_entry_id: Option<i64>,
+    bonus_minor: i64,
     action_status: String,
     action_attempts: i32,
     action_next_at: Option<DateTime<Utc>>,
@@ -191,7 +195,7 @@ struct FailedRefundActionRow {
     subscription_id: Option<i64>,
 }
 
-const REFUND_FIELDS: [&str; 21] = [
+const REFUND_FIELDS: [&str; 22] = [
     "id",
     "payment_id",
     "amount_minor",
@@ -206,6 +210,7 @@ const REFUND_FIELDS: [&str; 21] = [
     "created_at",
     "resolved_at",
     "hold_entry_id",
+    "bonus_minor",
     "action_status",
     "action_attempts",
     "action_next_at",
@@ -258,6 +263,7 @@ impl TryFrom<ProviderRefundRow> for ProviderRefund {
             created_at: row.created_at,
             resolved_at: row.resolved_at,
             hold_entry_id: row.hold_entry_id.map(LedgerEntryId),
+            bonus_minor: row.bonus_minor,
             action: RefundAction {
                 status: RefundActionStatus::parse(&row.action_status)?,
                 attempts: super::non_negative_u32(row.action_attempts, "action_attempts")?,
@@ -280,8 +286,15 @@ pub struct InvoiceUpdate {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PaymentBonus {
+    pub terms: Option<BonusTerms>,
+    pub credited_minor: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct PaymentOutcome {
     pub refunded_minor: i64,
+    pub bonus_minor: i64,
     pub repeat: Option<RepeatAction>,
 }
 
@@ -663,19 +676,23 @@ impl<'c> PaymentsRepo<'c> {
         ids: &[PaymentId],
     ) -> StoreResult<HashMap<PaymentId, PaymentOutcome>> {
         let ids: Vec<i64> = ids.iter().map(|id| id.0).collect();
-        let rows: Vec<(i64, i64, Option<String>)> = sqlx::query_as(
-            "SELECT p.id, p.refunded_minor, r.action FROM payments p \
+        let rows: Vec<(i64, i64, i64, Option<String>)> = sqlx::query_as(
+            "SELECT p.id, p.refunded_minor, \
+             p.bonus_minor - CASE WHEN p.bonus_minor = 0 THEN 0 ELSE \
+               (SELECT COALESCE(sum(f.bonus_minor), 0)::bigint FROM refunds f WHERE f.payment_id = p.id) END, \
+             r.action FROM payments p \
              LEFT JOIN payment_repeats r ON r.payment_id = p.id WHERE p.id = ANY($1)",
         )
         .bind(&ids)
         .fetch_all(&mut *self.conn)
         .await?;
         rows.into_iter()
-            .map(|(id, refunded_minor, repeat)| {
+            .map(|(id, refunded_minor, bonus_minor, repeat)| {
                 Ok((
                     PaymentId(id),
                     PaymentOutcome {
                         refunded_minor,
+                        bonus_minor,
                         repeat: repeat.as_deref().map(RepeatAction::parse).transpose()?,
                     },
                 ))
@@ -785,7 +802,8 @@ impl<'c> PaymentsRepo<'c> {
         }
         let row: ProviderRefundRow = sqlx::query_as(&format!(
             "INSERT INTO provider_refunds (payment_id, amount_minor, currency, subscription_action, reason, \
-             admin_id, provider_refund_id, created_at, hold_entry_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
+             admin_id, provider_refund_id, created_at, hold_entry_id, bonus_minor) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
              RETURNING {}",
             refund_columns("")
         ))
@@ -798,6 +816,7 @@ impl<'c> PaymentsRepo<'c> {
         .bind(&refund.provider_refund_id)
         .bind(refund.requested_at)
         .bind(refund.hold_entry_id.map(|e| e.0))
+        .bind(refund.bonus_minor)
         .fetch_one(&mut *self.conn)
         .await?;
         row.try_into()
@@ -870,13 +889,44 @@ impl<'c> PaymentsRepo<'c> {
         Ok(minor)
     }
 
+    pub async fn promise_bonus(&mut self, id: PaymentId, terms: &BonusTerms) -> StoreResult<()> {
+        sqlx::query("UPDATE payments SET bonus_terms = $2 WHERE id = $1")
+            .bind(id.0)
+            .bind(sqlx::types::Json(terms))
+            .execute(&mut *self.conn)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn bonus_credited(&mut self, id: PaymentId, minor: i64) -> StoreResult<()> {
+        sqlx::query("UPDATE payments SET bonus_minor = $2 WHERE id = $1")
+            .bind(id.0)
+            .bind(minor)
+            .execute(&mut *self.conn)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn bonus(&mut self, id: PaymentId) -> StoreResult<PaymentBonus> {
+        let (terms, credited_minor): (Option<sqlx::types::Json<BonusTerms>>, i64) =
+            sqlx::query_as("SELECT bonus_terms, bonus_minor FROM payments WHERE id = $1")
+                .bind(id.0)
+                .fetch_optional(&mut *self.conn)
+                .await?
+                .ok_or(StoreError::NotFound("платёж"))?;
+        Ok(PaymentBonus {
+            terms: terms.map(|terms| terms.0),
+            credited_minor,
+        })
+    }
+
     pub async fn held_refunds_minor(
         &mut self,
         client_id: ClientId,
         currency: PayCurrency,
     ) -> StoreResult<i64> {
         let minor: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(sum(r.amount_minor), 0)::bigint FROM provider_refunds r \
+            "SELECT COALESCE(sum(r.amount_minor + r.bonus_minor), 0)::bigint FROM provider_refunds r \
              JOIN payments p ON p.id = r.payment_id \
              WHERE p.client_id = $1 AND r.currency = $2 AND r.status = 'pending' \
                AND r.hold_entry_id IS NOT NULL",

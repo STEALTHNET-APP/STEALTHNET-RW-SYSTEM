@@ -45,6 +45,8 @@ pub enum LedgerKind {
     MigrationOpening,
     RefundHold,
     RefundRelease,
+    TopupBonus,
+    TopupBonusReversal,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,7 +57,7 @@ pub enum Direction {
 }
 
 impl LedgerKind {
-    pub const ALL: [LedgerKind; 14] = [
+    pub const ALL: [LedgerKind; 16] = [
         LedgerKind::TopUp,
         LedgerKind::Purchase,
         LedgerKind::AutoRenew,
@@ -70,6 +72,8 @@ impl LedgerKind {
         LedgerKind::MigrationOpening,
         LedgerKind::RefundHold,
         LedgerKind::RefundRelease,
+        LedgerKind::TopupBonus,
+        LedgerKind::TopupBonusReversal,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -88,6 +92,8 @@ impl LedgerKind {
             LedgerKind::MigrationOpening => "migration_opening",
             LedgerKind::RefundHold => "refund_hold",
             LedgerKind::RefundRelease => "refund_release",
+            LedgerKind::TopupBonus => "topup_bonus",
+            LedgerKind::TopupBonusReversal => "topup_bonus_reversal",
         }
     }
 
@@ -105,12 +111,14 @@ impl LedgerKind {
             | LedgerKind::ReferralCredit
             | LedgerKind::WithdrawalRelease
             | LedgerKind::MigrationOpening
-            | LedgerKind::RefundRelease => Direction::Credit,
+            | LedgerKind::RefundRelease
+            | LedgerKind::TopupBonus => Direction::Credit,
             LedgerKind::Purchase
             | LedgerKind::AutoRenew
             | LedgerKind::ReferralReversal
             | LedgerKind::WithdrawalHold
-            | LedgerKind::RefundHold => Direction::Debit,
+            | LedgerKind::RefundHold
+            | LedgerKind::TopupBonusReversal => Direction::Debit,
             LedgerKind::Contest | LedgerKind::Roulette | LedgerKind::AdminAdjust => {
                 Direction::Either
             }
@@ -128,7 +136,9 @@ impl LedgerKind {
             | LedgerKind::AutoRenew
             | LedgerKind::Refund
             | LedgerKind::RefundHold
-            | LedgerKind::RefundRelease => {
+            | LedgerKind::RefundRelease
+            | LedgerKind::TopupBonus
+            | LedgerKind::TopupBonusReversal => {
                 matches!(wallet, Wallet::Main)
             }
             LedgerKind::Contest
@@ -283,6 +293,23 @@ mod tests {
         }
         assert_eq!(LedgerKind::RefundHold.as_str(), "refund_hold");
         assert_eq!(LedgerKind::RefundRelease.as_str(), "refund_release");
+    }
+
+    #[test]
+    fn бонус_за_пополнение_начисляется_и_снимается_только_на_основном_кошельке() {
+        for (kind, minor) in [
+            (LedgerKind::TopupBonus, 25),
+            (LedgerKind::TopupBonusReversal, -25),
+        ] {
+            assert!(entry(kind, Wallet::Main, minor).validate().is_ok());
+            assert!(entry(kind, Wallet::Main, -minor).validate().is_err());
+            assert!(entry(kind, Wallet::Referral, minor).validate().is_err());
+        }
+        assert_eq!(LedgerKind::TopupBonus.as_str(), "topup_bonus");
+        assert_eq!(
+            LedgerKind::TopupBonusReversal.as_str(),
+            "topup_bonus_reversal"
+        );
     }
 
     #[test]

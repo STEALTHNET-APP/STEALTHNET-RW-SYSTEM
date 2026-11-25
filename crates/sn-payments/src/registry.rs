@@ -6,8 +6,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sn_domain::access::ClientChannel;
 use sn_domain::money::{Amount, Currency, Money, Stars};
-use sn_domain::payment::{ButtonLabel, MethodChoice, PaymentChannels};
-use sn_domain::pricing::{BalanceCheck, balance_check};
+use sn_domain::payment::{ButtonLabel, MethodChoice, PaymentChannels, TopupBonus};
+use sn_domain::pricing::{BalanceCheck, BonusTerms, balance_check};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
@@ -18,6 +18,7 @@ pub struct ProviderState {
     pub channels: PaymentChannels,
     pub methods: Vec<MethodChoice>,
     pub label: ButtonLabel,
+    pub topup_bonus: TopupBonus,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -145,6 +146,7 @@ pub struct ProviderView {
     pub methods: Vec<MethodView>,
     pub label: ClientLabel,
     pub custom_label: ButtonLabel,
+    pub topup_bonus: TopupBonus,
     pub check: Option<CheckRecord>,
 }
 
@@ -168,6 +170,7 @@ impl ProviderRegistry {
                         channels: PaymentChannels::ALL,
                         methods: Vec::new(),
                         label: ButtonLabel::default(),
+                        topup_bonus: TopupBonus::default(),
                     },
                 )
             })
@@ -286,6 +289,21 @@ impl ProviderRegistry {
             .any(|p| snapshot.states.get(p.id()).is_some_and(|s| s.enabled))
     }
 
+    pub fn topup_bonus(
+        &self,
+        id: &str,
+        method: Option<&str>,
+        currency: Currency,
+    ) -> Option<BonusTerms> {
+        self.get(id)
+            .filter(|p| p.kind() == ProviderKind::External)?;
+        self.snapshot()
+            .states
+            .get(id)?
+            .topup_bonus
+            .terms(currency, method)
+    }
+
     pub fn allowed_in(&self, id: &str, channel: ClientChannel) -> bool {
         self.snapshot()
             .states
@@ -327,6 +345,7 @@ impl ProviderRegistry {
                     methods: method_views(p.as_ref(), &state.methods, snapshot.currency),
                     label: p.client_label(snapshot.currency, &state.config),
                     custom_label: state.label.clone(),
+                    topup_bonus: state.topup_bonus.clone(),
                     check: self.check(p.id()),
                 }
             })
@@ -603,6 +622,7 @@ mod tests {
                         channels: sn_domain::payment::PaymentChannels::ALL,
                         methods: Vec::new(),
                         label: ButtonLabel::default(),
+                        topup_bonus: TopupBonus::default(),
                     },
                 )
             })
@@ -907,6 +927,7 @@ mod tests {
                                 channels: sn_domain::payment::PaymentChannels::ALL,
                                 methods: Vec::new(),
                                 label: ButtonLabel::default(),
+                                topup_bonus: TopupBonus::default(),
                             },
                         )
                     })
@@ -947,5 +968,32 @@ mod tests {
         assert!(view.enabled);
         assert!(!view.configured);
         assert_eq!(view.settings["api_token"], json!({"filled": false}));
+    }
+
+    #[test]
+    fn бонус_к_пополнению_только_у_внешних_платёжек() {
+        let registry = ProviderRegistry::builtin();
+        let mut snapshot = (*registry.snapshot()).clone();
+        for state in snapshot.states.values_mut() {
+            state.topup_bonus = TopupBonus {
+                enabled: true,
+                percent: 5,
+                ..TopupBonus::default()
+            };
+        }
+        registry.apply(snapshot);
+        let percent = |id: &str| {
+            registry
+                .topup_bonus(id, None, Currency::Rub)
+                .map(|terms| terms.percent)
+        };
+        for provider in registry.providers() {
+            let expected = (provider.kind() == ProviderKind::External).then_some(5);
+            assert_eq!(percent(provider.id()), expected);
+        }
+        assert_eq!(percent("stars"), None);
+        assert_eq!(percent("balance"), None);
+        assert_eq!(percent("cryptopay"), Some(5));
+        assert_eq!(percent("unknown"), None);
     }
 }

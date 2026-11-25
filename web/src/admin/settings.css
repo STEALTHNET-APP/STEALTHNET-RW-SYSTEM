@@ -627,6 +627,39 @@
   gap: 8px 12px;
 }
 
+.pay-bonus {
+  max-width: 760px;
+}
+
+.pay-bonus-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.pay-bonus-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 96px;
+}
+
+.pay-bonus-field.wide {
+  width: 260px;
+  max-width: 100%;
+}
+
+.pay-bonus-field .field {
+  height: 36px;
+}
+
+.pay-bonus-methods {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+}
+
 .pay-ltitle {
   width: 240px;
   max-width: 100%;
