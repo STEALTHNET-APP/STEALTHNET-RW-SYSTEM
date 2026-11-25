@@ -1393,6 +1393,7 @@ const VALUES: &[(&str, &str, &str)] = &[
     ("blocks", "subscription", "Подписка"),
     ("blocks", "actions", "Кнопки под подпиской"),
     ("blocks", "sections", "Разделы"),
+    ("blocks", "person", "Фото и имя"),
     ("blocks", "balance", "Баланс"),
     ("blocks", "friends", "Друзья"),
     ("blocks", "links", "Свои ссылки"),

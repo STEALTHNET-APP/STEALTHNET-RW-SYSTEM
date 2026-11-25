@@ -49,6 +49,8 @@ export const MINI_SNIPPETS: Record<MiniPlace, Snippet[]> = {
   profile: [
     snippet('Весь экран', '&'),
     snippet('Заголовок', '.mn-h1'),
+    snippet('Фото и имя', '.mn-person'),
+    snippet('Фото', '.mn-person-photo'),
     snippet('Карточка', '.mn-card'),
     snippet('Сумма баланса', '.mn-big'),
     snippet('Кнопка', '.mn-btn2'),

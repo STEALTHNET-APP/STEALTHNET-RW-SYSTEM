@@ -1,17 +1,34 @@
-import { Fragment, type ReactNode } from 'react';
+import { Fragment, useState, type ReactNode } from 'react';
 import { Link } from 'react-router';
 import { documentTitle, documentUrl } from '../lib/documents';
 import { money, plural } from '../lib/format';
 import { t } from '../lib/i18n';
 import { Icon } from '../lib/icons';
 import { supportLink, supportTickets } from '../lib/support';
-import { heldBalance } from '../cabinet/model';
-import { audienceOf, profileOn, sectionPath, type FriendsBlock, type LinksBlock, type ProfileBlock } from './config';
+import { heldBalance, photoUrl } from '../cabinet/model';
+import { audienceOf, profileOn, SECTION_ICONS, sectionPath, type FriendsBlock, type HelpBlock, type LinksBlock, type ProfileBlock } from './config';
 import { AccountCard } from './MiniAccount';
 import { BackHead, useMini } from './MiniApp';
 import { FriendsCard, useFriendsText, useReferral } from './MiniFriends';
-import { needsExtras, Row, unreadText, useExtras, useRows } from './sections';
+import { needsExtras, Row, rowLabel, unreadText, useExtras, useGifts, useRows } from './sections';
 import { openExternal } from './telegram';
+import { useClientPhoto } from './useClientPhoto';
+
+function Person() {
+  const { me, name, username } = useMini();
+  const photo = useClientPhoto(photoUrl(me));
+  const [broken, setBroken] = useState<string | null>(null);
+  return (
+    <div className="mn-person" data-part="person">
+      <span className="mn-person-photo" aria-hidden="true">
+        <Icon name="user" size={36} />
+        {photo && photo !== broken ? <img src={photo} alt="" decoding="async" draggable={false} onError={() => setBroken(photo)} /> : null}
+      </span>
+      {name ? <strong>{name}</strong> : null}
+      {username ? <span className="mn-muted">@{username}</span> : null}
+    </div>
+  );
+}
 
 function Balance({ shown }: { shown: boolean }) {
   const { me } = useMini();
@@ -64,12 +81,14 @@ function Friends({ block }: { block: FriendsBlock }) {
   );
 }
 
-function Help() {
+function Help({ block }: { block: HelpBlock }) {
   const { me, site, unread } = useMini();
+  const gifts = useGifts(block.gifts === true);
   const link = supportLink(site);
   const tickets = supportTickets(site);
   return (
     <div className="mn-list" data-part="help">
+      {gifts ? <Row row={{ key: 'gifts', label: rowLabel('gifts'), icon: SECTION_ICONS.gifts, target: { to: sectionPath('gifts') }, away: false }} /> : null}
       <Link to="/app/payments" className="mn-row press">
         <Icon name="receipt" size={21} />
         <span className="mn-row-name">{t('История оплат')}</span>
@@ -135,12 +154,14 @@ export function MiniProfile() {
   const { config } = useMini();
   const blocks = (block: ProfileBlock): ReactNode => {
     switch (block.kind) {
+      case 'person':
+        return profileOn(block) ? <Person /> : null;
       case 'balance':
         return <Balance shown={profileOn(block)} />;
       case 'friends':
         return profileOn(block) ? <Friends block={block} /> : null;
       case 'help':
-        return <Help />;
+        return <Help block={block} />;
       case 'links':
         return profileOn(block) ? <Links block={block} /> : null;
       case 'documents':

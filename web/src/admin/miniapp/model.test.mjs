@@ -31,7 +31,9 @@ test('стандартная настройка не считается изме
   assert.deepEqual(out.home[2], { kind: 'subscription' });
   assert.deepEqual(out.home[3], { kind: 'actions', items: [{ std: 'renew' }, { std: 'devices' }] });
   assert.deepEqual(out.tabs, [{ std: 'home' }, { std: 'plans' }, { std: 'connect' }, { std: 'profile' }]);
-  assert.deepEqual(out.profile[1], { kind: 'friends' });
+  assert.deepEqual(out.profile[0], { kind: 'person', on: false });
+  assert.deepEqual(out.profile[2], { kind: 'friends' });
+  assert.deepEqual(out.profile[3], { kind: 'help' });
   for (const block of config.home) {
     assert.ok(!model.homeChanged(block), block.kind);
   }
@@ -113,11 +115,14 @@ test('правка текста и возврат к стандартному', 
   assert.deepEqual(model.resetHome({ kind: 'actions', on: false, items: [] }), { ...standardHome('actions'), on: false });
   assert.deepEqual(model.resetProfile({ kind: 'friends', on: false, place: 'screen' }), { kind: 'friends', on: false });
   assert.deepEqual(model.resetProfile({ kind: 'help' }), { kind: 'help' });
+  assert.ok(model.profileChanged({ kind: 'help', gifts: true }));
+  assert.deepEqual(model.resetProfile({ kind: 'help', gifts: true }), { kind: 'help' });
 });
 
 test('скрытие блока само по себе не «свой вид блока»', () => {
   assert.ok(!model.homeChanged({ ...standardHome('sections'), on: false }));
   assert.ok(!model.profileChanged({ kind: 'balance', on: false }));
+  assert.ok(!model.profileChanged({ kind: 'person', on: true }));
 });
 
 test('ссылки: разделы, https и t.me', () => {
@@ -176,6 +181,9 @@ test('подписи блоков показывают, что внутри', ()
   assert.equal(summary({ kind: 'sections', items: [{ std: 'gifts', on: false }] }), '8 пунктов, скрыто 1');
   assert.equal(model.profileSummary({ kind: 'friends', place: 'screen' }), 'Отдельный экран');
   assert.equal(model.profileSummary({ kind: 'balance', on: false }), 'Видят только клиенты с деньгами');
+  assert.equal(model.profileSummary({ kind: 'person' }), 'Скрыто');
+  assert.equal(model.profileSummary({ kind: 'person', on: true }), 'Фото, имя и @username из Telegram');
+  assert.equal(model.profileSummary({ kind: 'help', gifts: true }), 'Подарок, история оплат и поддержка');
   assert.equal(model.audienceText(['ended', 'new']), 'новые, закончилась');
   assert.equal(model.audienceText(undefined), 'всем');
   assert.equal(model.linkText('plans'), 'Раздел «Тарифы»');

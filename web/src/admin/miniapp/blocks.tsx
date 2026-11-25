@@ -417,6 +417,26 @@ function FriendsBody({ block, change, kit, percent }: BodyProps<Extract<ProfileB
   );
 }
 
+function HelpBody({ block, change, kit }: BodyProps<Extract<ProfileBlock, { kind: 'help' }>>) {
+  const gifts = block.gifts === true;
+  const off = sectionOff(kit.sections, 'gifts');
+  return (
+    <>
+      <label className="mce-toggle">
+        <Switch on={gifts} onToggle={() => change({ ...block, gifts: gifts ? undefined : true })} label="Показывать «Подарить подписку» в профиле" />
+        <span>Показывать «Подарить подписку»</span>
+      </label>
+      {gifts && off ? <span className="warn-line">{off}: клиенты строку не видят</span> : null}
+      <span className="cap">
+        История оплат и поддержка есть у клиента всегда. Куда приходят обращения, решается в{' '}
+        <Link className="link" to="/admin/settings/general">
+          «Общих»
+        </Link>
+      </span>
+    </>
+  );
+}
+
 function LinksBody({ block, change, kit }: BodyProps<Extract<ProfileBlock, { kind: 'links' }>>) {
   const items = block.items ?? [];
   return (
@@ -438,6 +458,8 @@ function LinksBody({ block, change, kit }: BodyProps<Extract<ProfileBlock, { kin
 
 export function ProfileBody({ block, change, kit, percent }: BodyProps<ProfileBlock> & { percent: number }) {
   switch (block.kind) {
+    case 'person':
+      return <span className="cap">Фото, имя и @username клиента из Telegram. Если фото нет или клиент его скрыл, виден значок</span>;
     case 'balance':
       return <span className="cap">Сумма и кнопка «Пополнить». Клиент с деньгами на балансе видит карточку, даже если она скрыта</span>;
     case 'friends':
@@ -445,14 +467,7 @@ export function ProfileBody({ block, change, kit, percent }: BodyProps<ProfileBl
     case 'links':
       return <LinksBody block={block} change={change} kit={kit} />;
     case 'help':
-      return (
-        <span className="cap">
-          История оплат и поддержка есть у клиента всегда. Куда приходят обращения, решается в{' '}
-          <Link className="link" to="/admin/settings/general">
-            «Общих»
-          </Link>
-        </span>
-      );
+      return <HelpBody block={block} change={change} kit={kit} />;
     case 'documents':
       return (
         <span className="cap">

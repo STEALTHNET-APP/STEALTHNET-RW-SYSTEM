@@ -51,13 +51,14 @@ export type SectionsBlock = { kind: 'sections'; on?: boolean; items?: Item[] };
 export type HomeBlock = BannersBlock | GreetingBlock | SubscriptionBlock | ActionsBlock | SectionsBlock;
 export type HomeKind = HomeBlock['kind'];
 
+export type PersonBlock = { kind: 'person'; on?: boolean };
 export type BalanceBlock = { kind: 'balance'; on?: boolean };
 export type FriendsBlock = { kind: 'friends'; on?: boolean; place?: 'card' | 'screen'; title?: Phrase; text?: Phrase };
-export type HelpBlock = { kind: 'help' };
+export type HelpBlock = { kind: 'help'; gifts?: boolean };
 export type LinksBlock = { kind: 'links'; on?: boolean; items?: Item[] };
 export type DocumentsBlock = { kind: 'documents' };
 export type AccountBlock = { kind: 'account' };
-export type ProfileBlock = BalanceBlock | FriendsBlock | HelpBlock | LinksBlock | DocumentsBlock | AccountBlock;
+export type ProfileBlock = PersonBlock | BalanceBlock | FriendsBlock | HelpBlock | LinksBlock | DocumentsBlock | AccountBlock;
 export type ProfileKind = ProfileBlock['kind'];
 
 export type Tab = { std: SectionKey; label?: Phrase };
@@ -67,7 +68,7 @@ export type Header = { balance: boolean; avatar: boolean };
 export type MiniConfig = { header: Header; home: HomeBlock[]; tabs: Tab[]; profile: ProfileBlock[] };
 
 export const HOME_KINDS: HomeKind[] = ['banners', 'greeting', 'subscription', 'actions', 'sections'];
-export const PROFILE_KINDS: ProfileKind[] = ['balance', 'friends', 'help', 'links', 'documents', 'account'];
+export const PROFILE_KINDS: ProfileKind[] = ['person', 'balance', 'friends', 'help', 'links', 'documents', 'account'];
 
 export const ROW_KEYS: SectionKey[] = ['friends', 'roulette', 'addons', 'gifts', 'promo', 'payments', 'guide', 'support'];
 export const ACTION_KEYS: SectionKey[] = ['renew', 'devices', 'addons', 'topup', 'friends', 'gifts', 'promo', 'roulette', 'payments', 'guide', 'support'];
@@ -147,7 +148,14 @@ export function standardHome(kind: HomeKind): HomeBlock {
 }
 
 export function standardProfile(kind: ProfileKind): ProfileBlock {
-  return kind === 'links' ? { kind, items: [] } : { kind };
+  switch (kind) {
+    case 'person':
+      return { kind, on: false };
+    case 'links':
+      return { kind, items: [] };
+    default:
+      return { kind };
+  }
 }
 
 export function standardTabs(): Tab[] {
@@ -283,6 +291,8 @@ export function homeOn(block: HomeBlock): boolean {
 
 export function profileOn(block: ProfileBlock): boolean {
   switch (block.kind) {
+    case 'person':
+      return block.on === true;
     case 'balance':
     case 'friends':
     case 'links':

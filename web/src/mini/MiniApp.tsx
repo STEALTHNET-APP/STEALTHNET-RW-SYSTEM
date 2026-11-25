@@ -12,7 +12,7 @@ import { readStored, useSurface, useSystemTheme, writeStored, type Theme } from 
 import type { Site } from '../lib/types';
 import type { ClientMe, Device, SubscriptionView } from '../cabinet/model';
 import { liveSubs, pickSub, readRemembered, remember as rememberSub, subName, subState, takeBetterStart, useShowPressed } from '../cabinet/subs';
-import { initData, launchData, loadTelegram, openExternal, paintTelegram, telegramLanguage, telegramName, webApp, type WebApp } from './telegram';
+import { initData, launchData, loadTelegram, openExternal, paintTelegram, telegramLanguage, telegramName, telegramUsername, webApp, type WebApp } from './telegram';
 import { backTarget } from './back';
 import { currentTab, normalizeConfig, pick, SECTION_ICONS, sectionPath, type MiniConfig } from './config';
 import { watchInsets } from './insets';
@@ -63,6 +63,7 @@ export type MiniCtx = {
   switchLang: (next: Lang) => void;
   config: MiniConfig;
   name: string | null;
+  username: string | null;
   unread: number;
   setUnread: (tickets: number) => void;
   demo: Extras | null;
@@ -269,12 +270,13 @@ export function MiniApp() {
   const nextLang = otherLang(lang, langs);
   const config = useMemo(() => normalizeConfig(site.miniapp), [site.miniapp]);
   const name = useMemo(() => (state.kind === 'in' ? telegramName() : null), [state.kind]);
+  const username = useMemo(() => (state.kind === 'in' ? telegramUsername() : null), [state.kind]);
   const ctx = useMemo<MiniCtx | null>(
     () =>
       state.kind === 'in'
-        ? { me: state.me, site, subs, view, devices, ready, choose, setView, setDevices, reload, theme, flipTheme: fixed ? null : flipTheme, lang, nextLang, switchLang, config, name, unread, setUnread, demo: null }
+        ? { me: state.me, site, subs, view, devices, ready, choose, setView, setDevices, reload, theme, flipTheme: fixed ? null : flipTheme, lang, nextLang, switchLang, config, name, username, unread, setUnread, demo: null }
         : null,
-    [state, site, subs, view, devices, ready, choose, setView, setDevices, reload, theme, flipTheme, fixed, lang, nextLang, switchLang, config, name, unread, setUnread],
+    [state, site, subs, view, devices, ready, choose, setView, setDevices, reload, theme, flipTheme, fixed, lang, nextLang, switchLang, config, name, username, unread, setUnread],
   );
 
   if (!shown) {

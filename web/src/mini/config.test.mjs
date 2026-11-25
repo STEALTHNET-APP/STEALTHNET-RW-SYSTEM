@@ -35,7 +35,7 @@ test('без настроек мини-приложение выглядит к�
   assert.deepEqual(kinds(config.home), ['banners', 'greeting', 'subscription', 'actions', 'sections']);
   assert.deepEqual(kinds(config.home.filter(homeOn)), ['banners', 'subscription', 'actions', 'sections']);
   assert.deepEqual(keys(config.tabs), ['home', 'plans', 'connect', 'profile']);
-  assert.deepEqual(kinds(config.profile), ['balance', 'friends', 'help', 'links', 'documents', 'account']);
+  assert.deepEqual(kinds(config.profile), ['person', 'balance', 'friends', 'help', 'links', 'documents', 'account']);
   assert.deepEqual(rowNames(homeBlock(config, 'sections').items), ['friends', 'roulette', 'addons', 'gifts', 'promo', 'payments', 'guide', 'support']);
   assert.deepEqual(homeBlock(config, 'actions').items, [{ std: 'renew' }, { std: 'devices' }]);
   assert.equal(config.header.balance, true);
@@ -115,9 +115,19 @@ test('профиль: обязательные блоки видны всегд�
       { kind: 'links', items: [{ std: 'promo' }, { label: { ru: 'Сайт' }, to: 'https://example.com' }] },
     ],
   });
-  assert.deepEqual(kinds(config.profile), ['account', 'help', 'balance', 'friends', 'links', 'documents']);
+  assert.deepEqual(kinds(config.profile), ['person', 'account', 'help', 'balance', 'friends', 'links', 'documents']);
   assert.deepEqual(kinds(config.profile.filter(profileOn)), ['account', 'help', 'friends', 'links', 'documents']);
   assert.deepEqual(profileBlock(config, 'links').items, [{ label: { ru: 'Сайт' }, to: 'https://example.com' }]);
+});
+
+test('профиль: фото с именем и подарок видны только включёнными', () => {
+  const old = normalizeConfig({ profile: [{ kind: 'account' }, { kind: 'person' }] });
+  assert.equal(profileOn(profileBlock(old, 'person')), false);
+  assert.equal(profileBlock(old, 'help').gifts, undefined);
+  assert.equal(profileOn(profileBlock(normalizeConfig({ profile: [{ kind: 'person', on: 'да' }] }), 'person')), false);
+  const on = normalizeConfig({ profile: [{ kind: 'person', on: true }, { kind: 'help', gifts: true }] });
+  assert.equal(profileOn(profileBlock(on, 'person')), true);
+  assert.equal(profileBlock(on, 'help').gifts, true);
 });
 
 test('«Друзья» ведут в профиль, на свой экран или остаются без карточки', () => {

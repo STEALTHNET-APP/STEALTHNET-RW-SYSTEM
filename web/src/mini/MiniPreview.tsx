@@ -223,6 +223,7 @@ export function MiniPreview() {
       switchLang: nothing,
       config: { ...config, tabs: config.tabs.filter((tab) => !draft.off.includes(tab.std)) },
       name: draft.lang === 'en' ? 'Alex' : 'Алексей',
+      username: 'client',
       unread: 0,
       setUnread: nothing,
       demo: demoExtras(draft, site, currency),

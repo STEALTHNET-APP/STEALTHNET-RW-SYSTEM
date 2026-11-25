@@ -113,6 +113,7 @@ export const HOME_NAMES: Record<HomeKind, string> = {
 };
 
 export const PROFILE_NAMES: Record<ProfileKind, string> = {
+  person: 'Фото и имя',
   balance: 'Баланс',
   friends: 'Друзья',
   help: 'Оплаты и поддержка',
@@ -276,6 +277,10 @@ function homeOut(block: HomeBlock): HomeBlock {
 
 function profileOut(block: ProfileBlock): ProfileBlock {
   switch (block.kind) {
+    case 'person':
+      return { kind: block.kind, on: block.on === true };
+    case 'help':
+      return compact({ kind: block.kind, gifts: block.gifts === true ? block.gifts : undefined });
     case 'balance':
       return compact({ kind: block.kind, on: shown(block.on) });
     case 'friends':
@@ -545,12 +550,14 @@ export function homeSummary(block: HomeBlock, standard: (key: SectionKey) => str
 
 export function profileSummary(block: ProfileBlock): string {
   switch (block.kind) {
+    case 'person':
+      return block.on === true ? 'Фото, имя и @username из Telegram' : 'Скрыто';
     case 'balance':
       return block.on === false ? 'Видят только клиенты с деньгами' : 'Сумма и пополнение';
     case 'friends':
       return block.on === false ? 'Скрыты' : block.place === 'screen' ? 'Отдельный экран' : 'Карточка со ссылками';
     case 'help':
-      return 'История оплат и поддержка';
+      return block.gifts === true ? 'Подарок, история оплат и поддержка' : 'История оплат и поддержка';
     case 'links': {
       const n = (block.items ?? []).length;
       return n ? count(n, 'ссылка', 'ссылки', 'ссылок') : 'Пока нет';

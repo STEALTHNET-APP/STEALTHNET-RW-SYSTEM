@@ -77,6 +77,7 @@ async fn мини_приложение_правится_в_настройках_
     assert_eq!(
         kinds(&view["profile"]),
         [
+            "person",
             "balance",
             "friends",
             "help",
@@ -260,8 +261,9 @@ async fn опасные_ссылки_и_пропажа_обязательног�
         .await;
     assert_eq!(status, StatusCode::OK, "{kept}");
     assert_eq!(kept["home"][2], json!({ "kind": "subscription" }));
-    assert_eq!(kept["profile"][1], json!({ "kind": "friends" }));
-    assert_eq!(kept["profile"][2], json!({ "kind": "help" }));
+    assert_eq!(kept["profile"][0], json!({ "kind": "person" }));
+    assert_eq!(kept["profile"][2], json!({ "kind": "friends" }));
+    assert_eq!(kept["profile"][3], json!({ "kind": "help" }));
     h.db.cleanup().await;
 }
 

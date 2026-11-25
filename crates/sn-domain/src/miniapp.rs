@@ -673,6 +673,7 @@ impl Tab {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProfileKind {
+    Person,
     Balance,
     Friends,
     Help,
@@ -682,7 +683,8 @@ pub enum ProfileKind {
 }
 
 impl ProfileKind {
-    pub const ALL: [ProfileKind; 6] = [
+    pub const ALL: [ProfileKind; 7] = [
+        ProfileKind::Person,
         ProfileKind::Balance,
         ProfileKind::Friends,
         ProfileKind::Help,
@@ -693,6 +695,7 @@ impl ProfileKind {
 
     pub const fn as_str(self) -> &'static str {
         match self {
+            ProfileKind::Person => "person",
             ProfileKind::Balance => "balance",
             ProfileKind::Friends => "friends",
             ProfileKind::Help => "help",
@@ -710,6 +713,7 @@ impl ProfileKind {
 
     pub const fn title(self) -> &'static str {
         match self {
+            ProfileKind::Person => "Фото и имя",
             ProfileKind::Balance => "Баланс",
             ProfileKind::Friends => "Друзья",
             ProfileKind::Help => "Оплаты и поддержка",
@@ -718,6 +722,12 @@ impl ProfileKind {
             ProfileKind::Account => "Аккаунт",
         }
     }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Person {
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub on: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -770,6 +780,12 @@ impl Default for Friends {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Help {
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub gifts: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Fixed {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -792,9 +808,10 @@ impl Default for Links {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProfileBlock {
+    Person(Person),
     Balance(Shown),
     Friends(Friends),
-    Help(Fixed),
+    Help(Help),
     Links(Links),
     Documents(Fixed),
     Account(Fixed),
@@ -803,9 +820,10 @@ pub enum ProfileBlock {
 impl ProfileBlock {
     pub fn standard(kind: ProfileKind) -> ProfileBlock {
         match kind {
+            ProfileKind::Person => ProfileBlock::Person(Person::default()),
             ProfileKind::Balance => ProfileBlock::Balance(Shown::default()),
             ProfileKind::Friends => ProfileBlock::Friends(Friends::default()),
-            ProfileKind::Help => ProfileBlock::Help(Fixed::default()),
+            ProfileKind::Help => ProfileBlock::Help(Help::default()),
             ProfileKind::Links => ProfileBlock::Links(Links::default()),
             ProfileKind::Documents => ProfileBlock::Documents(Fixed::default()),
             ProfileKind::Account => ProfileBlock::Account(Fixed::default()),
@@ -814,6 +832,7 @@ impl ProfileBlock {
 
     pub const fn kind(&self) -> ProfileKind {
         match self {
+            ProfileBlock::Person(_) => ProfileKind::Person,
             ProfileBlock::Balance(_) => ProfileKind::Balance,
             ProfileBlock::Friends(_) => ProfileKind::Friends,
             ProfileBlock::Help(_) => ProfileKind::Help,
@@ -825,6 +844,7 @@ impl ProfileBlock {
 
     pub const fn on(&self) -> bool {
         match self {
+            ProfileBlock::Person(person) => person.on,
             ProfileBlock::Balance(shown) => shown.on,
             ProfileBlock::Friends(friends) => friends.on,
             ProfileBlock::Links(links) => links.on,
@@ -1173,7 +1193,7 @@ impl MiniAppConfig {
         let profile = self
             .profile
             .iter()
-            .filter(|block| !block.on())
+            .filter(|block| !block.on() && block.kind() != ProfileKind::Person)
             .map(|block| block.kind().as_str());
         home.chain(profile).collect()
     }
@@ -1827,6 +1847,7 @@ mod tests {
         assert_eq!(
             profile(&standard),
             [
+                "person",
                 "balance",
                 "friends",
                 "help",
@@ -1956,7 +1977,13 @@ mod tests {
             { "kind": "account", "on": false }
         ] }))
         .unwrap();
-        assert!(hidden.profile.iter().all(ProfileBlock::on));
+        assert!(
+            hidden
+                .profile
+                .iter()
+                .filter(|block| block.kind() != ProfileKind::Person)
+                .all(ProfileBlock::on)
+        );
     }
 
     #[test]
@@ -2352,6 +2379,7 @@ mod tests {
         assert_eq!(
             profile(&config),
             [
+                "person",
                 "account",
                 "friends",
                 "help",
@@ -2492,6 +2520,57 @@ mod tests {
     }
 
     #[test]
+    fn фото_с_именем_и_подарок_в_профиле_выключены_пока_их_не_включили() {
+        let blocks = |config: &MiniAppConfig| {
+            config
+                .profile
+                .iter()
+                .map(|block| serde_json::to_value(block).unwrap())
+                .collect::<Vec<_>>()
+        };
+        let standard = MiniAppConfig::standard();
+        assert_eq!(
+            blocks(&standard)[..4],
+            [
+                json!({ "kind": "person" }),
+                json!({ "kind": "balance" }),
+                json!({ "kind": "friends" }),
+                json!({ "kind": "help" }),
+            ]
+        );
+        assert!(!standard.profile[0].on());
+        assert!(standard.hidden().is_empty());
+        let old = stored(json!({ "profile": [{ "kind": "account" }, { "kind": "help" }] }));
+        assert_eq!(blocks(&old)[0], json!({ "kind": "person" }));
+        assert!(!old.profile[0].on());
+        assert_eq!(
+            profile(&old)
+                .into_iter()
+                .filter(|kind| ["account", "help"].contains(kind))
+                .collect::<Vec<_>>(),
+            ["account", "help"]
+        );
+        let on = parse(json!({ "profile": [
+            { "kind": "help", "gifts": true },
+            { "kind": "person", "on": true }
+        ] }))
+        .unwrap();
+        assert!(blocks(&on).contains(&json!({ "kind": "help", "gifts": true })));
+        assert!(blocks(&on).contains(&json!({ "kind": "person", "on": true })));
+        assert_eq!(stored(serde_json::to_value(&on).unwrap()), on);
+        assert_eq!(on.published().profile, on.profile);
+        let off = parse(json!({ "profile": [
+            { "kind": "person", "on": false },
+            { "kind": "help", "gifts": false }
+        ] }))
+        .unwrap();
+        assert!(blocks(&off).contains(&json!({ "kind": "person" })));
+        assert!(blocks(&off).contains(&json!({ "kind": "help" })));
+        assert!(parse(json!({ "profile": [{ "kind": "person", "on": "да" }] })).is_err());
+        assert!(parse(json!({ "profile": [{ "kind": "help", "gifts": 1 }] })).is_err());
+    }
+
+    #[test]
     fn сохранённый_вид_читается_без_частей_которых_в_этой_версии_нет() {
         let config = stored(json!({
             "header": { "balance": false, "wallet": "big" },
@@ -2586,6 +2665,7 @@ mod tests {
         assert_eq!(
             profile(&config),
             [
+                "person",
                 "balance",
                 "account",
                 "friends",

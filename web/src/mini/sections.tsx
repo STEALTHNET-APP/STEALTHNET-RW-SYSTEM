@@ -37,10 +37,31 @@ export function unreadText(unread: number): string {
   return count(unread, 'новый ответ', 'новых ответа', 'новых ответов');
 }
 
+export function useGifts(wanted: boolean): boolean {
+  const { demo } = useMini();
+  const [open, setOpen] = useState(false);
+  const load = wanted && !demo;
+
+  useEffect(() => {
+    if (!load) {
+      return;
+    }
+    let live = true;
+    api('/api/client/m/gifts/offers')
+      .then(() => live && setOpen(true))
+      .catch(() => live && setOpen(false));
+    return () => {
+      live = false;
+    };
+  }, [load]);
+
+  return wanted && (demo ? demo.gifts : open);
+}
+
 export function useExtras(wanted = true): Extras {
   const { demo, site, view } = useMini();
   const [referral, setReferral] = useState<Referral | null>(null);
-  const [gifts, setGifts] = useState(false);
+  const gifts = useGifts(wanted);
   const [spins, setSpins] = useState<number | null>(null);
   const [trial, setTrial] = useState(false);
   const load = wanted && !demo;
@@ -54,9 +75,6 @@ export function useExtras(wanted = true): Extras {
     api<Referral>('/api/client/m/referral/me')
       .then(setReferral)
       .catch(() => setReferral(null));
-    api('/api/client/m/gifts/offers')
-      .then(() => setGifts(true))
-      .catch(() => setGifts(false));
     api<{ ready: boolean; spins: { total: number } }>('/api/client/m/roulette/state')
       .then((s) => setSpins(s.ready ? s.spins.total : null))
       .catch(() => setSpins(null));

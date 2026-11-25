@@ -156,7 +156,7 @@ export function downloadExternal(url: string, name: string): void {
   openExternal(url);
 }
 
-type TelegramUser = { language_code?: unknown; first_name?: unknown };
+type TelegramUser = { language_code?: unknown; first_name?: unknown; username?: unknown };
 
 function telegramUser(): TelegramUser | null {
   const data = initData();
@@ -179,4 +179,9 @@ export function telegramLanguage(): string | null {
 export function telegramName(): string | null {
   const name = telegramUser()?.first_name;
   return typeof name === 'string' && name.trim() ? name.trim().slice(0, 40) : null;
+}
+
+export function telegramUsername(): string | null {
+  const username = telegramUser()?.username;
+  return typeof username === 'string' && /^\w{1,32}$/.test(username) ? username : null;
 }
