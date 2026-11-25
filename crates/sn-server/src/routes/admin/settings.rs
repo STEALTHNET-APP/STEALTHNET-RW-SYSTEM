@@ -3,7 +3,7 @@ use crate::error::{ApiError, ApiResult};
 use crate::extract::{ApiJson, CurrentAdmin};
 use crate::state::AppState;
 use axum::body::Bytes;
-use axum::extract::{DefaultBodyLimit, Path, State};
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
@@ -386,13 +386,25 @@ async fn providers(
     })))
 }
 
+#[derive(serde::Deserialize)]
+struct InCurrency {
+    #[serde(default)]
+    currency: Option<sn_domain::money::Currency>,
+}
+
 async fn provider(
     admin: CurrentAdmin,
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Query(query): Query<InCurrency>,
 ) -> ApiResult<Json<ProviderDetails>> {
     admin.require(Permission::Settings)?;
-    Ok(Json(state.services.settings_ops().provider(&id)?))
+    Ok(Json(
+        state
+            .services
+            .settings_ops()
+            .provider_in(&id, query.currency)?,
+    ))
 }
 
 async fn update_provider(

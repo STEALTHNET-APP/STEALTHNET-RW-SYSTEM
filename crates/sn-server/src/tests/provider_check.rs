@@ -299,7 +299,7 @@ async fn бонус_к_пополнению_задаётся_у_платёжки
     let (_, before) = h.get(path, &owner).await;
     assert_eq!(
         before["provider"]["topup_bonus"],
-        json!({"enabled": false, "percent": 0})
+        json!({"USD": {"enabled": false, "percent": 0}, "RUB": {"enabled": false, "percent": 0}})
     );
     let terms =
         json!({"enabled": true, "percent": 5, "min_minor": 1500, "max_minor": 300, "methods": []});
@@ -308,7 +308,7 @@ async fn бонус_к_пополнению_задаётся_у_платёжки
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(
-        body["provider"]["topup_bonus"],
+        body["provider"]["topup_bonus"]["USD"],
         json!({
             "enabled": true, "percent": 5,
             "min": {"minor": 1500, "currency": "USD"},
@@ -404,8 +404,25 @@ async fn бонус_к_пополнению_задаётся_у_платёжки
             json!({"topup_bonus": {"enabled": false, "percent": 5, "min_minor": 1500}}),
         )
         .await;
-    assert_eq!(body["provider"]["topup_bonus"]["enabled"], false);
-    assert_eq!(body["provider"]["topup_bonus"]["percent"], 5);
+    assert_eq!(body["provider"]["topup_bonus"]["USD"]["enabled"], false);
+    assert_eq!(body["provider"]["topup_bonus"]["USD"]["percent"], 5);
+    let (status, body) = h
+        .write(
+            Method::PUT,
+            path,
+            &owner,
+            json!({"currency": "RUB", "topup_bonus": {"enabled": true, "percent": 9, "max_minor": 50000}}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["provider"]["topup_bonus"]["RUB"]["max"],
+        json!({"minor": 50000, "currency": "RUB"})
+    );
+    assert_eq!(body["provider"]["topup_bonus"]["USD"]["percent"], 5);
+    let (status, rub) = h.get(&format!("{path}?currency=RUB"), &owner).await;
+    assert_eq!(status, StatusCode::OK, "{rub}");
+    assert_eq!(rub["provider"]["topup_bonus"]["RUB"]["percent"], 9);
     let (_, options) = h.get("/api/client/topup", &token).await;
     assert!(options["methods"][0].get("bonus").is_none());
     h.db.cleanup().await;

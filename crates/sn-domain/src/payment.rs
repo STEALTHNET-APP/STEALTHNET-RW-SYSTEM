@@ -5,6 +5,7 @@ use crate::money::{Amount, Currency, Money};
 use crate::pricing::BonusTerms;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fmt;
 use uuid::Uuid;
 
@@ -68,31 +69,123 @@ pub struct TopupBonus {
     #[serde(default)]
     pub percent: u8,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub min: Option<Money>,
+    pub min_minor: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max: Option<Money>,
+    pub max_minor: Option<i64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub methods: Vec<String>,
 }
 
 impl TopupBonus {
-    pub fn foreign_limits(&self, currency: Currency) -> bool {
-        [self.min, self.max]
-            .into_iter()
-            .flatten()
-            .any(|limit| limit.currency != currency)
+    pub fn terms(&self, method: Option<&str>) -> Option<BonusTerms> {
+        let covered = self.methods.is_empty()
+            || method.is_some_and(|code| self.methods.iter().any(|m| m == code));
+        (self.enabled && self.percent > 0 && covered).then_some(BonusTerms {
+            percent: self.percent,
+            min_minor: self.min_minor,
+            max_minor: self.max_minor,
+        })
+    }
+
+    pub fn view(&self, currency: Currency) -> TopupBonusView {
+        let money = |minor: i64| Money::new(minor, currency);
+        TopupBonusView {
+            enabled: self.enabled,
+            percent: self.percent,
+            min: self.min_minor.map(money),
+            max: self.max_minor.map(money),
+            methods: self.methods.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct TopupBonusView {
+    pub enabled: bool,
+    pub percent: u8,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min: Option<Money>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max: Option<Money>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub methods: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct FlatBonus {
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    percent: u8,
+    #[serde(default)]
+    min: Option<Money>,
+    #[serde(default)]
+    max: Option<Money>,
+    #[serde(default)]
+    methods: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct TopupBonuses(pub BTreeMap<Currency, TopupBonus>);
+
+impl TopupBonuses {
+    pub fn get(&self, currency: Currency) -> TopupBonus {
+        self.0.get(&currency).cloned().unwrap_or_default()
+    }
+
+    pub fn set(&mut self, currency: Currency, bonus: TopupBonus) {
+        self.0.insert(currency, bonus);
     }
 
     pub fn terms(&self, currency: Currency, method: Option<&str>) -> Option<BonusTerms> {
-        let covered = self.methods.is_empty()
-            || method.is_some_and(|code| self.methods.iter().any(|m| m == code));
-        (self.enabled && self.percent > 0 && covered && !self.foreign_limits(currency)).then(|| {
-            BonusTerms {
-                percent: self.percent,
-                min_minor: self.min.map(|m| m.minor),
-                max_minor: self.max.map(|m| m.minor),
+        self.0.get(&currency)?.terms(method)
+    }
+
+    fn flat(old: FlatBonus) -> Self {
+        let limits: Vec<Money> = [old.min, old.max].into_iter().flatten().collect();
+        let currencies: Vec<Currency> = match limits.first() {
+            None => Currency::ALL.to_vec(),
+            Some(first) if limits.iter().all(|m| m.currency == first.currency) => {
+                vec![first.currency]
             }
-        })
+            Some(_) => Vec::new(),
+        };
+        TopupBonuses(
+            currencies
+                .into_iter()
+                .map(|currency| {
+                    (
+                        currency,
+                        TopupBonus {
+                            enabled: old.enabled,
+                            percent: old.percent,
+                            min_minor: old.min.map(|m| m.minor),
+                            max_minor: old.max.map(|m| m.minor),
+                            methods: old.methods.clone(),
+                        },
+                    )
+                })
+                .collect(),
+        )
+    }
+}
+
+impl<'de> Deserialize<'de> for TopupBonuses {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = serde_json::Value::deserialize(deserializer)?;
+        let flat = raw.as_object().is_some_and(|fields| {
+            fields
+                .keys()
+                .any(|key| Currency::ALL.iter().all(|c| c.code() != key))
+        });
+        if flat {
+            let old: FlatBonus = serde_json::from_value(raw).map_err(serde::de::Error::custom)?;
+            return Ok(TopupBonuses::flat(old));
+        }
+        serde_json::from_value(raw)
+            .map(TopupBonuses)
+            .map_err(serde::de::Error::custom)
     }
 }
 
@@ -380,24 +473,23 @@ mod tests {
     use crate::money::PayCurrency;
 
     #[test]
-    fn бонус_действует_только_включённым_для_выбранных_способов_и_в_своей_валюте() {
-        let rub = Currency::Rub;
+    fn бонус_действует_только_включённым_для_выбранных_способов() {
         let off: TopupBonus = serde_json::from_str("{}").unwrap();
         assert_eq!(off, TopupBonus::default());
-        assert_eq!(off.terms(rub, None), None);
+        assert_eq!(off.terms(None), None);
         let all = TopupBonus {
             enabled: true,
             percent: 5,
             ..TopupBonus::default()
         };
-        assert_eq!(all.terms(rub, None).unwrap().percent, 5);
-        assert!(all.terms(rub, Some("sbp")).is_some());
+        assert_eq!(all.terms(None).unwrap().percent, 5);
+        assert!(all.terms(Some("sbp")).is_some());
         assert_eq!(
             TopupBonus {
                 enabled: false,
                 ..all.clone()
             }
-            .terms(rub, None),
+            .terms(None),
             None
         );
         assert_eq!(
@@ -405,27 +497,82 @@ mod tests {
                 percent: 0,
                 ..all.clone()
             }
-            .terms(rub, None),
+            .terms(None),
             None
         );
         let some = TopupBonus {
             methods: vec!["sbp".into()],
-            min: Some(Money::new(50_000, rub)),
-            max: Some(Money::new(10_000, rub)),
+            min_minor: Some(50_000),
+            max_minor: Some(10_000),
             ..all
         };
         assert_eq!(
-            some.terms(rub, Some("sbp")),
+            some.terms(Some("sbp")),
             Some(BonusTerms {
                 percent: 5,
                 min_minor: Some(50_000),
                 max_minor: Some(10_000),
             })
         );
-        assert_eq!(some.terms(rub, Some("card")), None);
-        assert_eq!(some.terms(rub, None), None);
-        assert_eq!(some.terms(Currency::Usd, Some("sbp")), None);
-        assert!(some.foreign_limits(Currency::Usd));
+        assert_eq!(some.terms(Some("card")), None);
+        assert_eq!(some.terms(None), None);
+    }
+
+    #[test]
+    fn бонус_по_валютам_и_старый_вид_без_потерь() {
+        let (rub, usd) = (Currency::Rub, Currency::Usd);
+        let both: TopupBonuses = serde_json::from_value(serde_json::json!({
+            "RUB": {"enabled": true, "percent": 5, "min_minor": 50_000},
+            "USD": {"enabled": true, "percent": 10, "max_minor": 500, "methods": ["card"]}
+        }))
+        .unwrap();
+        assert_eq!(both.terms(rub, None).unwrap().min_minor, Some(50_000));
+        assert_eq!(both.terms(usd, None), None);
+        assert_eq!(both.terms(usd, Some("card")).unwrap().percent, 10);
+        let saved = serde_json::to_value(&both).unwrap();
+        assert_eq!(saved["USD"]["max_minor"], 500);
+        assert_eq!(serde_json::from_value::<TopupBonuses>(saved).unwrap(), both);
+        let empty: TopupBonuses = serde_json::from_str("{}").unwrap();
+        assert_eq!(empty, TopupBonuses::default());
+        assert_eq!(empty.terms(rub, None), None);
+
+        let plain: TopupBonuses = serde_json::from_value(serde_json::json!({
+            "enabled": true, "percent": 7, "methods": ["sbp"]
+        }))
+        .unwrap();
+        for currency in Currency::ALL {
+            assert_eq!(
+                plain.terms(currency, Some("sbp")),
+                Some(BonusTerms {
+                    percent: 7,
+                    min_minor: None,
+                    max_minor: None,
+                })
+            );
+            assert_eq!(plain.terms(currency, Some("card")), None);
+        }
+        let limited: TopupBonuses = serde_json::from_value(serde_json::json!({
+            "enabled": true, "percent": 5,
+            "min": {"minor": 50_000, "currency": "RUB"},
+            "max": {"minor": 6_050, "currency": "RUB"}
+        }))
+        .unwrap();
+        assert_eq!(
+            limited.terms(rub, None),
+            Some(BonusTerms {
+                percent: 5,
+                min_minor: Some(50_000),
+                max_minor: Some(6_050),
+            })
+        );
+        assert_eq!(limited.terms(usd, None), None);
+        let off: TopupBonuses =
+            serde_json::from_value(serde_json::json!({"enabled": false, "percent": 0})).unwrap();
+        assert_eq!(off.get(rub), TopupBonus::default());
+        assert_eq!(
+            limited.get(rub).view(rub).min,
+            Some(Money::new(50_000, rub))
+        );
     }
 
     #[test]

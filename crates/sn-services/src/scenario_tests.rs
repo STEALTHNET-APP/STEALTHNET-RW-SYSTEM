@@ -1079,6 +1079,7 @@ async fn секреты_платёжной_системы_только_на_за
     );
     let with_token = ProviderUpdate {
         topup_bonus: None,
+        currency: None,
         enabled: Some(true),
         config: serde_json::from_value(serde_json::json!({
             "api_token": "4321:SECRET-TOKEN", "testnet": "true"

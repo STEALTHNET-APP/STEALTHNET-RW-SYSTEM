@@ -1,4 +1,5 @@
 use super::*;
+use crate::error::ServiceResult;
 use crate::settings::{ProviderUpdate, TopupBonusUpdate};
 use sn_domain::ledger::LedgerEntry;
 use sn_domain::money::Amount;
@@ -1098,7 +1099,8 @@ async fn выключение_не_стирает_настройки_и_не_о�
         .provider(TEST_PAY)
         .unwrap()
         .provider
-        .topup_bonus;
+        .topup_bonus[&Currency::Usd]
+        .clone();
     assert!(!kept.enabled);
     assert_eq!(kept.percent, 10);
     assert_eq!(kept.min, Some(Money::new(500, Currency::Usd)));
@@ -1124,25 +1126,239 @@ async fn выключение_не_стирает_настройки_и_не_о�
     kit.db.cleanup().await;
 }
 
+async fn save_in(
+    kit: &Kit,
+    provider: &str,
+    currency: Currency,
+    update: ProviderUpdate,
+) -> ServiceResult<crate::settings::ProviderDetails> {
+    let admin = admin_of(kit).await;
+    kit.services
+        .settings_ops()
+        .update_provider(
+            provider,
+            &ProviderUpdate {
+                currency: Some(currency),
+                ..update
+            },
+            admin,
+        )
+        .await
+}
+
 #[tokio::test]
-async fn порог_в_другой_валюте_выключает_бонус_до_нового_сохранения() {
-    let Some(kit) = kit().await else { return };
-    set_terms(
+async fn бонус_задаётся_для_каждой_валюты_отдельно() {
+    let Some(kit) = kassa_kit_with(
+        Arc::new(Kassa::default()),
+        Arc::new(SystemClock),
+        vec![
+            Arc::new(sn_payments::providers::Lava::new()),
+            Arc::new(sn_payments::providers::Heleket::new()),
+        ],
+    )
+    .await
+    else {
+        return;
+    };
+    let rub = TopupBonusUpdate {
+        min_minor: Some(50_000),
+        max_minor: Some(10_000),
+        ..percent(5)
+    };
+    let usd = TopupBonusUpdate {
+        min_minor: Some(1_000),
+        methods: vec!["card".into()],
+        ..percent(10)
+    };
+    let choice = |code: &str| sn_domain::payment::MethodChoice {
+        code: code.into(),
+        title: None,
+    };
+    save_in(
         &kit,
-        TEST_PAY,
-        TopupBonusUpdate {
-            max_minor: Some(100),
-            ..percent(10)
+        providers::LAVA,
+        Currency::Rub,
+        ProviderUpdate {
+            methods: Some(vec![choice("sbp"), choice("card")]),
+            topup_bonus: Some(rub),
+            ..Default::default()
         },
     )
-    .await;
-    let registry = kit.services.payments();
-    assert!(
-        registry
-            .topup_bonus(TEST_PAY, None, Currency::Usd)
-            .is_some()
+    .await
+    .unwrap();
+    let saved = save_in(
+        &kit,
+        providers::LAVA,
+        Currency::Usd,
+        ProviderUpdate {
+            methods: Some(vec![choice("paypal"), choice("card")]),
+            topup_bonus: Some(usd),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap()
+    .provider;
+    let usd_view = &saved.topup_bonus[&Currency::Usd];
+    assert_eq!(usd_view.min, Some(Money::new(1_000, Currency::Usd)));
+    assert_eq!(usd_view.methods, ["card"]);
+    let rub_view = &saved.topup_bonus[&Currency::Rub];
+    assert_eq!(rub_view.min, Some(Money::new(50_000, Currency::Rub)));
+    assert_eq!(rub_view.max, Some(Money::new(10_000, Currency::Rub)));
+    assert_eq!(
+        saved
+            .methods
+            .iter()
+            .filter(|m| m.enabled)
+            .map(|m| m.code)
+            .collect::<Vec<_>>(),
+        ["paypal", "card"]
     );
-    assert_eq!(registry.topup_bonus(TEST_PAY, None, Currency::Rub), None);
+    let rub_form = kit
+        .services
+        .settings_ops()
+        .provider_in(providers::LAVA, Some(Currency::Rub))
+        .unwrap()
+        .provider;
+    assert_eq!(
+        rub_form
+            .methods
+            .iter()
+            .filter(|m| m.enabled)
+            .map(|m| m.code)
+            .collect::<Vec<_>>(),
+        ["sbp", "card"]
+    );
+    let registry = kit.services.payments();
+    assert_eq!(
+        registry
+            .topup_bonus(providers::LAVA, Some("card"), Currency::Usd)
+            .map(|t| (t.percent, t.min_minor)),
+        Some((10, Some(1_000)))
+    );
+    assert_eq!(
+        registry.topup_bonus(providers::LAVA, Some("paypal"), Currency::Usd),
+        None
+    );
+    assert_eq!(
+        registry
+            .topup_bonus(providers::LAVA, Some("sbp"), Currency::Rub)
+            .map(|t| (t.percent, t.max_minor)),
+        Some((5, Some(10_000)))
+    );
+    let refused = save_in(
+        &kit,
+        providers::HELEKET,
+        Currency::Rub,
+        ProviderUpdate {
+            topup_bonus: Some(percent(5)),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(refused.code(), "settings.provider_currency");
+    assert!(refused.to_string().contains("рубли"), "{refused}");
+    save_in(
+        &kit,
+        providers::HELEKET,
+        Currency::Rub,
+        ProviderUpdate {
+            channels: Some(sn_domain::payment::PaymentChannels::ALL),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let journal: Vec<serde_json::Value> = {
+        let mut conn = kit.services.store().conn().await.unwrap();
+        sqlx::query_scalar(
+            "SELECT details -> 'topup_bonus_currency' FROM audit_log \
+             WHERE action = 'settings.provider' AND details ->> 'provider' = 'lava' ORDER BY id",
+        )
+        .fetch_all(sn_store::Db::conn(&mut conn))
+        .await
+        .unwrap()
+    };
+    assert_eq!(
+        journal,
+        [serde_json::json!("RUB"), serde_json::json!("USD")]
+    );
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn старый_бонус_одним_блоком_читается_как_раньше() {
+    let Some(kit) = kit().await else { return };
+    for (stored, rub, usd) in [
+        (
+            serde_json::json!({"enabled": true, "percent": 7}),
+            Some(7),
+            Some(7),
+        ),
+        (
+            serde_json::json!({
+                "enabled": true, "percent": 5,
+                "min": {"minor": 50_000, "currency": "RUB"}
+            }),
+            Some(5),
+            None,
+        ),
+    ] {
+        {
+            let mut conn = kit.services.store().conn().await.unwrap();
+            conn.settings()
+                .set(
+                    &keys::provider(TEST_PAY),
+                    &serde_json::json!({"enabled": true, "topup_bonus": stored}),
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+        kit.services.reload().await.unwrap();
+        let registry = kit.services.payments();
+        assert_eq!(
+            registry
+                .topup_bonus(TEST_PAY, None, Currency::Rub)
+                .map(|t| t.percent),
+            rub
+        );
+        assert_eq!(
+            registry
+                .topup_bonus(TEST_PAY, None, Currency::Usd)
+                .map(|t| t.percent),
+            usd
+        );
+    }
+    let kept = save_in(
+        &kit,
+        TEST_PAY,
+        Currency::Usd,
+        ProviderUpdate {
+            topup_bonus: Some(percent(3)),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap()
+    .provider
+    .topup_bonus;
+    assert_eq!(kept[&Currency::Usd].percent, 3);
+    assert_eq!(
+        kept[&Currency::Rub].min,
+        Some(Money::new(50_000, Currency::Rub))
+    );
+    let raw: serde_json::Value = {
+        let mut conn = kit.services.store().conn().await.unwrap();
+        conn.settings()
+            .get(&keys::provider(TEST_PAY))
+            .await
+            .unwrap()
+            .unwrap()
+    };
+    assert_eq!(raw["topup_bonus"]["RUB"]["min_minor"], 50_000);
+    assert_eq!(raw["topup_bonus"]["USD"]["percent"], 3);
     kit.db.cleanup().await;
 }
 
@@ -1222,7 +1438,8 @@ async fn настройка_бонуса_проверяется_и_попада�
     .await
     .unwrap()
     .provider
-    .topup_bonus;
+    .topup_bonus[&Currency::Usd]
+        .clone();
     assert!(saved.enabled);
     assert_eq!(saved.methods, ["card"]);
     let all = save(
@@ -1236,7 +1453,8 @@ async fn настройка_бонуса_проверяется_и_попада�
     .await
     .unwrap()
     .provider
-    .topup_bonus;
+    .topup_bonus[&Currency::Usd]
+        .clone();
     assert!(all.methods.is_empty());
     let untouched = kit
         .services
@@ -1251,7 +1469,7 @@ async fn настройка_бонуса_проверяется_и_попада�
         )
         .await
         .unwrap();
-    assert_eq!(untouched.provider.topup_bonus, all);
+    assert_eq!(untouched.provider.topup_bonus[&Currency::Usd], all);
     let recorded: Vec<serde_json::Value> = {
         let mut conn = kit.services.store().conn().await.unwrap();
         sqlx::query_scalar(

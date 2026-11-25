@@ -17,7 +17,7 @@ use sn_domain::module::ModuleId;
 use sn_domain::money::{Currency, Money};
 use sn_domain::payment::{
     ButtonLabel, LABEL_HINT_MAX, METHOD_TITLE_MAX, MethodChoice, PaymentChannels, TopupBonus,
-    providers,
+    TopupBonuses, providers,
 };
 use sn_domain::pricing::TOPUP_BONUS_MAX;
 use sn_domain::settings::{
@@ -66,7 +66,7 @@ pub struct ProviderSettings {
     #[serde(default)]
     pub label: ButtonLabel,
     #[serde(default)]
-    pub topup_bonus: TopupBonus,
+    pub topup_bonus: TopupBonuses,
 }
 
 fn parse<T: serde::de::DeserializeOwned>(key: &str, value: Value) -> Option<T> {
@@ -692,6 +692,35 @@ pub fn clean_methods(
     Ok(cleaned)
 }
 
+fn currency_name(currency: Currency) -> &'static str {
+    match currency {
+        Currency::Rub => "рубли",
+        Currency::Usd => "доллары",
+    }
+}
+
+pub fn merge_methods(
+    provider: &dyn PaymentProvider,
+    chosen: Vec<MethodChoice>,
+    stored: &[MethodChoice],
+    currency: Currency,
+) -> Vec<MethodChoice> {
+    let here = provider.methods(currency);
+    let mut fresh = chosen.into_iter();
+    let mut merged: Vec<MethodChoice> = Vec::new();
+    for kept in stored {
+        if here.iter().any(|m| m.code == kept.code) {
+            if let Some(next) = fresh.next() {
+                merged.push(next);
+            }
+        } else {
+            merged.push(kept.clone());
+        }
+    }
+    merged.extend(fresh);
+    merged
+}
+
 pub fn clean_topup_bonus(
     provider: &dyn PaymentProvider,
     update: &TopupBonusUpdate,
@@ -714,9 +743,7 @@ pub fn clean_topup_bonus(
         })?;
     let limit = |minor: Option<i64>, code: &'static str, title: &str| match minor {
         None => Ok(None),
-        Some(minor) if (1..=TOPUP_BONUS_LIMIT).contains(&minor) => {
-            Ok(Some(Money::new(minor, currency)))
-        }
+        Some(minor) if (1..=TOPUP_BONUS_LIMIT).contains(&minor) => Ok(Some(minor)),
         Some(_) => Err(ServiceError::rejected(
             code,
             format!(
@@ -755,15 +782,15 @@ pub fn clean_topup_bonus(
     Ok(TopupBonus {
         enabled: update.enabled,
         percent,
-        min,
-        max,
+        min_minor: min,
+        max_minor: max,
         methods,
     })
 }
 
-fn bonus_limit(limit: Option<Money>) -> Value {
+fn bonus_limit(limit: Option<i64>, currency: Currency) -> Value {
     match limit {
-        Some(money) => serde_json::json!(money),
+        Some(minor) => serde_json::json!(Money::new(minor, currency)),
         None => Value::from("без ограничения"),
     }
 }
@@ -780,10 +807,17 @@ fn bonus_audit(
         .filter(|method| bonus.methods.iter().any(|code| code == method.code))
         .map(|method| method.title)
         .collect();
+    details.insert("topup_bonus_currency".into(), currency.code().into());
     details.insert("topup_bonus_enabled".into(), bonus.enabled.into());
     details.insert("topup_bonus_percent".into(), bonus.percent.into());
-    details.insert("topup_bonus_min".into(), bonus_limit(bonus.min));
-    details.insert("topup_bonus_max".into(), bonus_limit(bonus.max));
+    details.insert(
+        "topup_bonus_min".into(),
+        bonus_limit(bonus.min_minor, currency),
+    );
+    details.insert(
+        "topup_bonus_max".into(),
+        bonus_limit(bonus.max_minor, currency),
+    );
     details.insert(
         "topup_bonus_methods".into(),
         if bonus.methods.is_empty() {
@@ -1299,6 +1333,8 @@ pub struct ProviderUpdate {
     pub label: Option<ButtonLabel>,
     #[serde(default)]
     pub topup_bonus: Option<TopupBonusUpdate>,
+    #[serde(default)]
+    pub currency: Option<Currency>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -2096,6 +2132,15 @@ impl<'a> SettingsOps<'a> {
     }
 
     pub fn provider(&self, id: &str) -> ServiceResult<ProviderDetails> {
+        self.provider_in(id, None)
+    }
+
+    pub fn provider_in(
+        &self,
+        id: &str,
+        currency: Option<Currency>,
+    ) -> ServiceResult<ProviderDetails> {
+        let currency = currency.unwrap_or(self.services.settings().currency);
         let provider = self
             .services
             .payments()
@@ -2104,7 +2149,7 @@ impl<'a> SettingsOps<'a> {
         let view = self
             .services
             .payments()
-            .views()
+            .views_in(currency)
             .into_iter()
             .find(|v| v.id == provider.id())
             .ok_or(ServiceError::NotFound("платёжная система"))?;
@@ -2128,6 +2173,25 @@ impl<'a> SettingsOps<'a> {
         let id = provider.id();
         let schema = provider.settings_schema();
         let mut tx = self.services.store().begin().await?;
+        let service = self.services.settings().currency;
+        let currency = update.currency.unwrap_or_else(|| {
+            if provider.currencies().contains(&service) {
+                service
+            } else {
+                provider.currencies().first().copied().unwrap_or(service)
+            }
+        });
+        let priced = update.methods.is_some() || update.topup_bonus.is_some();
+        if priced && !provider.currencies().contains(&currency) {
+            return Err(ServiceError::rejected(
+                "settings.provider_currency",
+                format!(
+                    "{} не принимает {}: способы оплаты и бонус для этой валюты не задаются",
+                    provider.title(),
+                    currency_name(currency)
+                ),
+            ));
+        }
         let mut stored = self.stored_provider(&mut tx, id).await?;
         let before = stored.config.clone();
         let changes = apply_fields(&schema, &update.config, &update.clear, &mut stored.config)?;
@@ -2138,18 +2202,21 @@ impl<'a> SettingsOps<'a> {
             stored.channels = channels;
         }
         if let Some(methods) = &update.methods {
-            stored.methods = clean_methods(
+            stored.methods = merge_methods(
                 provider.as_ref(),
-                methods,
-                self.services.settings().currency,
-            )?;
+                clean_methods(provider.as_ref(), methods, currency)?,
+                &stored.methods,
+                currency,
+            );
         }
         if let Some(label) = &update.label {
             stored.label = clean_label(label)?;
         }
         if let Some(bonus) = &update.topup_bonus {
-            stored.topup_bonus =
-                clean_topup_bonus(provider.as_ref(), bonus, self.services.settings().currency)?;
+            stored.topup_bonus.set(
+                currency,
+                clean_topup_bonus(provider.as_ref(), bonus, currency)?,
+            );
         }
         let secrets = self.services.secrets();
         let mut merged = stored.config.clone();
@@ -2248,8 +2315,8 @@ impl<'a> SettingsOps<'a> {
         {
             bonus_audit(
                 provider.as_ref(),
-                &stored.topup_bonus,
-                self.services.settings().currency,
+                &stored.topup_bonus.get(currency),
+                currency,
                 details,
             );
         }
@@ -2258,7 +2325,7 @@ impl<'a> SettingsOps<'a> {
             .await?;
         tx.commit().await?;
         self.saved().await?;
-        self.provider(id)
+        self.provider_in(id, Some(currency))
     }
 
     pub async fn provider_catalog(&self, id: &str) -> ServiceResult<Value> {

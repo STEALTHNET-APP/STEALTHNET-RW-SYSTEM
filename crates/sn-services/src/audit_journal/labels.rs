@@ -1106,6 +1106,7 @@ const FIELDS: &[(&str, &str)] = &[
     ("name", "Название"),
     ("title", "Название"),
     ("label", "Подпись"),
+    ("topup_bonus_currency", "Валюта бонуса"),
     ("topup_bonus_enabled", "Бонус к пополнению"),
     ("topup_bonus_percent", "Процент бонуса"),
     ("topup_bonus_min", "Бонус от суммы пополнения"),

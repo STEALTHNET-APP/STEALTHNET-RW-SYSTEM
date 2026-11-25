@@ -1259,6 +1259,7 @@ impl<'a> Extras<'a> {
             let on = enable && missing.is_empty();
             let update = ProviderUpdate {
                 topup_bonus: None,
+                currency: None,
                 enabled: Some(on),
                 config: config.clone(),
                 clear: Vec::new(),

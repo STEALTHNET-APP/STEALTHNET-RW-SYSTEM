@@ -40,6 +40,8 @@ type CheckRecord = { at: string; status: CheckStatus; summary: string; details: 
 
 type TopupBonus = { enabled: boolean; percent: number; min?: Money | null; max?: Money | null; methods?: string[] };
 
+type TopupBonuses = Partial<Record<Currency, TopupBonus>>;
+
 type BonusForm = { on: boolean; percent: string; min: string; max: string; methods: string[] };
 
 const NO_BONUS: BonusForm = { on: false, percent: '', min: '', max: '', methods: [] };
@@ -63,10 +65,6 @@ function bonusForm(bonus: TopupBonus | undefined, currency: Currency): BonusForm
     : NO_BONUS;
 }
 
-function foreignLimits(bonus: TopupBonus | undefined, currency: Currency): boolean {
-  return [bonus?.min, bonus?.max].some((limit) => limit && limit.currency !== currency);
-}
-
 function bonusPercent(form: BonusForm): number | null {
   const raw = form.percent.trim();
   if (!raw) {
@@ -85,12 +83,9 @@ function bonusLimit(raw: string): number | null | 'wrong' {
 }
 
 function bonusSummary(p: Provider, currency: Currency): string | null {
-  const bonus = p.topup_bonus;
+  const bonus = p.topup_bonus?.[currency];
   if (!bonus?.enabled) {
     return null;
-  }
-  if (foreignLimits(bonus, currency)) {
-    return 'Бонус к пополнению не действует: порог или предел задан в другой валюте, сохраните его заново';
   }
   const names = (bonus.methods ?? []).map((code) => {
     const method = p.methods?.find((m) => m.code === code);
@@ -121,7 +116,7 @@ type Provider = {
   methods?: MethodView[];
   label?: { title: string; hint: string };
   custom_label?: { title?: string | null; hint?: string | null };
-  topup_bonus?: TopupBonus;
+  topup_bonus?: TopupBonuses;
   check?: CheckRecord | null;
 };
 
@@ -596,7 +591,7 @@ export function SettingsPayments() {
               </div>
               {channelLine(p.id, p.title)}
               {methodLine(p)}
-              {bonusSummary(p, base.currency) ? <p className="pay-mline muted">{bonusSummary(p, base.currency)}</p> : null}
+              {bonusSummary(p, work.currency) ? <p className="pay-mline muted">{bonusSummary(p, work.currency)}</p> : null}
               {p.issue ? (
                 <p className="pay-issue" role="status">
                   <span className="pay-issue-at">Проверка оплат, {issueTime(p.issue.at)}</span>
@@ -604,7 +599,7 @@ export function SettingsPayments() {
                 </p>
               ) : null}
               {setup === p.id ? (
-                <ProviderSetup provider={p} currency={base.currency} publicUrl={publicUrl} onClose={() => setSetup(null)} onSaved={configured} onChecked={(check) => checked(p.id, check)} />
+                <ProviderSetup provider={p} currency={work.currency} publicUrl={publicUrl} onClose={() => setSetup(null)} onSaved={configured} onChecked={(check) => checked(p.id, check)} />
               ) : null}
             </Fragment>
           );
@@ -625,7 +620,7 @@ export function SettingsPayments() {
               </button>
             </div>
             {setup === balance.id ? (
-              <ProviderSetup provider={balance} currency={base.currency} publicUrl={publicUrl} onClose={() => setSetup(null)} onSaved={configured} onChecked={(check) => checked(balance.id, check)} />
+              <ProviderSetup provider={balance} currency={work.currency} publicUrl={publicUrl} onClose={() => setSetup(null)} onSaved={configured} onChecked={(check) => checked(balance.id, check)} />
             ) : null}
             {methodLine(balance)}
             {balanceOn ? (
@@ -807,7 +802,6 @@ function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved, onChec
   const [saved, setSaved] = useState(false);
   const [bonus, setBonus] = useState<BonusForm>(NO_BONUS);
   const [savedBonus, setSavedBonus] = useState(JSON.stringify(NO_BONUS));
-  const [foreign, setForeign] = useState(false);
   const [tribute, setTribute] = useState<TributeValue>({ products: [], plans: [] });
   const [savedTribute, setSavedTribute] = useState(JSON.stringify({ products: [], plans: [] }));
   const withTribute = provider.id === 'tribute';
@@ -821,11 +815,10 @@ function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved, onChec
   const nowhere = bonus.methods.length > 0 && !offered.some((r) => bonus.methods.includes(r.code));
   const bonusMethods = bonus.methods.filter((code) => rows.some((r) => r.code === code));
   const bonusRows = offered.length > 0 ? rows.filter((r) => r.on || bonus.methods.includes(r.code)) : rows;
-  const bonusStale = foreign && bonus.on;
-  const bonusPending = withBonus && (bonusStale || JSON.stringify(bonus) !== savedBonus);
+  const bonusPending = withBonus && JSON.stringify(bonus) !== savedBonus;
 
   useEffect(() => {
-    api<{ provider: Provider; schema: SettingField[] }>(`/api/admin/payments/providers/${provider.id}`)
+    api<{ provider: Provider; schema: SettingField[] }>(`/api/admin/payments/providers/${provider.id}?currency=${currency}`)
       .then((d) => {
         setSchema(d.schema);
         setConfig(d.provider.settings);
@@ -841,10 +834,9 @@ function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved, onChec
         setLabelTitle(title);
         setLabelHint(hint);
         setSavedLabel(JSON.stringify([title.trim(), hint.trim()]));
-        const loadedBonus = bonusForm(d.provider.topup_bonus, currency);
+        const loadedBonus = bonusForm(d.provider.topup_bonus?.[currency], currency);
         setBonus(loadedBonus);
         setSavedBonus(JSON.stringify(loadedBonus));
-        setForeign(foreignLimits(d.provider.topup_bonus, currency));
       })
       .catch((err) => setError(failText(err, 'Настройки системы не загрузились')));
   }, [provider.id, currency]);
@@ -950,6 +942,7 @@ function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved, onChec
       const result = await api<{ provider: Provider; schema: SettingField[] }>(`/api/admin/payments/providers/${provider.id}`, {
         method: 'PUT',
         body: {
+          currency,
           config: { ...changedConfig(schema, config, values), ...(tributePending ? { products: tribute.products, plans: tribute.plans } : {}) },
           clear: secrets.clear,
           ...(JSON.stringify(methods) !== savedRows ? { methods } : {}),
@@ -978,10 +971,9 @@ function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved, onChec
       setSecrets({ clear: [], replacing: [] });
       setSavedRows(JSON.stringify(methods));
       setSavedLabel(JSON.stringify(label));
-      const keptBonus = bonusForm(result.provider.topup_bonus, currency);
+      const keptBonus = bonusForm(result.provider.topup_bonus?.[currency], currency);
       setBonus(keptBonus);
       setSavedBonus(JSON.stringify(keptBonus));
-      setForeign(foreignLimits(result.provider.topup_bonus, currency));
       setConnected(true);
       setCheck(null);
       setSaved(true);
@@ -1086,7 +1078,6 @@ function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved, onChec
           <span className="cap" id={`pay-bh-${provider.id}`}>
             Процент от суммы придёт на баланс сверх пополнения этим способом. При возврате бонус снимается.
           </span>
-          {bonusStale ? <span className="warn-line">Порог или предел задан в другой валюте. Бонус не действует, пока настройки не сохранены заново.</span> : null}
           {bonus.on ? (
             <>
               <span className="pay-lrow">

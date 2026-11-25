@@ -6,9 +6,11 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sn_domain::access::ClientChannel;
 use sn_domain::money::{Amount, Currency, Money, Stars};
-use sn_domain::payment::{ButtonLabel, MethodChoice, PaymentChannels, TopupBonus};
+use sn_domain::payment::{
+    ButtonLabel, MethodChoice, PaymentChannels, TopupBonusView, TopupBonuses,
+};
 use sn_domain::pricing::{BalanceCheck, BonusTerms, balance_check};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, RwLock};
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -18,7 +20,7 @@ pub struct ProviderState {
     pub channels: PaymentChannels,
     pub methods: Vec<MethodChoice>,
     pub label: ButtonLabel,
-    pub topup_bonus: TopupBonus,
+    pub topup_bonus: TopupBonuses,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -146,7 +148,7 @@ pub struct ProviderView {
     pub methods: Vec<MethodView>,
     pub label: ClientLabel,
     pub custom_label: ButtonLabel,
-    pub topup_bonus: TopupBonus,
+    pub topup_bonus: BTreeMap<Currency, TopupBonusView>,
     pub check: Option<CheckRecord>,
 }
 
@@ -170,7 +172,7 @@ impl ProviderRegistry {
                         channels: PaymentChannels::ALL,
                         methods: Vec::new(),
                         label: ButtonLabel::default(),
-                        topup_bonus: TopupBonus::default(),
+                        topup_bonus: TopupBonuses::default(),
                     },
                 )
             })
@@ -325,6 +327,10 @@ impl ProviderRegistry {
     }
 
     pub fn views(&self) -> Vec<ProviderView> {
+        self.views_in(self.snapshot().currency)
+    }
+
+    pub fn views_in(&self, currency: Currency) -> Vec<ProviderView> {
         let snapshot = self.snapshot();
         self.providers
             .iter()
@@ -342,10 +348,14 @@ impl ProviderRegistry {
                     channels: state.channels,
                     settings: state.config.public_view(&p.settings_schema()),
                     issue: p.issue(),
-                    methods: method_views(p.as_ref(), &state.methods, snapshot.currency),
-                    label: p.client_label(snapshot.currency, &state.config),
+                    methods: method_views(p.as_ref(), &state.methods, currency),
+                    label: p.client_label(currency, &state.config),
                     custom_label: state.label.clone(),
-                    topup_bonus: state.topup_bonus.clone(),
+                    topup_bonus: p
+                        .currencies()
+                        .iter()
+                        .map(|c| (*c, state.topup_bonus.get(*c).view(*c)))
+                        .collect(),
                     check: self.check(p.id()),
                 }
             })
@@ -622,7 +632,7 @@ mod tests {
                         channels: sn_domain::payment::PaymentChannels::ALL,
                         methods: Vec::new(),
                         label: ButtonLabel::default(),
-                        topup_bonus: TopupBonus::default(),
+                        topup_bonus: TopupBonuses::default(),
                     },
                 )
             })
@@ -927,7 +937,7 @@ mod tests {
                                 channels: sn_domain::payment::PaymentChannels::ALL,
                                 methods: Vec::new(),
                                 label: ButtonLabel::default(),
-                                topup_bonus: TopupBonus::default(),
+                                topup_bonus: TopupBonuses::default(),
                             },
                         )
                     })
@@ -975,11 +985,16 @@ mod tests {
         let registry = ProviderRegistry::builtin();
         let mut snapshot = (*registry.snapshot()).clone();
         for state in snapshot.states.values_mut() {
-            state.topup_bonus = TopupBonus {
-                enabled: true,
-                percent: 5,
-                ..TopupBonus::default()
-            };
+            for currency in Currency::ALL {
+                state.topup_bonus.set(
+                    currency,
+                    sn_domain::payment::TopupBonus {
+                        enabled: true,
+                        percent: 5,
+                        ..Default::default()
+                    },
+                );
+            }
         }
         registry.apply(snapshot);
         let percent = |id: &str| {
