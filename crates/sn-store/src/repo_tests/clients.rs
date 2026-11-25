@@ -19,7 +19,10 @@ async fn found(
     db.clients()
         .search_at(
             &ClientFilter {
-                segment,
+                conditions: ClientConditions {
+                    status: segment,
+                    ..ClientConditions::default()
+                },
                 query: query.map(str::to_string),
             },
             PageRequest::default(),
@@ -338,7 +341,10 @@ async fn клиенты_ищутся_по_сегментам_и_строке() {
         .clients()
         .search_at(
             &ClientFilter {
-                segment: Some(ClientSegment::Active),
+                conditions: ClientConditions {
+                    status: Some(ClientSegment::Active),
+                    ..ClientConditions::default()
+                },
                 query: None,
             },
             PageRequest::default(),

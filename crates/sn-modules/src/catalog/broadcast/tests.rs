@@ -529,11 +529,11 @@ fn аудитория_пишется_и_читается_одинаково() {
     assert!(Audience::Expiring { days: 0 }.check().is_err());
     assert!(Audience::Expiring { days: DAYS_MAX + 1 }.check().is_err());
     assert_eq!(
-        Audience::Expiring { days: 1 }.describe(None),
+        Audience::Expiring { days: 1 }.describe(None, None),
         "Подписка закончится в течение 1 дня"
     );
     assert_eq!(
-        Audience::Expiring { days: 5 }.describe(None),
+        Audience::Expiring { days: 5 }.describe(None, None),
         "Подписка закончится в течение 5 дней"
     );
 }
@@ -2447,5 +2447,378 @@ async fn подвал_письма_и_страница_отписки_на_яз�
     .await;
     let shown = text_of(page(tokens["ann@example.com"]).await.unwrap()).await;
     assert!(shown.contains("Отписаться от рассылок?"), "{shown}");
+    db.cleanup().await;
+}
+
+#[test]
+fn аудитория_по_условиям_пишется_читается_и_описывается() {
+    let raw = serde_json::json!({
+        "kind": "filter",
+        "tariff": [5],
+        "status": "active",
+        "source": ["bot"],
+    });
+    let audience: Audience = serde_json::from_value(raw.clone()).unwrap();
+    let Audience::Filter(conditions) = &audience else {
+        panic!("ожидались условия: {audience:?}");
+    };
+    assert_eq!(conditions.tariff, vec![TariffId(5)]);
+    assert_eq!(serde_json::to_value(&audience).unwrap(), raw);
+    let everyone: Audience =
+        serde_json::from_value(serde_json::json!({ "kind": "filter" })).unwrap();
+    assert_eq!(everyone, Audience::Filter(ClientConditions::default()));
+    assert_eq!(everyone.describe(None, None), "Все клиенты");
+    let names = AudienceNames {
+        tariffs: HashMap::from([(TariffId(5), "Про".to_string())]),
+        categories: HashMap::new(),
+        currency: Currency::Rub,
+    };
+    assert_eq!(
+        audience.describe(None, Some(&names)),
+        "Тариф «Про», подписка действует, откуда: бот"
+    );
+    assert!(!audience.uses_money());
+    let money: Audience =
+        serde_json::from_value(serde_json::json!({ "kind": "filter", "paid": true })).unwrap();
+    assert!(money.uses_money());
+    let blocked: Audience =
+        serde_json::from_value(serde_json::json!({ "kind": "filter", "status": "blocked" }))
+            .unwrap();
+    assert_eq!(code(blocked.check().unwrap_err()), "broadcast.invalid");
+    let zero: Audience =
+        serde_json::from_value(serde_json::json!({ "kind": "filter", "ends": 0 })).unwrap();
+    assert_eq!(code(zero.check().unwrap_err()), "broadcast.invalid");
+    assert!(
+        serde_json::from_value::<Audience>(
+            serde_json::json!({ "kind": "filter", "status": "lost" })
+        )
+        .is_err()
+    );
+    let legacy: Audience =
+        serde_json::from_value(serde_json::json!({ "kind": "tariff", "tariff_id": 5 })).unwrap();
+    assert_eq!(legacy.describe(Some("Про"), Some(&names)), "Тариф «Про»");
+    assert!(!legacy.uses_money());
+}
+
+#[tokio::test]
+async fn охват_и_запуск_по_условиям() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let store = &db.store;
+    let mail = FakeMail::new();
+    let ctx = context_with(store, Some(FakeSender::new()), Some(mail));
+    let pro = tariff(store, "Про").await;
+    let other = tariff(store, "Другой").await;
+    let first = tg_client(store, 3001).await;
+    subscribe(
+        store,
+        first,
+        Sub {
+            tariff: Some(pro),
+            ..PAID
+        },
+    )
+    .await;
+    let stopped = tg_client(store, 3002).await;
+    subscribe(
+        store,
+        stopped,
+        Sub {
+            tariff: Some(pro),
+            ..PAID
+        },
+    )
+    .await;
+    exec(
+        store,
+        "UPDATE clients SET bot_unreachable = true WHERE id = $1",
+        stopped.0,
+    )
+    .await;
+    let blocked = tg_client(store, 3003).await;
+    subscribe(
+        store,
+        blocked,
+        Sub {
+            tariff: Some(pro),
+            ..PAID
+        },
+    )
+    .await;
+    exec(
+        store,
+        "UPDATE clients SET status = 'blocked' WHERE id = $1",
+        blocked.0,
+    )
+    .await;
+    let deleted = tg_client(store, 3004).await;
+    subscribe(
+        store,
+        deleted,
+        Sub {
+            tariff: Some(pro),
+            ..PAID
+        },
+    )
+    .await;
+    exec(
+        store,
+        "UPDATE clients SET deleted_at = now() WHERE id = $1",
+        deleted.0,
+    )
+    .await;
+    let elsewhere = tg_client(store, 3005).await;
+    subscribe(
+        store,
+        elsewhere,
+        Sub {
+            tariff: Some(other),
+            ..PAID
+        },
+    )
+    .await;
+    let rich = tg_client(store, 3006).await;
+    subscribe(
+        store,
+        rich,
+        Sub {
+            tariff: Some(pro),
+            ..PAID
+        },
+    )
+    .await;
+    exec(
+        store,
+        "WITH o AS (INSERT INTO orders (client_id, kind, intent, quote, currency, total_minor) \
+         VALUES ($1, 'topup', '{}', '{}', 'USD', 2000) RETURNING id, client_id) \
+         INSERT INTO payments (order_id, client_id, provider, amount_minor, currency, status, paid_at) \
+         SELECT id, client_id, 'cryptopay', 2000, 'USD', 'paid', now() FROM o",
+        rich.0,
+    )
+    .await;
+    let letter = mail_client(store, None, Some("letter@example.com")).await;
+    subscribe(
+        store,
+        letter,
+        Sub {
+            tariff: Some(pro),
+            ..PAID
+        },
+    )
+    .await;
+    let gone = mail_client(store, None, Some("gone@example.com")).await;
+    subscribe(
+        store,
+        gone,
+        Sub {
+            tariff: Some(pro),
+            ..PAID
+        },
+    )
+    .await;
+    exec(
+        store,
+        "INSERT INTO broadcast_unsubscribes (email, client_id) VALUES ('gone@example.com', $1)",
+        gone.0,
+    )
+    .await;
+
+    let on_pro = ClientConditions {
+        tariff: vec![pro],
+        ..ClientConditions::default()
+    };
+    let found = reach(&ctx, Audience::Filter(on_pro.clone())).await.unwrap();
+    assert_eq!(
+        (
+            found.recipients,
+            found.stopped,
+            found.emails,
+            found.unsubscribed
+        ),
+        (2, 1, 1, 1),
+        "заблокированные и удалённые не входят, остановившие и отписавшиеся считаются отдельно"
+    );
+    let paying = reach(
+        &ctx,
+        Audience::Filter(ClientConditions {
+            paid_from: Some(10),
+            ..on_pro.clone()
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!((paying.recipients, paying.emails), (1, 0));
+    let stopped_only = reach(
+        &ctx,
+        Audience::Filter(ClientConditions {
+            bot_stopped: Some(true),
+            ..ClientConditions::default()
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!((stopped_only.recipients, stopped_only.stopped), (0, 1));
+    assert_eq!(
+        reach(&ctx, Audience::Filter(ClientConditions::default()))
+            .await
+            .unwrap(),
+        reach(&ctx, Audience::All).await.unwrap(),
+        "без условий — как «все клиенты»"
+    );
+    assert_eq!(
+        code(
+            reach(
+                &ctx,
+                Audience::Filter(ClientConditions {
+                    status: Some(sn_store::ClientSegment::Blocked),
+                    ..ClientConditions::default()
+                })
+            )
+            .await
+            .unwrap_err()
+        ),
+        "broadcast.invalid"
+    );
+
+    let created = create(
+        &ctx,
+        &Draft {
+            channel: Channel::Both,
+            subject: Some("Новости".into()),
+            ..draft("Привет", Audience::Filter(on_pro.clone()))
+        },
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(created.audience_label, "Тариф «Про»");
+    let listed = list(&ctx, PageRequest::default()).await.unwrap();
+    assert_eq!(listed.items[0].audience_label, "Тариф «Про»");
+    let started = start(&ctx, created.id, None, None).await.unwrap();
+    assert_eq!(started.status, Status::Sending);
+    let mut conn = store.conn().await.unwrap();
+    let rows: Vec<(String, Option<i64>, Option<String>)> = sqlx::query_as(
+        "SELECT channel, chat_id, email FROM broadcast_recipients WHERE broadcast_id = $1 \
+         ORDER BY channel, chat_id, email",
+    )
+    .bind(created.id)
+    .fetch_all(conn.conn())
+    .await
+    .unwrap();
+    assert_eq!(
+        rows,
+        vec![
+            ("bot".to_string(), Some(3001), None),
+            ("bot".to_string(), Some(3006), None),
+            (
+                "email".to_string(),
+                None,
+                Some("letter@example.com".to_string())
+            ),
+        ]
+    );
+    drop(conn);
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn условия_про_деньги_только_с_правом_деньги() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    owner(&db).await;
+    let ctx = context(&db.store, Some(FakeSender::new()));
+    clients(&db.store, 9301, 2).await;
+    let registry = Arc::new(ModuleRegistry::new(crate::catalog::all()).unwrap());
+    let router = registry.admin_router(ctx);
+    let marketer = AdminPrincipal {
+        permissions: vec![sn_domain::access::Permission::Marketing],
+        ..admin(AdminRole::Support)
+    };
+    let call = |method: &str, uri: &str, who: AdminPrincipal, body: Option<serde_json::Value>| {
+        let mut request = Request::builder()
+            .method(method)
+            .uri(format!("/broadcast{uri}"))
+            .extension(who);
+        if body.is_some() {
+            request = request.header("content-type", "application/json");
+        }
+        request
+            .body(body.map_or_else(Body::empty, |b| Body::from(b.to_string())))
+            .unwrap()
+    };
+    let paid = serde_json::json!({ "audience": { "kind": "filter", "paid": true } });
+    let denied = router
+        .clone()
+        .oneshot(call(
+            "POST",
+            "/audience",
+            marketer.clone(),
+            Some(paid.clone()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+    assert_eq!(json_of(denied).await["error"]["code"], "auth.forbidden");
+    let plain = router
+        .clone()
+        .oneshot(call(
+            "POST",
+            "/audience",
+            marketer.clone(),
+            Some(serde_json::json!({ "audience": { "kind": "filter", "telegram": true } })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(plain.status(), StatusCode::OK);
+    assert_eq!(json_of(plain).await["recipients"], 2);
+    let draft_denied = router
+        .clone()
+        .oneshot(call(
+            "POST",
+            "/broadcasts",
+            marketer.clone(),
+            Some(serde_json::json!({
+                "text": "Привет",
+                "audience": { "kind": "filter", "balance": true },
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(draft_denied.status(), StatusCode::FORBIDDEN);
+    let allowed = router
+        .clone()
+        .oneshot(call(
+            "POST",
+            "/audience",
+            admin(AdminRole::Admin),
+            Some(paid),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(allowed.status(), StatusCode::OK);
+    assert_eq!(json_of(allowed).await["recipients"], 0);
+    let blocked = router
+        .clone()
+        .oneshot(call(
+            "POST",
+            "/audience",
+            admin(AdminRole::Admin),
+            Some(serde_json::json!({ "audience": { "kind": "filter", "status": "blocked" } })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(blocked.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(json_of(blocked).await["error"]["code"], "broadcast.invalid");
+    let options = router
+        .oneshot(call("GET", "/options", admin(AdminRole::Admin), None))
+        .await
+        .unwrap();
+    assert_eq!(options.status(), StatusCode::OK);
+    let options = json_of(options).await;
+    assert!(options["filter"]["tariffs"].is_array());
+    assert!(options["filter"]["categories"].is_array());
+    assert!(options["filter"]["utm"].is_array());
     db.cleanup().await;
 }

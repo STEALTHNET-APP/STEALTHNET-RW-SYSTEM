@@ -1757,6 +1757,117 @@ async fn клиенты_ищутся_и_история_собирается_че
 }
 
 #[tokio::test]
+async fn клиенты_отбираются_по_условиям_через_http() {
+    let Some(h) = http().await else { return };
+    let owner = h.owner().await;
+    let support = h.admin("support@example.com", AdminRole::Support).await;
+    let tariff = h.tariff().await;
+    let first = h.client(7_100_000_001).await;
+    let second = h.client(7_100_000_002).await;
+    {
+        let mut conn = h.services().store().conn().await.unwrap();
+        sqlx::query(
+            "INSERT INTO subscriptions (client_id, tariff_id, kind, expire_at) VALUES ($1, $2, 'paid', $3)",
+        )
+        .bind(first.0)
+        .bind(tariff.id.0)
+        .bind(start() + Duration::days(5))
+        .execute(conn.conn())
+        .await
+        .unwrap();
+    }
+    let ids = |page: &Value| -> Vec<i64> {
+        page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["client"]["id"].as_i64().unwrap())
+            .collect()
+    };
+    let (status, page) = h
+        .get(
+            &format!("/api/admin/clients?tariff={}", tariff.id.0),
+            &support,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    assert_eq!(ids(&page), vec![first.0]);
+    assert_eq!(page["items"][0]["tariff_name"], "Стандарт");
+    let (status, page) = h
+        .get(
+            &format!("/api/admin/clients?tariff={}&status=trial", tariff.id.0),
+            &owner,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    assert!(ids(&page).is_empty());
+    let (status, page) = h
+        .get("/api/admin/clients?ends=7&source=bot&telegram=yes", &owner)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    assert_eq!(ids(&page), vec![first.0]);
+    let (status, page) = h
+        .get("/api/admin/clients?segment=no_subscription", &owner)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    assert_eq!(ids(&page), vec![second.0]);
+    let (status, page) = h.get("/api/admin/clients?paid=no&balance=no", &owner).await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    assert_eq!(ids(&page).len(), 2);
+    let (status, counts) = h
+        .get(
+            &format!(
+                "/api/admin/clients/segments?tariff={}&status=trial",
+                tariff.id.0
+            ),
+            &support,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{counts}");
+    assert_eq!(counts["total"], 1);
+    assert_eq!(counts["active"], 1);
+    assert_eq!(counts["expiring_soon"], 0);
+    let (status, counts) = h.get("/api/admin/clients/segments?lang=en", &support).await;
+    assert_eq!(status, StatusCode::OK, "{counts}");
+    assert_eq!(counts["total"], 0);
+    for bad in [
+        "ends=0",
+        "tariff=abc",
+        "status=lost",
+        "source=ufo",
+        "from=2026-11-01",
+        "utm=a%20b",
+        "paid_from=10&paid_to=5",
+    ] {
+        let (status, body) = h.get(&format!("/api/admin/clients?{bad}"), &owner).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}: {body}");
+        assert_eq!(body["error"]["code"], "validation.filter", "{bad}");
+    }
+    for money in ["paid=yes", "paid_from=10", "paid_to=10", "balance=no"] {
+        let (status, body) = h
+            .get(&format!("/api/admin/clients?{money}"), &support)
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{money}: {body}");
+        let (status, _) = h
+            .get(&format!("/api/admin/clients/segments?{money}"), &support)
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{money}");
+    }
+    let (status, options) = h.get("/api/admin/clients/filter-options", &support).await;
+    assert_eq!(status, StatusCode::OK, "{options}");
+    assert_eq!(options["tariffs"][0]["id"], tariff.id.0);
+    assert_eq!(options["tariffs"][0]["name"], "Стандарт");
+    assert_eq!(options["tariffs"][0]["deleted"], false);
+    assert_eq!(options["categories"][0]["name"], "Основные");
+    assert_eq!(options["utm"], json!([]));
+    let (status, _) = h
+        .get("/api/admin/clients/filter-options", "нет-такого")
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    h.db.cleanup().await;
+}
+
+#[tokio::test]
 async fn варианты_пробного_периода_через_админку_и_кабинет() {
     let Some(h) = http().await else { return };
     let owner = h.owner().await;

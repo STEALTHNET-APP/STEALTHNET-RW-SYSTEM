@@ -1551,6 +1551,7 @@ impl<'a> Extras<'a> {
                 buttons,
                 en: None,
                 enabled: false,
+                audience: None,
             };
             match create_rule(&ctx, &draft, self.admin).await {
                 Ok(created) => {

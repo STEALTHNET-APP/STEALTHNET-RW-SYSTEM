@@ -220,7 +220,8 @@ Authorization: Bearer snk_…
 
 | Запрос | Право | Что делает |
 |---|---|---|
-| `GET /api/admin/clients?limit=50` | `clients_read` | Список клиентов |
+| `GET /api/admin/clients?limit=50` | `clients_read` | Список клиентов; условия — те же параметры, что в адресе страницы «Клиенты»: `tariff`, `category` (номера через запятую), `status`, `ends`, `ended`, `autorenew`, `source`, `lang`, `from`, `to` (RFC 3339), `paid`, `paid_from`, `paid_to`, `balance`, `telegram`, `email`, `bot_stopped`, `invited`, `invites` (`yes`/`no`), `utm`, `q`; условия про деньги — с правом `money` |
+| `GET /api/admin/clients/segments` | `clients_read` | Сколько клиентов в каждом состоянии; с теми же условиями — внутри отбора |
 | `GET /api/admin/clients/{id}` | `clients_read` | Карточка клиента |
 | `GET /api/admin/subscriptions/{id}` | `clients_read` | Подписка |
 | `POST /api/admin/clients/{id}/message` с `{"text": "…"}` | `clients_write` | Сообщение клиенту в бот |

@@ -897,6 +897,26 @@ impl<'a> ClientOps<'a> {
         Ok(conn.clients().segment_counts(self.services.now()).await?)
     }
 
+    pub async fn filter_options(&self) -> ServiceResult<sn_store::FilterOptions> {
+        let mut conn = self.services.store().conn().await?;
+        Ok(sn_store::filter_options(conn.conn()).await?)
+    }
+
+    pub async fn segment_counts_where(
+        &self,
+        filter: &ClientFilter,
+    ) -> ServiceResult<sn_store::SegmentCounts> {
+        let mut conn = self.services.store().conn().await?;
+        Ok(conn
+            .clients()
+            .segment_counts_where(
+                filter,
+                self.services.now(),
+                self.services.settings().currency,
+            )
+            .await?)
+    }
+
     pub async fn tariff_names(
         &self,
     ) -> ServiceResult<std::collections::HashMap<sn_domain::ids::TariffId, String>> {

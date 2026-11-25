@@ -84,7 +84,14 @@ export function DeleteTariff({ tariffId, onSale, onClose, onDeleted, onHidden }:
           ) : (
             <p className="muted">Список клиентов виден с правом «Клиенты: просмотр».</p>
           )}
-          {more > 0 && usage.holders.length > 0 ? <p className="muted">И ещё {more}.</p> : null}
+          {usage.holders.length > 0 ? (
+            <p className="muted tf-all">
+              {more > 0 ? `И ещё ${more}. ` : ''}
+              <Link className="link" to={`/admin/clients?tariff=${tariffId}`}>
+                Все клиенты тарифа в «Клиентах»
+              </Link>
+            </p>
+          ) : null}
           <p className="muted">
             Откройте клиента и нажмите «Сменить тариф» или «Удалить подписку». Чтобы тариф не покупали новые клиенты, снимите его с продажи: нынешние продлят как раньше.
           </p>

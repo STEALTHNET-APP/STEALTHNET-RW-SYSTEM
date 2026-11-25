@@ -1,11 +1,12 @@
-use super::{Audience, ButtonSpec, Channel, Cleaned, Lane, Status};
+use super::{Audience, AudienceNames, ButtonSpec, Channel, Cleaned, Lane, Status};
 use chrono::{DateTime, Duration, Utc};
 use serde::Serialize;
 use sn_domain::client::Locale;
 use sn_domain::ids::{AdminId, ClientId, TariffId};
 use sn_domain::image::ImageInfo;
+use sn_domain::money::Currency;
 use sn_domain::paging::{Page, PageRequest};
-use sn_store::{Db, StoreError, StoreResult};
+use sn_store::{ClientConditions, ClientSegment, Db, SqlArg, SqlArgs, StoreError, StoreResult};
 use std::collections::HashMap;
 use uuid::Uuid;
 
@@ -165,7 +166,22 @@ struct Parsed {
     audience_label: String,
 }
 
-fn parse(row: &Row) -> StoreResult<Parsed> {
+async fn names_for(db: &mut impl Db, rows: &[Row]) -> StoreResult<Option<AudienceNames>> {
+    if !rows
+        .iter()
+        .any(|row| row.audience.get("kind").and_then(|k| k.as_str()) == Some("filter"))
+    {
+        return Ok(None);
+    }
+    let options = sn_store::filter_options(db.conn()).await?;
+    Ok(Some(AudienceNames {
+        tariffs: options.tariff_names(),
+        categories: options.category_names(),
+        currency: crate::catalog::installation_currency(db).await?,
+    }))
+}
+
+fn parse(row: &Row, names: Option<&AudienceNames>) -> StoreResult<Parsed> {
     let status = Status::parse(&row.status)
         .ok_or_else(|| StoreError::Decode(format!("состояние рассылки: {}", row.status)))?;
     let channel = Channel::parse(&row.channel)
@@ -177,7 +193,7 @@ fn parse(row: &Row) -> StoreResult<Parsed> {
     Ok(Parsed {
         status,
         channel,
-        audience_label: audience.describe(row.tariff_name.as_deref()),
+        audience_label: audience.describe(row.tariff_name.as_deref(), names),
         buttons,
         audience,
     })
@@ -335,7 +351,8 @@ pub async fn view(db: &mut impl Db, id: i64) -> StoreResult<Broadcast> {
     .fetch_optional(db.conn())
     .await?
     .ok_or(StoreError::NotFound("рассылка"))?;
-    let parsed = parse(&row)?;
+    let names = names_for(db, std::slice::from_ref(&row)).await?;
+    let parsed = parse(&row, names.as_ref())?;
     let image = match row.image_id {
         Some(image) => image_meta(db, image).await?,
         None => None,
@@ -426,10 +443,11 @@ pub async fn list(db: &mut impl Db, page: PageRequest) -> StoreResult<Page<ListI
     .await?;
     let ids: Vec<i64> = rows.iter().map(|r| r.id).collect();
     let mut progress = progress_of(db, &ids).await?;
+    let names = names_for(db, &rows).await?;
     let items = rows
         .into_iter()
         .map(|row| {
-            let parsed = parse(&row)?;
+            let parsed = parse(&row, names.as_ref())?;
             Ok(ListItem {
                 id: row.id,
                 status: parsed.status,
@@ -467,7 +485,7 @@ fn rank_of(alias: &str) -> String {
     )
 }
 
-fn condition(audience: Audience) -> String {
+fn condition(audience: &Audience) -> String {
     let s = status_of("s");
     match audience {
         Audience::All => "TRUE".into(),
@@ -496,6 +514,7 @@ fn condition(audience: Audience) -> String {
              AND h.remna_missing_at IS NULL AND {} = 'active' AND h.tariff_id = $3)",
             status_of("h")
         ),
+        Audience::Filter(_) => "FALSE".into(),
     }
 }
 
@@ -520,7 +539,7 @@ fn identity(lane: Lane, value: bool) -> String {
     }
 }
 
-const fn active_only(audience: Audience) -> bool {
+const fn active_only(audience: &Audience) -> bool {
     matches!(
         audience,
         Audience::Active | Audience::Expiring { .. } | Audience::NeverConnected | Audience::Trial
@@ -544,7 +563,7 @@ fn excluded(lane: Lane) -> &'static str {
     }
 }
 
-fn audience_from(audience: Audience, lane: Lane, value: bool) -> String {
+fn audience_from(audience: &Audience, lane: Lane, value: bool) -> String {
     let subscription = if active_only(audience) {
         format!(
             "LEFT JOIN LATERAL (SELECT x.* FROM subscriptions x WHERE x.client_id = c.id AND x.ended_at IS NULL \
@@ -580,16 +599,16 @@ fn audience_from(audience: Audience, lane: Lane, value: bool) -> String {
     )
 }
 
-fn bound(audience: Audience, now: DateTime<Utc>) -> DateTime<Utc> {
+fn bound(audience: &Audience, now: DateTime<Utc>) -> DateTime<Utc> {
     match audience {
-        Audience::Expiring { days } => now + Duration::days(i64::from(days)),
+        Audience::Expiring { days } => now + Duration::days(i64::from(*days)),
         _ => now,
     }
 }
 
 async fn count_lane(
     db: &mut impl Db,
-    audience: Audience,
+    audience: &Audience,
     lane: Lane,
     now: DateTime<Utc>,
 ) -> StoreResult<(i64, i64)> {
@@ -605,9 +624,99 @@ async fn count_lane(
     .await?)
 }
 
-pub async fn reach(db: &mut impl Db, audience: Audience, now: DateTime<Utc>) -> StoreResult<Reach> {
-    let (recipients, stopped) = count_lane(db, audience, Lane::Bot, now).await?;
-    let (emails, unsubscribed) = count_lane(db, audience, Lane::Email, now).await?;
+fn filter_from(
+    conditions: &ClientConditions,
+    lane: Lane,
+    value: bool,
+    args: &mut SqlArgs,
+    now: DateTime<Utc>,
+    currency: Currency,
+) -> StoreResult<String> {
+    let order = format!("{}, x.expire_at DESC NULLS LAST, x.id DESC", rank_of("x"));
+    let narrowed = !conditions.tariff.is_empty()
+        || !conditions.category.is_empty()
+        || conditions.ends.is_some()
+        || conditions.ended.is_some()
+        || matches!(conditions.status, Some(status) if status != ClientSegment::NoSubscription);
+    let wide = !narrowed
+        && (conditions.autorenew == Some(false)
+            || conditions.status == Some(ClientSegment::NoSubscription));
+    let subscription = if wide {
+        format!(
+            "LEFT JOIN (SELECT DISTINCT ON (x.client_id) x.* FROM subscriptions x \
+             WHERE x.ended_at IS NULL AND x.remna_missing_at IS NULL \
+             ORDER BY x.client_id, {order}) s ON s.client_id = c.id"
+        )
+    } else if conditions.needs_primary() {
+        format!(
+            "LEFT JOIN LATERAL (SELECT x.* FROM subscriptions x WHERE x.client_id = c.id AND x.ended_at IS NULL \
+             AND x.remna_missing_at IS NULL ORDER BY {order} LIMIT 1) s ON true"
+        )
+    } else {
+        String::new()
+    };
+    let reachable = if checks_identity(lane, value) {
+        format!(
+            "AND EXISTS (SELECT 1 FROM client_identities i WHERE i.client_id = c.id AND {}) ",
+            identity_match(lane)
+        )
+    } else {
+        String::new()
+    };
+    let conditions = conditions.conditions(args, now, currency)?;
+    let tail = if conditions.is_empty() {
+        String::new()
+    } else {
+        format!("AND {}", conditions.join(" AND "))
+    };
+    Ok(format!(
+        "FROM clients c {} {subscription} \
+         WHERE c.deleted_at IS NULL AND c.status = 'active' {reachable}{tail}",
+        identity(lane, value),
+    ))
+}
+
+async fn count_filter(
+    db: &mut impl Db,
+    conditions: &ClientConditions,
+    lane: Lane,
+    now: DateTime<Utc>,
+) -> StoreResult<(i64, i64)> {
+    let currency = crate::catalog::installation_currency(db).await?;
+    let mut args = SqlArgs::with_clock(now)?;
+    let from = filter_from(
+        conditions,
+        lane,
+        needs_value(lane),
+        &mut args,
+        now,
+        currency,
+    )?;
+    let sql = format!(
+        "SELECT count(*) FILTER (WHERE NOT ({skip})), count(*) FILTER (WHERE {skip}) {from}",
+        skip = excluded(lane),
+    );
+    Ok(args
+        .bind_as(sqlx::query_as(&sql).persistent(false))
+        .fetch_one(db.conn())
+        .await?)
+}
+
+pub async fn reach(
+    db: &mut impl Db,
+    audience: &Audience,
+    now: DateTime<Utc>,
+) -> StoreResult<Reach> {
+    let ((recipients, stopped), (emails, unsubscribed)) = match audience {
+        Audience::Filter(conditions) => (
+            count_filter(db, conditions, Lane::Bot, now).await?,
+            count_filter(db, conditions, Lane::Email, now).await?,
+        ),
+        _ => (
+            count_lane(db, audience, Lane::Bot, now).await?,
+            count_lane(db, audience, Lane::Email, now).await?,
+        ),
+    };
     Ok(Reach {
         recipients,
         stopped,
@@ -616,33 +725,62 @@ pub async fn reach(db: &mut impl Db, audience: Audience, now: DateTime<Utc>) -> 
     })
 }
 
+fn recipient_select(lane: Lane, id: &str) -> String {
+    match lane {
+        Lane::Bot => format!("SELECT {id}, 'bot', c.id, ident.value::bigint, NULL, NULL"),
+        Lane::Email => {
+            format!("SELECT {id}, 'email', c.id, NULL, lower(ident.value), gen_random_uuid()")
+        }
+    }
+}
+
 pub async fn launch(
     db: &mut impl Db,
     id: i64,
-    audience: Audience,
+    audience: &Audience,
     channel: Channel,
     now: DateTime<Utc>,
     admin: Option<AdminId>,
 ) -> StoreResult<i64> {
     let mut inserted = 0u64;
+    let currency = match audience {
+        Audience::Filter(conditions) if conditions.uses_money() => {
+            crate::catalog::installation_currency(db).await?
+        }
+        _ => Currency::default(),
+    };
     for lane in channel.lanes() {
-        let select = match lane {
-            Lane::Bot => "SELECT $4, 'bot', c.id, ident.value::bigint, NULL, NULL",
-            Lane::Email => "SELECT $4, 'email', c.id, NULL, lower(ident.value), gen_random_uuid()",
+        inserted += match audience {
+            Audience::Filter(conditions) => {
+                let mut args = SqlArgs::with_clock(now)?;
+                let id_arg = args.push(SqlArg::Int(id));
+                let from = filter_from(conditions, lane, true, &mut args, now, currency)?;
+                let sql = format!(
+                    "INSERT INTO broadcast_recipients (broadcast_id, channel, client_id, chat_id, email, unsubscribe) \
+                     {select} {from} AND NOT ({skip}) ON CONFLICT DO NOTHING",
+                    select = recipient_select(lane, &format!("{id_arg}::bigint")),
+                    skip = excluded(lane),
+                );
+                args.bind(sqlx::query(&sql).persistent(false))
+                    .execute(db.conn())
+                    .await?
+                    .rows_affected()
+            }
+            _ => sqlx::query(&format!(
+                "INSERT INTO broadcast_recipients (broadcast_id, channel, client_id, chat_id, email, unsubscribe) \
+                 {select} {from} AND NOT ({skip}) ON CONFLICT DO NOTHING",
+                select = recipient_select(lane, "$4"),
+                from = audience_from(audience, lane, true),
+                skip = excluded(lane),
+            ))
+            .bind(now)
+            .bind(bound(audience, now))
+            .bind(audience.tariff().map_or(0, |t| t.0))
+            .bind(id)
+            .execute(db.conn())
+            .await?
+            .rows_affected(),
         };
-        inserted += sqlx::query(&format!(
-            "INSERT INTO broadcast_recipients (broadcast_id, channel, client_id, chat_id, email, unsubscribe) \
-             {select} {from} AND NOT ({skip}) ON CONFLICT DO NOTHING",
-            from = audience_from(audience, lane, true),
-            skip = excluded(lane),
-        ))
-        .bind(now)
-        .bind(bound(audience, now))
-        .bind(audience.tariff().map_or(0, |t| t.0))
-        .bind(id)
-        .execute(db.conn())
-        .await?
-        .rows_affected();
     }
     let total = i64::try_from(inserted).unwrap_or(i64::MAX);
     sqlx::query(

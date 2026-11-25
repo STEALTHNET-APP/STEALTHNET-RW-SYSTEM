@@ -20,6 +20,8 @@ import {
   type Note,
 } from './Message';
 import { ChannelPreview } from './Preview';
+import { FilterBar } from '../clients/Conditions';
+import { EMPTY, conditionsJson, fromAudience, type Conditions, type Kind } from '../clients/filters';
 import {
   AUTO_ROOT,
   BASE,
@@ -271,8 +273,22 @@ function englishBody(en: English | null) {
   return en ? { subject: en.subject.trim().replace(/\s+/g, ' ') || null, text: en.text, buttons: en.buttons.map(toSpec) } : null;
 }
 
+const RULE_EXCLUDE: Kind[] = ['status', 'term', 'registered'];
+
+function ruleExclude(option: { tariff: boolean; autorenew: boolean } | undefined): Kind[] {
+  const out = [...RULE_EXCLUDE];
+  if (option && !option.tariff) {
+    out.push('tariff', 'category');
+  }
+  if (option && !option.autorenew) {
+    out.push('autorenew');
+  }
+  return out;
+}
+
 function RuleEditor({ options, rule, onSaved, onDeleted }: EditorProps) {
-  const { me } = useSession();
+  const { me, can } = useSession();
+  const phone = usePhone();
   const auto = options.auto;
   const start = rule ? null : TRIGGER_WHEN.no_subscription;
   const [id, setId] = useState<number | null>(rule?.id ?? null);
@@ -291,6 +307,8 @@ function RuleEditor({ options, rule, onSaved, onDeleted }: EditorProps) {
   const [note, setNote] = useState<Note | null>(null);
   const [tried, setTried] = useState(false);
   const [confirm, setConfirm] = useState<Confirm>(null);
+  const [who, setWho] = useState<Conditions>(() => (rule?.audience ? fromAudience({ kind: 'filter', ...rule.audience }) : { ...EMPTY }));
+  const exclude = ruleExclude(auto.triggers.find((t) => t.key === trigger));
 
   const { channel, text, image, buttons } = message;
   const englishShown: MessageValue | null = english ? { ...message, subject: english.subject, text: english.text, buttons: english.buttons } : null;
@@ -325,17 +343,23 @@ function RuleEditor({ options, rule, onSaved, onDeleted }: EditorProps) {
   const check = lang === 'en' && checkEn ? checkEn : checkRu;
   const option = auto.triggers.find((t) => t.key === trigger);
   const byPercent = option?.percent ?? false;
+  const fixed = option?.fixed ?? false;
   const minAmount = option?.min ?? 1;
   const maxAmount = unit === 'hours' ? auto.hours_max : auto.days_max;
   const amountCount = Number.parseInt(amount, 10);
-  const amountOk = byPercent || (/^\d+$/.test(amount.trim()) && amountCount >= minAmount && amountCount <= maxAmount);
+  const amountOk =
+    byPercent ||
+    fixed ||
+    (/^\d+$/.test(amount.trim()) && amountCount >= minAmount && amountCount <= maxAmount && (trigger !== 'idle' || unit === 'days' || amountCount >= 24));
   const percentCount = Number.parseInt(percent, 10);
   const percentOk = !byPercent || (/^\d+$/.test(percent.trim()) && percentCount >= auto.percent_min && percentCount <= auto.percent_max);
   const whenOk = amountOk && percentOk;
   const renewal = trigger === 'expiring' && withRenewal;
   const subject = subjectOf(message);
   const whenProblem = !amountOk
-    ? `Число ${unit === 'hours' ? 'часов' : 'дней'} от ${minAmount} до ${maxAmount}`
+    ? trigger === 'idle' && unit === 'hours' && amountCount < 24 && amountCount >= minAmount
+      ? 'Без подключений — не меньше суток'
+      : `Число ${unit === 'hours' ? 'часов' : 'дней'} от ${minAmount} до ${maxAmount}`
     : !percentOk
       ? `Порог от ${auto.percent_min} до ${auto.percent_max}%`
       : null;
@@ -343,8 +367,8 @@ function RuleEditor({ options, rule, onSaved, onDeleted }: EditorProps) {
   const body = useMemo(
     () => ({
       trigger,
-      amount: byPercent || !amountOk ? 0 : amountCount,
-      unit: byPercent ? 'days' : unit,
+      amount: byPercent || fixed || !amountOk ? 0 : amountCount,
+      unit: byPercent || fixed ? 'days' : unit,
       percent: byPercent && percentOk ? percentCount : null,
       with_autorenew: renewal,
       channel,
@@ -353,15 +377,16 @@ function RuleEditor({ options, rule, onSaved, onDeleted }: EditorProps) {
       image_id: image?.id ?? null,
       buttons: buttons.map(toSpec),
       en: englishBody(english),
+      audience: conditionsJson(who),
     }),
-    [trigger, byPercent, amountOk, amountCount, unit, percentOk, percentCount, renewal, channel, subject, text, image, buttons, english],
+    [trigger, byPercent, fixed, amountOk, amountCount, unit, percentOk, percentCount, renewal, channel, subject, text, image, buttons, english, who],
   );
   const bodyKey = JSON.stringify(body);
   const [savedKey, setSavedKey] = useState(() => (rule ? bodyKey : ''));
   const dirty = bodyKey !== savedKey;
 
   const probeKey = whenOk
-    ? JSON.stringify({ trigger, amount: body.amount, unit: body.unit, percent: body.percent, with_autorenew: renewal, id })
+    ? JSON.stringify({ trigger, amount: body.amount, unit: body.unit, percent: body.percent, with_autorenew: renewal, id, audience: body.audience })
     : '';
   useEffect(() => {
     if (!probeKey) {
@@ -393,6 +418,13 @@ function RuleEditor({ options, rule, onSaved, onDeleted }: EditorProps) {
   const pickTrigger = (next: Trigger) => {
     setTrigger(next);
     setNote(null);
+    const nextOption = auto.triggers.find((t) => t.key === next);
+    setWho((current) => ({
+      ...current,
+      tariff: nextOption?.tariff === false ? [] : current.tariff,
+      category: nextOption?.tariff === false ? [] : current.category,
+      autorenew: nextOption?.autorenew === false ? null : current.autorenew,
+    }));
     if (!rule) {
       setAmount(String(TRIGGER_WHEN[next].amount));
       setUnit(TRIGGER_WHEN[next].unit);
@@ -428,6 +460,7 @@ function RuleEditor({ options, rule, onSaved, onDeleted }: EditorProps) {
         image_id: saved.image?.id ?? null,
         buttons: saved.buttons.map((b) => toSpec(toDraft(b))),
         en: englishBody(savedEnglish),
+        audience: saved.audience && Object.keys(saved.audience).length ? saved.audience : null,
       }),
     );
     onSaved(saved);
@@ -568,7 +601,7 @@ function RuleEditor({ options, rule, onSaved, onDeleted }: EditorProps) {
               Когда отправить
             </h2>
             <span className="muted">
-              Правило проверяет клиентов раз в {auto.every_minutes}&nbsp;минут и пишет каждому один раз на случай. Условия — по подпискам и покупкам клиента, тариф не важен.
+              Правило проверяет клиентов раз в {auto.every_minutes}&nbsp;минут и пишет каждому один раз на случай. Тариф и другие условия — в разделе «Кому».
             </span>
           </div>
           <div className="row">
@@ -586,6 +619,15 @@ function RuleEditor({ options, rule, onSaved, onDeleted }: EditorProps) {
               ))}
             </div>
           </div>
+          {fixed ? (
+            <div className="row">
+              <span className="rl">Срок</span>
+              <div className="rc">
+                <span className="ar-fixed">Сразу, как только у подписки заняты все устройства</span>
+                <span className="cap">Ещё раз — только если лимит устройств у подписки изменится</span>
+              </div>
+            </div>
+          ) : (
           <div className="row">
             <span className="rl">{byPercent ? 'Порог' : 'Срок'}</span>
             <div className="rc">
@@ -599,7 +641,7 @@ function RuleEditor({ options, rule, onSaved, onDeleted }: EditorProps) {
                     aria-label="Доля израсходованного трафика, процентов"
                     aria-invalid={!percentOk}
                     onChange={(e) => {
-                      setPercent(e.target.value.replace(/[^\d]/g, '').slice(0, 2));
+                      setPercent(e.target.value.replace(/[^\d]/g, '').slice(0, 3));
                       setNote(null);
                     }}
                   />
@@ -648,6 +690,7 @@ function RuleEditor({ options, rule, onSaved, onDeleted }: EditorProps) {
               )}
             </div>
           </div>
+          )}
           {trigger === 'expiring' ? (
             <div className="row">
               <div className="rc">
@@ -669,6 +712,22 @@ function RuleEditor({ options, rule, onSaved, onDeleted }: EditorProps) {
               </div>
             </div>
           ) : null}
+        </section>
+
+        <section className="sec" aria-labelledby="ar-who-h">
+          <div className="sec-head">
+            <h2 id="ar-who-h" className="section-title">
+              Кому
+            </h2>
+            <span className="muted">Необязательно. Без условий правило пишет каждому, кто попал под событие.</span>
+          </div>
+          <div className="row">
+            <div className="rc">
+              <FilterBar value={who} onChange={setWho} options={options.filter} currency={me.currency} money={can('money')} mode="rule" phone={phone} exclude={exclude} />
+              {option && !option.tariff ? <span className="cap">У этого события ещё нет подписки, поэтому тариф и автопродление здесь не выбираются</span> : null}
+              {option && option.tariff && !option.autorenew ? <span className="cap">Тариф — тот, который клиент выбрал в неоплаченном счёте</span> : null}
+            </div>
+          </div>
           <div className="bc-reach" aria-live="polite">
             {reachError ? (
               <span className="err">{reachError}</span>

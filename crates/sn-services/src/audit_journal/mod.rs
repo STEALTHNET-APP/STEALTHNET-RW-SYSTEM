@@ -1068,8 +1068,8 @@ impl<'a> AuditJournalOps<'a> {
             .clients()
             .search(
                 &sn_store::ClientFilter {
-                    segment: None,
                     query: Some(query),
+                    ..sn_store::ClientFilter::default()
                 },
                 sn_domain::paging::PageRequest::new(Some(8), None),
             )

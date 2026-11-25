@@ -14,12 +14,13 @@ use sn_domain::money::Money;
 use sn_domain::subscription::admin_status;
 use sn_services::clients::HistoryPage;
 use sn_services::email_admin::{EMAIL_TAKEN, EmailRemoved, EmailSet};
-use sn_store::{ClientFilter, ClientListItem, ClientSegment};
+use sn_store::{ClientConditions, ClientFilter, ClientListItem};
 
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/clients", get(list))
         .route("/clients/segments", get(segments))
+        .route("/clients/filter-options", get(filter_options))
         .route("/clients/grant-options", get(grant_options))
         .route("/clients/{id}", get(card))
         .route("/clients/{id}/history", get(history))
@@ -40,30 +41,37 @@ pub fn routes() -> Router<AppState> {
         )
 }
 
-pub(crate) fn segment(value: &str) -> Option<ClientSegment> {
-    Some(match value {
-        "active" => ClientSegment::Active,
-        "trial" => ClientSegment::Trial,
-        "no_subscription" => ClientSegment::NoSubscription,
-        "expiring_soon" => ClientSegment::ExpiringSoon,
-        "never_connected" => ClientSegment::NeverConnected,
-        "expired" => ClientSegment::Expired,
-        "limited" => ClientSegment::Limited,
-        "blocked" => ClientSegment::Blocked,
-        _ => return None,
-    })
-}
-
 #[derive(Deserialize)]
 struct ListQuery {
-    #[serde(default)]
-    segment: Option<String>,
     #[serde(default)]
     q: Option<String>,
     #[serde(default)]
     limit: Option<u32>,
     #[serde(default)]
     after: Option<i64>,
+}
+
+fn client_filter(
+    admin: &CurrentAdmin,
+    pairs: &[(String, String)],
+    query: Option<&str>,
+) -> ApiResult<ClientFilter> {
+    let conditions = ClientConditions::from_query(pairs.iter().map(|(k, v)| (k, v)))
+        .map_err(|message| ApiError::bad_request("validation.filter", message))?;
+    if conditions.uses_money() && !admin.can(Permission::Money) {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "auth.forbidden",
+            "Условия про оплаты и баланс доступны с правом «Деньги»",
+        ));
+    }
+    Ok(ClientFilter {
+        conditions,
+        query: query
+            .map(str::trim)
+            .filter(|q| !q.is_empty())
+            .map(|q| q.chars().take(200).collect()),
+    })
 }
 
 fn list_item(
@@ -95,29 +103,11 @@ fn list_item(
 async fn list(
     admin: CurrentAdmin,
     State(state): State<AppState>,
+    ApiQuery(pairs): ApiQuery<Vec<(String, String)>>,
     ApiQuery(query): ApiQuery<ListQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
     admin.require(Permission::ClientsRead)?;
-    let segment = match query
-        .segment
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty() && *s != "all")
-    {
-        Some(value) => Some(segment(value).ok_or_else(|| {
-            ApiError::bad_request("validation.segment", format!("неизвестный сегмент {value}"))
-        })?),
-        None => None,
-    };
-    let filter = ClientFilter {
-        segment,
-        query: query
-            .q
-            .as_deref()
-            .map(str::trim)
-            .filter(|q| !q.is_empty())
-            .map(|q| q.chars().take(200).collect()),
-    };
+    let filter = client_filter(&admin, &pairs, query.q.as_deref())?;
     let paging = Paging {
         limit: query.limit,
         after: query.after,
@@ -142,9 +132,25 @@ async fn list(
 async fn segments(
     admin: CurrentAdmin,
     State(state): State<AppState>,
+    ApiQuery(pairs): ApiQuery<Vec<(String, String)>>,
+    ApiQuery(query): ApiQuery<ListQuery>,
 ) -> ApiResult<Json<sn_store::SegmentCounts>> {
     admin.require(Permission::ClientsRead)?;
-    Ok(Json(state.services.clients().segment_counts().await?))
+    let filter = client_filter(&admin, &pairs, query.q.as_deref())?;
+    let clients = state.services.clients();
+    Ok(Json(if filter == ClientFilter::default() {
+        clients.segment_counts().await?
+    } else {
+        clients.segment_counts_where(&filter).await?
+    }))
+}
+
+async fn filter_options(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+) -> ApiResult<Json<sn_store::FilterOptions>> {
+    admin.require(Permission::ClientsRead)?;
+    Ok(Json(state.services.clients().filter_options().await?))
 }
 
 async fn card(

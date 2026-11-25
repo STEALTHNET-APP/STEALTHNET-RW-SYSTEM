@@ -20,6 +20,7 @@ use sn_domain::client::Locale;
 use sn_domain::ids::ClientId;
 use sn_domain::lang;
 use sn_domain::paging::{Page, PageRequest};
+use sn_store::ClientConditions;
 use uuid::Uuid;
 
 const UPLOAD_LIMIT: usize = IMAGE_MAX_BYTES + 64 * 1024;
@@ -63,6 +64,28 @@ pub fn admin(ctx: ModuleContext) -> Router {
         )
         .route("/auto/{id}/switch", post(auto_switch))
         .with_state(ctx)
+}
+
+fn money_conditions(admin: &Admin, audience: Option<&ClientConditions>) -> Result<(), WebError> {
+    if audience.is_some_and(ClientConditions::uses_money) && !admin.sees_money() {
+        return Err(WebError::new(
+            StatusCode::FORBIDDEN,
+            "auth.forbidden",
+            "Условия про оплаты и баланс доступны с правом «Деньги»",
+        ));
+    }
+    Ok(())
+}
+
+fn money_allowed(admin: &Admin, audience: &Audience) -> Result<(), WebError> {
+    if audience.uses_money() && !admin.sees_money() {
+        return Err(WebError::new(
+            StatusCode::FORBIDDEN,
+            "auth.forbidden",
+            "Условия про оплаты и баланс доступны с правом «Деньги»",
+        ));
+    }
+    Ok(())
 }
 
 fn parse<T: DeserializeOwned>(body: &Bytes) -> Result<T, WebError> {
@@ -109,6 +132,7 @@ async fn create(
 ) -> Result<Json<Broadcast>, WebError> {
     admin.require(Permission::Marketing)?;
     let draft: Draft = parse(&body)?;
+    money_allowed(&admin, &draft.audience)?;
     Ok(Json(
         super::create(&ctx, &draft, Some(admin.0.admin_id)).await?,
     ))
@@ -131,6 +155,7 @@ async fn update(
 ) -> Result<Json<Broadcast>, WebError> {
     admin.require(Permission::Marketing)?;
     let draft: Draft = parse(&body)?;
+    money_allowed(&admin, &draft.audience)?;
     Ok(Json(super::update(&ctx, id, &draft).await?))
 }
 
@@ -207,6 +232,7 @@ async fn auto_create(
 ) -> Result<Json<Rule>, WebError> {
     admin.require(Permission::Marketing)?;
     let draft: RuleDraft = parse(&body)?;
+    money_conditions(&admin, draft.audience.as_ref())?;
     Ok(Json(
         super::create_rule(&ctx, &draft, Some(admin.0.admin_id)).await?,
     ))
@@ -229,6 +255,7 @@ async fn auto_update(
 ) -> Result<Json<Rule>, WebError> {
     admin.require(Permission::Marketing)?;
     let draft: RuleDraft = parse(&body)?;
+    money_conditions(&admin, draft.audience.as_ref())?;
     Ok(Json(
         super::update_rule(&ctx, id, &draft, Some(admin.0.admin_id)).await?,
     ))
@@ -278,6 +305,7 @@ async fn auto_reach(
 ) -> Result<Json<AutoReach>, WebError> {
     admin.require(Permission::Marketing)?;
     let query: ReachQuery = parse(&body)?;
+    money_conditions(&admin, query.audience.as_ref())?;
     Ok(Json(super::rule_reach(&ctx, &query).await?))
 }
 
@@ -293,6 +321,7 @@ async fn audience(
 ) -> Result<Json<Reach>, WebError> {
     admin.require(Permission::Marketing)?;
     let body: AudienceBody = parse(&body)?;
+    money_allowed(&admin, &body.audience)?;
     Ok(Json(super::reach(&ctx, body.audience).await?))
 }
 

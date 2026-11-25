@@ -159,6 +159,7 @@ pub fn content(preset: &Preset, shop: Shop) -> RuleContent {
         image_id: None,
         buttons: ru.buttons,
         en: Some(en),
+        audience: None,
     }
 }
 

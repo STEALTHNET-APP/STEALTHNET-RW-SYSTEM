@@ -4,15 +4,15 @@ import { useSession } from '../session';
 import { MessageFields, TestFields, checkMessage, messageFrom, subjectOf, toDraft, toSpec, type MessageValue, type Note } from './Message';
 import { ChannelPreview } from './Preview';
 import {
-  AUDIENCES,
   BASE,
   addresses,
   at,
-  audienceOf,
   clients,
+  conditionsOf,
   count,
   hasBot,
   hasEmail,
+  isLegacy,
   reachText,
   reachTotal,
   failText,
@@ -20,12 +20,19 @@ import {
   localInput,
   zoneLabel,
   type Audience,
-  type AudienceKind,
   type Broadcast,
   type Options,
   type Reach,
 } from './model';
+import { usePhone } from '../../lib/media';
+import { useSearchParams } from 'react-router';
+import { FilterBar, filterCount } from '../clients/Conditions';
+import { readParams, toAudience, type Conditions } from '../clients/filters';
 import '../form.css';
+
+function fromLink(cond: Conditions): Conditions {
+  return cond.status === 'blocked' ? { ...cond, status: null } : cond;
+}
 
 function nextHour(): Date {
   const date = new Date(Date.now() + 3_600_000);
@@ -41,14 +48,15 @@ type Props = {
 };
 
 export function Composer({ options, initial, onSaved, onDeleted }: Props) {
-  const { me } = useSession();
+  const { me, can } = useSession();
+  const phone = usePhone();
+  const [params] = useSearchParams();
   const limits = options.limits;
-  const start: Audience = initial?.audience ?? { kind: 'all' };
+  const start: Audience = initial?.audience ?? toAudience(fromLink(readParams(params)));
   const [id, setId] = useState<number | null>(initial?.id ?? null);
   const [message, setMessage] = useState<MessageValue>(() => messageFrom(initial));
-  const [kind, setKind] = useState<AudienceKind>(start.kind);
-  const [days, setDays] = useState(start.kind === 'expiring' ? String(start.days) : '3');
-  const [tariff, setTariff] = useState<number | null>(start.kind === 'tariff' ? start.tariff_id : (options.tariffs[0]?.id ?? null));
+  const [cond, setCond] = useState<Conditions>(() => conditionsOf(start));
+  const [legacy, setLegacy] = useState<Audience | null>(isLegacy(start) ? start : null);
   const [reach, setReach] = useState<Reach | null>(null);
   const [reachError, setReachError] = useState<string | null>(null);
   const [when, setWhen] = useState<'now' | 'later'>('now');
@@ -58,9 +66,8 @@ export function Composer({ options, initial, onSaved, onDeleted }: Props) {
   const [note, setNote] = useState<Note | null>(null);
   const [tried, setTried] = useState(false);
 
-  const dayCount = Number.parseInt(days, 10);
-  const daysOk = /^\d+$/.test(days.trim()) && dayCount >= 1 && dayCount <= limits.days;
-  const audience = kind === 'expiring' ? (daysOk ? audienceOf(kind, dayCount, tariff) : null) : audienceOf(kind, dayCount, tariff);
+  const termOk = (cond.ends === null || cond.ends > 0) && (cond.ended === null || cond.ended > 0);
+  const audience: Audience | null = legacy ?? (termOk ? toAudience(cond) : null);
   const audienceKey = JSON.stringify(audience);
 
   const { channel, subject, text, image, buttons } = message;
@@ -240,56 +247,28 @@ export function Composer({ options, initial, onSaved, onDeleted }: Props) {
                   : ' Кто остановил бота, не получит сообщение в бот, кто отписался от рассылок — письмо.'}
             </span>
           </div>
-          <div className="row">
-            <div className="rc bc-opts" role="radiogroup" aria-label="Кому отправить">
-              {AUDIENCES.map((option) => (
-                <div key={option.kind}>
-                  <label className="bc-opt">
-                    <input type="radio" name="bc-audience" checked={kind === option.kind} onChange={() => setKind(option.kind)} />
-                    <span className="bc-opt-text">
-                      <span className="bc-opt-title">{option.title}</span>
-                      <span className="cap">{option.hint}</span>
-                    </span>
-                  </label>
-                  {option.kind === 'expiring' && kind === 'expiring' ? (
-                    <span className="bc-extra">
-                      <span>Не больше</span>
-                      <input
-                        className="fld"
-                        value={days}
-                        inputMode="numeric"
-                        aria-label="Сколько дней осталось"
-                        aria-invalid={!daysOk}
-                        onChange={(e) => setDays(e.target.value.replace(/[^\d]/g, '').slice(0, 3))}
-                      />
-                      <span>дней до конца подписки</span>
-                      {!daysOk ? <span className="err">от 1 до {limits.days}</span> : null}
-                    </span>
-                  ) : null}
-                  {option.kind === 'tariff' && kind === 'tariff' ? (
-                    <span className="bc-extra">
-                      {options.tariffs.length ? (
-                        <select
-                          className="field"
-                          value={tariff ?? ''}
-                          aria-label="Тариф"
-                          onChange={(e) => setTariff(e.target.value ? Number(e.target.value) : null)}
-                        >
-                          {options.tariffs.map((t) => (
-                            <option key={t.id} value={t.id}>
-                              {t.name}
-                            </option>
-                          ))}
-                        </select>
-                      ) : (
-                        <span className="err">Тарифов пока нет</span>
-                      )}
-                    </span>
-                  ) : null}
-                </div>
-              ))}
+          {legacy ? (
+            <div className="row">
+              <div className="rc">
+                <span>
+                  <b>{initial?.audience_label}</b>
+                </span>
+                <span className="cap">Условие из прежней версии рассылок, работает как раньше. Чтобы поменять, переведите его в новые условия.</span>
+                <span>
+                  <button type="button" className="b38" onClick={() => setLegacy(null)}>
+                    Изменить условия
+                  </button>
+                </span>
+              </div>
             </div>
-          </div>
+          ) : (
+            <div className="row">
+              <div className="rc">
+                <FilterBar value={cond} onChange={setCond} options={options.filter} currency={me.currency} money={can('money')} mode="broadcast" phone={phone} />
+                {filterCount(cond, 'broadcast') === 0 ? <span className="cap">Без условий рассылка уйдёт всем клиентам</span> : null}
+              </div>
+            </div>
+          )}
           <div className="bc-reach" aria-live="polite">
             {reachError ? (
               <span className="err">{reachError}</span>

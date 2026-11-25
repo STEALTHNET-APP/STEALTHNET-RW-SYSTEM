@@ -12,7 +12,7 @@ use sn_domain::client::{Languages, Locale};
 use sn_domain::format::plural_ru;
 use sn_domain::ids::{AdminId, ClientId};
 use sn_domain::settings::keys;
-use sn_store::{ActorKind, AuditEntry, Db, StoreError};
+use sn_store::{ActorKind, AuditEntry, ClientConditions, Db, StoreError};
 use std::collections::{HashMap, HashSet};
 
 pub const AUTO_TASK: &str = "auto";
@@ -22,7 +22,7 @@ pub const RULE_ENTITY: &str = "broadcast_rule";
 pub const RULES_MAX: usize = 50;
 pub const HOURS_MAX: u16 = 168;
 pub const PERCENT_MIN: u8 = 10;
-pub const PERCENT_MAX: u8 = 99;
+pub const PERCENT_MAX: u8 = 100;
 pub const PERCENT_DEFAULT: u8 = 80;
 const BATCH: i64 = 500;
 
@@ -37,10 +37,14 @@ pub enum Trigger {
     Expired,
     NoPurchase,
     NotConnected,
+    UnpaidOrder,
+    FirstPurchase,
+    Idle,
+    DevicesFull,
 }
 
 impl Trigger {
-    pub const ALL: [Trigger; 8] = [
+    pub const ALL: [Trigger; 12] = [
         Trigger::NoSubscription,
         Trigger::TrialExpiring,
         Trigger::Expiring,
@@ -49,6 +53,10 @@ impl Trigger {
         Trigger::Expired,
         Trigger::NoPurchase,
         Trigger::NotConnected,
+        Trigger::UnpaidOrder,
+        Trigger::FirstPurchase,
+        Trigger::Idle,
+        Trigger::DevicesFull,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -61,6 +69,10 @@ impl Trigger {
             Trigger::Expired => "expired",
             Trigger::NoPurchase => "no_purchase",
             Trigger::NotConnected => "not_connected",
+            Trigger::UnpaidOrder => "unpaid_order",
+            Trigger::FirstPurchase => "first_purchase",
+            Trigger::Idle => "idle",
+            Trigger::DevicesFull => "devices_full",
         }
     }
 
@@ -78,14 +90,35 @@ impl Trigger {
             Trigger::Expired => "Подписка закончилась и не продлена",
             Trigger::NoPurchase => "Нет покупок после регистрации",
             Trigger::NotConnected => "Нет подключений после покупки",
+            Trigger::UnpaidOrder => "Счёт создан и не оплачен",
+            Trigger::FirstPurchase => "Первая покупка",
+            Trigger::Idle => "Подписка действует, но давно нет подключений",
+            Trigger::DevicesFull => "Заняты все устройства",
         }
     }
 
     pub const fn min_amount(self) -> u16 {
         match self {
-            Trigger::Expired | Trigger::TrialEnded | Trigger::TrafficLow => 0,
+            Trigger::Expired | Trigger::TrialEnded | Trigger::TrafficLow | Trigger::DevicesFull => {
+                0
+            }
             _ => 1,
         }
+    }
+
+    pub const fn fixed(self) -> bool {
+        matches!(self, Trigger::DevicesFull)
+    }
+
+    pub const fn has_tariff(self) -> bool {
+        !matches!(self, Trigger::NoPurchase | Trigger::NoSubscription)
+    }
+
+    pub const fn has_autorenew(self) -> bool {
+        !matches!(
+            self,
+            Trigger::NoPurchase | Trigger::NoSubscription | Trigger::UnpaidOrder
+        )
     }
 
     pub const fn by_percent(self) -> bool {
@@ -108,6 +141,10 @@ impl Trigger {
                 format!("через {span} после регистрации")
             }
             Trigger::NotConnected => format!("через {span} после покупки"),
+            Trigger::UnpaidOrder => format!("через {span} после создания счёта"),
+            Trigger::FirstPurchase => format!("через {span} после первой покупки"),
+            Trigger::Idle => format!("после {span} без подключений"),
+            Trigger::DevicesFull => "когда заняты все устройства".into(),
         }
     }
 }
@@ -203,6 +240,9 @@ pub struct TriggerOption {
     pub title: &'static str,
     pub min: u16,
     pub percent: bool,
+    pub fixed: bool,
+    pub tariff: bool,
+    pub autorenew: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -246,6 +286,9 @@ pub async fn options(db: &mut impl Db) -> Result<AutoOptions, StoreError> {
                 title: key.title(),
                 min: key.min_amount(),
                 percent: key.by_percent(),
+                fixed: key.fixed(),
+                tariff: key.has_tariff(),
+                autorenew: key.has_autorenew(),
             })
             .collect(),
     })
@@ -276,6 +319,8 @@ pub struct RuleDraft {
     pub en: Option<Localized>,
     #[serde(default)]
     pub enabled: bool,
+    #[serde(default)]
+    pub audience: Option<ClientConditions>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -290,6 +335,7 @@ pub struct RuleContent {
     pub image_id: Option<i64>,
     pub buttons: Vec<ButtonSpec>,
     pub en: Option<Localized>,
+    pub audience: Option<ClientConditions>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
@@ -327,6 +373,8 @@ pub struct Rule {
     pub image: Option<ImageMeta>,
     pub buttons: Vec<ButtonSpec>,
     pub en: Option<Localized>,
+    pub audience: Option<ClientConditions>,
+    pub audience_label: Option<String>,
     pub preset: Option<String>,
     pub enabled: bool,
     pub notice: Option<String>,
@@ -353,6 +401,7 @@ pub struct RuleItem {
     pub has_image: bool,
     pub buttons: usize,
     pub english: bool,
+    pub audience_label: Option<String>,
     pub preset: Option<String>,
     pub enabled: bool,
     pub notice: Option<String>,
@@ -372,6 +421,8 @@ pub struct ReachQuery {
     pub with_autorenew: bool,
     #[serde(default)]
     pub id: Option<i64>,
+    #[serde(default)]
+    pub audience: Option<ClientConditions>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
@@ -405,6 +456,9 @@ fn check_when(
         }
         return Ok((Delay::days(0), Some(value)));
     }
+    if trigger.fixed() {
+        return Ok((Delay::days(0), None));
+    }
     let min = trigger.min_amount();
     let max = unit.max();
     if amount < min || amount > max {
@@ -414,7 +468,11 @@ fn check_when(
         };
         return Err(invalid(format!("Когда: число {what} от {min} до {max}")));
     }
-    Ok((Delay { amount, unit }, None))
+    let delay = Delay { amount, unit };
+    if trigger == Trigger::Idle && delay.span() < Duration::days(1) {
+        return Err(invalid("Когда: без подключений — не меньше суток"));
+    }
+    Ok((delay, None))
 }
 
 fn english(err: BroadcastError) -> BroadcastError {
@@ -448,6 +506,39 @@ fn clean_en(
     }))
 }
 
+pub fn check_audience(
+    trigger: Trigger,
+    audience: Option<&ClientConditions>,
+) -> Result<Option<ClientConditions>, BroadcastError> {
+    let Some(audience) = audience.filter(|a| !a.is_empty()) else {
+        return Ok(None);
+    };
+    audience
+        .check()
+        .map_err(|message| invalid(format!("Кому: {message}")))?;
+    if audience.status.is_some()
+        || audience.ends.is_some()
+        || audience.ended.is_some()
+        || audience.from.is_some()
+        || audience.to.is_some()
+    {
+        return Err(invalid(
+            "Кому: состояние подписки и сроки задаёт само правило, в «Кому» их нет",
+        ));
+    }
+    if !trigger.has_tariff() && (!audience.tariff.is_empty() || !audience.category.is_empty()) {
+        return Err(invalid(
+            "Кому: у этого события нет подписки, тариф и категория не подходят",
+        ));
+    }
+    if !trigger.has_autorenew() && audience.autorenew.is_some() {
+        return Err(invalid(
+            "Кому: у этого события нет подписки с автопродлением, это условие не подходит",
+        ));
+    }
+    Ok(Some(audience.clone()))
+}
+
 async fn cleaned(db: &mut impl Db, draft: &RuleDraft) -> Result<RuleContent, BroadcastError> {
     let (delay, percent) = check_when(draft.trigger, draft.amount, draft.unit, draft.percent)?;
     if let Some(id) = draft.image_id
@@ -470,6 +561,7 @@ async fn cleaned(db: &mut impl Db, draft: &RuleDraft) -> Result<RuleContent, Bro
         image_id: draft.image_id,
         buttons: clean_buttons(&draft.buttons)?,
         en: clean_en(draft.en.as_ref(), draft.channel, with_image)?,
+        audience: check_audience(draft.trigger, draft.audience.as_ref())?,
     })
 }
 
@@ -505,9 +597,34 @@ pub(super) fn audit(
     }
 }
 
+async fn names(
+    db: &mut impl Db,
+    rows: &[&RuleRow],
+) -> Result<Option<super::AudienceNames>, BroadcastError> {
+    if rows.iter().all(|row| row.audience.is_none()) {
+        return Ok(None);
+    }
+    let options = sn_store::filter_options(db.conn()).await?;
+    Ok(Some(super::AudienceNames {
+        tariffs: options.tariff_names(),
+        categories: options.category_names(),
+        currency: crate::catalog::installation_currency(db).await?,
+    }))
+}
+
+fn audience_label(
+    audience: Option<&ClientConditions>,
+    names: Option<&super::AudienceNames>,
+) -> Option<String> {
+    let audience = audience?;
+    let label = super::Audience::Filter(audience.clone()).describe(None, names);
+    Some(label)
+}
+
 async fn view(db: &mut impl Db, id: i64) -> Result<Rule, BroadcastError> {
     let row = auto_store::row(db, id).await?;
     let parsed = auto_store::parse(&row)?;
+    let names = names(db, &[&row]).await?;
     let image = match row.image_id {
         Some(image) => store::image_meta(db, image).await?,
         None => None,
@@ -534,6 +651,8 @@ async fn view(db: &mut impl Db, id: i64) -> Result<Rule, BroadcastError> {
         image,
         buttons: parsed.buttons,
         en: parsed.en,
+        audience_label: audience_label(parsed.audience.as_ref(), names.as_ref()),
+        audience: parsed.audience,
         preset: row.preset,
         enabled: row.enabled,
         notice: row.notice,
@@ -546,7 +665,11 @@ async fn view(db: &mut impl Db, id: i64) -> Result<Rule, BroadcastError> {
     })
 }
 
-fn item(row: &RuleRow, tally: Tally) -> Result<RuleItem, BroadcastError> {
+fn item(
+    row: &RuleRow,
+    tally: Tally,
+    names: Option<&super::AudienceNames>,
+) -> Result<RuleItem, BroadcastError> {
     let parsed = auto_store::parse(row)?;
     Ok(RuleItem {
         id: row.id,
@@ -562,6 +685,7 @@ fn item(row: &RuleRow, tally: Tally) -> Result<RuleItem, BroadcastError> {
         has_image: row.image_id.is_some(),
         buttons: parsed.buttons.len(),
         english: parsed.en.is_some(),
+        audience_label: audience_label(parsed.audience.as_ref(), names),
         preset: row.preset.clone(),
         enabled: row.enabled,
         notice: row.notice.clone(),
@@ -574,8 +698,15 @@ pub async fn rules(ctx: &ModuleContext) -> Result<Vec<RuleItem>, BroadcastError>
     let rows = auto_store::rows(&mut conn).await?;
     let ids: Vec<i64> = rows.iter().map(|r| r.id).collect();
     let mut tallies = auto_store::tallies(&mut conn, &ids).await?;
+    let names = names(&mut conn, &rows.iter().collect::<Vec<_>>()).await?;
     rows.iter()
-        .map(|row| item(row, tallies.remove(&row.id).unwrap_or_default()))
+        .map(|row| {
+            item(
+                row,
+                tallies.remove(&row.id).unwrap_or_default(),
+                names.as_ref(),
+            )
+        })
         .collect()
 }
 
@@ -592,6 +723,7 @@ fn details(content: &RuleContent, enabled: bool) -> serde_json::Value {
         "percent": content.percent,
         "channel": content.channel,
         "english": content.en.is_some(),
+        "audience": content.audience,
         "enabled": enabled,
     })
 }
@@ -709,8 +841,10 @@ pub async fn rule_reach(
     query: &ReachQuery,
 ) -> Result<AutoReach, BroadcastError> {
     let (delay, percent) = check_when(query.trigger, query.amount, query.unit, query.percent)?;
+    let audience = check_audience(query.trigger, query.audience.as_ref())?;
     let mut conn = ctx.store.conn().await?;
     let now = crate::catalog::db_now(&mut conn).await?;
+    let currency = crate::catalog::installation_currency(&mut conn).await?;
     let probe = Probe {
         trigger: query.trigger,
         delay,
@@ -718,6 +852,8 @@ pub async fn rule_reach(
         with_autorenew: query.with_autorenew && query.trigger == Trigger::Expiring,
         rule: query.id,
         english: false,
+        audience,
+        currency,
     };
     let bounds = Bounds::of(
         query.trigger,
@@ -816,6 +952,12 @@ async fn check_rule(
     if parsed.trigger == Trigger::TrafficLow {
         auto_store::rearm_traffic(&mut tx, id, parsed.percent.unwrap_or(PERCENT_DEFAULT)).await?;
     }
+    let currency = match &parsed.audience {
+        Some(audience) if audience.uses_money() => {
+            crate::catalog::installation_currency(&mut tx).await?
+        }
+        _ => sn_domain::money::Currency::default(),
+    };
     let probe = Probe {
         trigger: parsed.trigger,
         delay: parsed.delay,
@@ -823,6 +965,8 @@ async fn check_rule(
         with_autorenew: row.with_autorenew,
         rule: Some(id),
         english: english && parsed.en.is_some(),
+        audience: parsed.audience.clone(),
+        currency,
     };
     let bounds = Bounds::of(
         parsed.trigger,

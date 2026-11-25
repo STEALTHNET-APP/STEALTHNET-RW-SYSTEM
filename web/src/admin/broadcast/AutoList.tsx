@@ -16,6 +16,9 @@ function meta(item: RuleItem): string {
   if (item.with_autorenew) {
     parts.push('и с автопродлением');
   }
+  if (item.audience_label) {
+    parts.push(`кому: ${item.audience_label.charAt(0).toLowerCase()}${item.audience_label.slice(1)}`);
+  }
   return parts.join(' · ');
 }
 

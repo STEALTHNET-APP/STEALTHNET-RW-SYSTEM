@@ -4,7 +4,8 @@ use super::{ButtonSpec, Channel, Lane};
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use sn_domain::client::Locale;
 use sn_domain::ids::{AdminId, ClientId};
-use sn_store::{Db, StoreError, StoreResult};
+use sn_domain::money::Currency;
+use sn_store::{ClientConditions, Db, SqlArg, SqlArgs, StoreError, StoreResult};
 use std::collections::HashMap;
 
 const PROBLEMS: i64 = 6;
@@ -23,6 +24,7 @@ pub struct RuleRow {
     pub image_id: Option<i64>,
     pub buttons: serde_json::Value,
     pub en: Option<serde_json::Value>,
+    pub audience: Option<serde_json::Value>,
     pub preset: Option<String>,
     pub enabled: bool,
     pub version: i32,
@@ -33,7 +35,7 @@ pub struct RuleRow {
 }
 
 const COLUMNS: &str = "id, trigger, amount, unit, percent, with_autorenew, channel, subject, text, image_id, buttons, \
-                       en, preset, enabled, version, notice, checked_at, created_at, updated_at";
+                       en, audience, preset, enabled, version, notice, checked_at, created_at, updated_at";
 
 pub struct Parsed {
     pub trigger: Trigger,
@@ -42,6 +44,7 @@ pub struct Parsed {
     pub channel: Channel,
     pub buttons: Vec<ButtonSpec>,
     pub en: Option<Localized>,
+    pub audience: Option<ClientConditions>,
 }
 
 pub fn parse(row: &RuleRow) -> StoreResult<Parsed> {
@@ -60,6 +63,13 @@ pub fn parse(row: &RuleRow) -> StoreResult<Parsed> {
         ),
         None => None,
     };
+    let audience = match &row.audience {
+        Some(value) => Some(
+            serde_json::from_value::<ClientConditions>(value.clone())
+                .map_err(|e| StoreError::Decode(format!("условия «Кому» правила: {e}")))?,
+        ),
+        None => None,
+    };
     Ok(Parsed {
         trigger,
         delay: Delay {
@@ -70,6 +80,7 @@ pub fn parse(row: &RuleRow) -> StoreResult<Parsed> {
         channel,
         buttons,
         en,
+        audience,
     })
 }
 
@@ -81,6 +92,10 @@ fn en_json(content: &RuleContent) -> StoreResult<Option<serde_json::Value>> {
     content.en.as_ref().map(json).transpose()
 }
 
+fn audience_json(content: &RuleContent) -> StoreResult<Option<serde_json::Value>> {
+    content.audience.as_ref().map(json).transpose()
+}
+
 pub async fn insert(
     db: &mut impl Db,
     content: &RuleContent,
@@ -90,8 +105,8 @@ pub async fn insert(
 ) -> StoreResult<i64> {
     Ok(sqlx::query_scalar(
         "INSERT INTO auto_broadcasts (trigger, amount, unit, percent, with_autorenew, channel, subject, text, \
-         image_id, buttons, en, enabled, preset, created_by) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING id",
+         image_id, buttons, en, enabled, preset, created_by, audience) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING id",
     )
     .bind(content.trigger.as_str())
     .bind(i32::from(content.delay.amount))
@@ -107,6 +122,7 @@ pub async fn insert(
     .bind(enabled)
     .bind(preset)
     .bind(admin.map(|a| a.0))
+    .bind(audience_json(content)?)
     .fetch_one(db.conn())
     .await?)
 }
@@ -122,7 +138,7 @@ pub async fn update(
          version = version + CASE WHEN (channel, subject, text, image_id, buttons, en) \
              IS DISTINCT FROM ($7, $8, $9, $10, $11, $12) THEN 1 ELSE 0 END, \
          trigger = $2, amount = $3, unit = $4, percent = $5, with_autorenew = $6, channel = $7, subject = $8, \
-         text = $9, image_id = $10, buttons = $11, en = $12, enabled = $13, \
+         text = $9, image_id = $10, buttons = $11, en = $12, enabled = $13, audience = $14, \
          notice = CASE WHEN $13 THEN notice END \
          WHERE id = $1",
     )
@@ -139,6 +155,7 @@ pub async fn update(
     .bind(json(&content.buttons)?)
     .bind(en_json(content)?)
     .bind(enabled)
+    .bind(audience_json(content)?)
     .execute(db.conn())
     .await?;
     Ok(())
@@ -371,20 +388,24 @@ const LIVE: &str = "s.ended_at IS NULL AND s.remna_missing_at IS NULL \
 const OVER: &str = "s.traffic_limit_bytes > 0 AND s.traffic_used_bytes IS NOT NULL \
                     AND s.traffic_used_bytes::numeric * 100 >= s.traffic_limit_bytes::numeric * $7";
 
+const SUB: &str = "s.tariff_id AS tariff_id, s.autorenew_enabled AS autorenew";
+
+const NO_SUB: &str = "NULL::bigint AS tariff_id, NULL::boolean AS autorenew";
+
 fn cases_sql(trigger: Trigger) -> String {
     let delay = "make_interval(secs => $4)";
     let key = hour_key("s.expire_at");
     match trigger {
         Trigger::Expiring => format!(
             "SELECT s.client_id, 'expiring:' || s.id || ':' || {key} AS case_key, \
-             s.expire_at - {delay} AS due_at \
+             s.expire_at - {delay} AS due_at, {SUB} \
              FROM subscriptions s \
              WHERE s.expire_at > $2 AND s.expire_at <= $3 AND s.expire_at > $1 AND s.kind <> 'trial' AND {LIVE} \
              AND ($5 OR NOT s.autorenew_enabled)"
         ),
         Trigger::TrialExpiring => format!(
             "SELECT s.client_id, 'trial_expiring:' || s.id || ':' || {key} AS case_key, \
-             s.expire_at - {delay} AS due_at \
+             s.expire_at - {delay} AS due_at, {SUB} \
              FROM subscriptions s \
              WHERE s.expire_at > $2 AND s.expire_at <= $3 AND s.expire_at > $1 AND s.kind = 'trial' AND {LIVE} \
              AND NOT {bought}",
@@ -392,14 +413,14 @@ fn cases_sql(trigger: Trigger) -> String {
         ),
         Trigger::Expired => format!(
             "SELECT s.client_id, 'expired:' || s.id || ':' || {key} AS case_key, \
-             s.expire_at + {delay} AS due_at \
+             s.expire_at + {delay} AS due_at, {SUB} \
              FROM subscriptions s \
              WHERE s.expire_at > $2 AND s.expire_at <= $3 AND s.kind <> 'trial' AND {ENDED_BY_TIME} \
              AND NOT {OTHER_LIVE}"
         ),
         Trigger::TrialEnded => format!(
             "SELECT s.client_id, 'trial:' || s.id || ':' || {key} AS case_key, \
-             s.expire_at + {delay} AS due_at \
+             s.expire_at + {delay} AS due_at, {SUB} \
              FROM subscriptions s \
              WHERE s.expire_at > $2 AND s.expire_at <= $3 AND s.kind = 'trial' AND {ENDED_BY_TIME} \
              AND NOT {OTHER_LIVE} AND NOT {bought}",
@@ -407,7 +428,7 @@ fn cases_sql(trigger: Trigger) -> String {
         ),
         Trigger::NoPurchase => format!(
             "SELECT c.id AS client_id, 'registered:' || c.id AS case_key, \
-             c.created_at + {delay} AS due_at \
+             c.created_at + {delay} AS due_at, {NO_SUB} \
              FROM clients c \
              WHERE c.created_at > $2 AND c.created_at <= $3 AND c.deleted_at IS NULL \
              AND c.registration_source NOT IN ('import', 'migration') AND NOT {bought}",
@@ -415,7 +436,7 @@ fn cases_sql(trigger: Trigger) -> String {
         ),
         Trigger::NoSubscription => format!(
             "SELECT c.id AS client_id, 'nosub:' || c.id AS case_key, \
-             c.created_at + {delay} AS due_at \
+             c.created_at + {delay} AS due_at, {NO_SUB} \
              FROM clients c \
              WHERE c.created_at > $2 AND c.created_at <= $3 AND c.deleted_at IS NULL \
              AND c.registration_source NOT IN ('import', 'migration') \
@@ -424,16 +445,61 @@ fn cases_sql(trigger: Trigger) -> String {
         ),
         Trigger::NotConnected => format!(
             "SELECT s.client_id, 'connect:' || s.id AS case_key, \
-             p.paid_at + {delay} AS due_at \
+             p.paid_at + {delay} AS due_at, {SUB} \
              FROM subscriptions s \
              JOIN LATERAL (SELECT min(o.paid_at) AS paid_at FROM orders o WHERE o.subscription_id = s.id \
                  AND o.paid_at IS NOT NULL AND o.kind IN ('new', 'renewal', 'change')) p ON true \
              WHERE p.paid_at > $2 AND p.paid_at <= $3 AND s.first_connected_at IS NULL \
              AND s.expire_at > $1 AND {LIVE}"
         ),
+        Trigger::UnpaidOrder => format!(
+            "SELECT o.client_id, 'unpaid:' || o.id AS case_key, o.created_at + {delay} AS due_at, \
+             CASE WHEN jsonb_typeof(o.intent -> 'tariff_id') = 'number' \
+                 THEN (o.intent ->> 'tariff_id')::bigint END AS tariff_id, NULL::boolean AS autorenew \
+             FROM orders o \
+             WHERE o.created_at > $2 AND o.created_at <= $3 AND o.paid_at IS NULL \
+             AND o.kind IN ('new', 'renewal', 'change') \
+             AND o.channel IS DISTINCT FROM 'autorenew' AND o.channel IS DISTINCT FROM 'admin' \
+             AND NOT EXISTS (SELECT 1 FROM orders n WHERE n.client_id = o.client_id AND n.id > o.id \
+                 AND n.kind IN ('new', 'renewal', 'change')) \
+             AND NOT EXISTS (SELECT 1 FROM orders p WHERE p.client_id = o.client_id \
+                 AND p.paid_at >= o.created_at)"
+        ),
+        Trigger::FirstPurchase => format!(
+            "SELECT o.client_id, 'first:' || o.client_id AS case_key, o.paid_at + {delay} AS due_at, \
+             s.tariff_id AS tariff_id, s.autorenew_enabled AS autorenew \
+             FROM orders o \
+             JOIN clients fc ON fc.id = o.client_id AND fc.registration_source NOT IN ('import', 'migration') \
+             LEFT JOIN subscriptions s ON s.id = o.subscription_id \
+             WHERE o.paid_at > $2 AND o.paid_at <= $3 AND o.kind IN ('new', 'renewal', 'change') \
+             AND NOT EXISTS (SELECT 1 FROM orders e WHERE e.client_id = o.client_id \
+                 AND e.kind IN ('new', 'renewal', 'change') AND e.paid_at IS NOT NULL \
+                 AND (e.paid_at, e.id) < (o.paid_at, o.id)) \
+             AND NOT EXISTS (SELECT 1 FROM subscriptions p WHERE p.client_id = o.client_id \
+                 AND p.kind = 'paid' AND p.created_at < o.created_at)"
+        ),
+        Trigger::Idle => format!(
+            "SELECT s.client_id, 'idle:' || s.id || ':' || {idle} AS case_key, \
+             s.online_at + {delay} AS due_at, {SUB} \
+             FROM subscriptions s \
+             WHERE s.online_at > $2 AND s.online_at <= $3 AND s.ended_at IS NULL \
+             AND s.remna_missing_at IS NULL AND (s.status IS NULL OR s.status = 'active') \
+             AND s.expire_at > $1 AND s.synced_at >= s.online_at + {delay}",
+            idle = hour_key("s.online_at")
+        ),
+        Trigger::DevicesFull => format!(
+            "SELECT s.client_id, 'devices:' || s.id || ':' || s.hwid_limit AS case_key, \
+             $1::timestamptz AS due_at, {SUB} \
+             FROM subscriptions s \
+             JOIN tariffs dt ON dt.id = s.tariff_id \
+             WHERE s.ended_at IS NULL AND s.remna_missing_at IS NULL \
+             AND (s.status IS NULL OR s.status = 'active') AND s.expire_at > $1 AND s.kind <> 'trial' \
+             AND s.hwid_limit > 0 AND s.devices_count >= s.hwid_limit \
+             AND dt.extra_devices_enabled AND s.extra_devices < dt.extra_devices_max"
+        ),
         Trigger::TrafficLow => format!(
             "SELECT s.client_id, 'traffic:' || s.id || ':' || (COALESCE(t.seq, 0) + 1) AS case_key, \
-             $1::timestamptz AS due_at \
+             $1::timestamptz AS due_at, {SUB} \
              FROM subscriptions s \
              LEFT JOIN auto_broadcast_traffic t ON t.rule_id = $6 AND t.subscription_id = s.id \
              WHERE s.ended_at IS NULL AND s.traffic_limit_bytes > 0 AND s.expire_at > $1 AND {LIVE} \
@@ -442,7 +508,7 @@ fn cases_sql(trigger: Trigger) -> String {
     }
 }
 
-fn found_sql(trigger: Trigger) -> String {
+fn found_sql(trigger: Trigger, tail: &str) -> String {
     format!(
         "WITH found AS ({cases}) \
          SELECT f.client_id, f.case_key, f.due_at, tg.value AS telegram, \
@@ -458,9 +524,54 @@ fn found_sql(trigger: Trigger) -> String {
              ORDER BY i.id LIMIT 1) em ON true \
          LEFT JOIN LATERAL (SELECT true AS hit FROM auto_broadcast_cases k WHERE k.rule_id = $6 \
              AND k.case_key = f.case_key LIMIT 1) seen ON true \
-         WHERE seen.hit IS NULL",
+         WHERE seen.hit IS NULL{tail}",
         cases = cases_sql(trigger)
     )
+}
+
+fn audience_tail(
+    audience: &ClientConditions,
+    args: &mut SqlArgs,
+    now: DateTime<Utc>,
+    currency: Currency,
+) -> StoreResult<String> {
+    let mut rest = audience.clone();
+    let tariffs = std::mem::take(&mut rest.tariff);
+    let categories = std::mem::take(&mut rest.category);
+    let autorenew = rest.autorenew.take();
+    let mut parts = rest.conditions(args, now, currency)?;
+    if !tariffs.is_empty() {
+        let list = args.push(SqlArg::Ints(tariffs.iter().map(|t| t.0).collect()));
+        parts.push(format!("f.tariff_id = ANY({list})"));
+    }
+    if !categories.is_empty() {
+        let list = args.push(SqlArg::Ints(categories.iter().map(|c| c.0).collect()));
+        parts.push(format!(
+            "f.tariff_id IN (SELECT ft.id FROM tariffs ft WHERE ft.category_id = ANY({list}))"
+        ));
+    }
+    match autorenew {
+        Some(true) => parts.push("f.autorenew IS TRUE".into()),
+        Some(false) => parts.push("f.autorenew IS FALSE".into()),
+        None => {}
+    }
+    Ok(parts.iter().map(|p| format!(" AND {p}")).collect())
+}
+
+fn probe_args(probe: &Probe, bounds: &Bounds, limit: Option<i64>) -> SqlArgs {
+    let mut args = SqlArgs::default();
+    args.push(SqlArg::Time(bounds.now));
+    args.push(SqlArg::Time(bounds.from));
+    args.push(SqlArg::Time(bounds.until));
+    args.push(SqlArg::Int(probe.delay.span().num_seconds()));
+    args.push(SqlArg::Flag(probe.with_autorenew));
+    args.push(SqlArg::Int(probe.rule.unwrap_or(0)));
+    args.push(SqlArg::Int(i64::from(probe.percent())));
+    args.push(SqlArg::Flag(probe.english));
+    if let Some(limit) = limit {
+        args.push(SqlArg::Int(limit));
+    }
+    args
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
@@ -505,6 +616,8 @@ pub struct Probe {
     pub with_autorenew: bool,
     pub rule: Option<i64>,
     pub english: bool,
+    pub audience: Option<ClientConditions>,
+    pub currency: Currency,
 }
 
 impl Probe {
@@ -523,9 +636,21 @@ pub async fn found(
     bounds: &Bounds,
     limit: i64,
 ) -> StoreResult<Vec<Found>> {
+    if let Some(audience) = &probe.audience {
+        let mut args = probe_args(probe, bounds, Some(limit));
+        let tail = audience_tail(audience, &mut args, bounds.now, probe.currency)?;
+        let sql = format!(
+            "SELECT * FROM ({}) q ORDER BY q.due_at, q.case_key LIMIT $9",
+            found_sql(probe.trigger, &tail)
+        );
+        return Ok(args
+            .bind_as(sqlx::query_as::<_, Found>(&sql).persistent(false))
+            .fetch_all(db.conn())
+            .await?);
+    }
     Ok(sqlx::query_as::<_, Found>(&format!(
         "SELECT * FROM ({}) q ORDER BY q.due_at, q.case_key LIMIT $9",
-        found_sql(probe.trigger)
+        found_sql(probe.trigger, "")
     ))
     .bind(bounds.now)
     .bind(bounds.from)
@@ -549,27 +674,37 @@ pub struct Counted {
     pub unsubscribed: i64,
 }
 
+const COUNTS: &str = "SELECT count(*), \
+     count(*) FILTER (WHERE q.telegram IS NOT NULL AND NOT q.stopped), \
+     count(*) FILTER (WHERE q.telegram IS NOT NULL AND q.stopped), \
+     count(*) FILTER (WHERE q.email IS NOT NULL AND NOT q.unsubscribed), \
+     count(*) FILTER (WHERE q.email IS NOT NULL AND q.unsubscribed)";
+
 pub async fn count(db: &mut impl Db, probe: &Probe, bounds: &Bounds) -> StoreResult<Counted> {
     let (cases, recipients, stopped, emails, unsubscribed): (i64, i64, i64, i64, i64) =
-        sqlx::query_as(&format!(
-            "SELECT count(*), \
-             count(*) FILTER (WHERE q.telegram IS NOT NULL AND NOT q.stopped), \
-             count(*) FILTER (WHERE q.telegram IS NOT NULL AND q.stopped), \
-             count(*) FILTER (WHERE q.email IS NOT NULL AND NOT q.unsubscribed), \
-             count(*) FILTER (WHERE q.email IS NOT NULL AND q.unsubscribed) \
-             FROM ({}) q",
-            found_sql(probe.trigger)
-        ))
-        .bind(bounds.now)
-        .bind(bounds.from)
-        .bind(bounds.until)
-        .bind(probe.seconds())
-        .bind(probe.with_autorenew)
-        .bind(probe.rule)
-        .bind(probe.percent())
-        .bind(probe.english)
-        .fetch_one(db.conn())
-        .await?;
+        if let Some(audience) = &probe.audience {
+            let mut args = probe_args(probe, bounds, None);
+            let tail = audience_tail(audience, &mut args, bounds.now, probe.currency)?;
+            let sql = format!("{COUNTS} FROM ({}) q", found_sql(probe.trigger, &tail));
+            args.bind_as(sqlx::query_as(&sql).persistent(false))
+                .fetch_one(db.conn())
+                .await?
+        } else {
+            sqlx::query_as(&format!(
+                "{COUNTS} FROM ({}) q",
+                found_sql(probe.trigger, "")
+            ))
+            .bind(bounds.now)
+            .bind(bounds.from)
+            .bind(bounds.until)
+            .bind(probe.seconds())
+            .bind(probe.with_autorenew)
+            .bind(probe.rule)
+            .bind(probe.percent())
+            .bind(probe.english)
+            .fetch_one(db.conn())
+            .await?
+        };
     Ok(Counted {
         cases,
         recipients,

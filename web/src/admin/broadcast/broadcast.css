@@ -906,6 +906,11 @@
   width: 64px;
 }
 
+.ar-fixed {
+  padding-top: 10px;
+  font-weight: 600;
+}
+
 .ar-check {
   flex: 0 0 auto;
   width: 17px;

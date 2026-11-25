@@ -1,3 +1,4 @@
+mod client_filters;
 mod clients;
 mod conflicts;
 mod dashboard;

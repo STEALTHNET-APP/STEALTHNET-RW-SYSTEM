@@ -342,13 +342,15 @@
   gap: 4px 12px;
 }
 
-.tf-holders .link {
+.tf-holders .link,
+.tf-all .link {
   min-width: 0;
   color: var(--accent-ink);
   font-weight: 600;
   overflow-wrap: anywhere;
 }
 
-.tf-holders .link:hover {
+.tf-holders .link:hover,
+.tf-all .link:hover {
   text-decoration: underline;
 }

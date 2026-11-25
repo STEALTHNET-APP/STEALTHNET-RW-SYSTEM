@@ -445,7 +445,7 @@ impl Engine {
         }
         let now = crate::catalog::db_now(&mut tx).await?;
         for (id, audience, channel) in due {
-            let total = store::launch(&mut tx, id, audience, channel, now, None).await?;
+            let total = store::launch(&mut tx, id, &audience, channel, now, None).await?;
             if total == 0 {
                 store::finish_empty(&mut tx, id).await?;
             }

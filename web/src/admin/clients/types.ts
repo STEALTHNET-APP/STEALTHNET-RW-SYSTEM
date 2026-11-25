@@ -57,7 +57,7 @@ export type ClientRow = {
   paid_total: Money | null;
 };
 
-export type Segment = 'all' | 'active' | 'expiring_soon' | 'trial' | 'never_connected' | 'expired' | 'limited' | 'blocked';
+export type Segment = 'all' | 'active' | 'expiring_soon' | 'trial' | 'never_connected' | 'expired' | 'limited' | 'blocked' | 'no_subscription';
 
 export type SegmentCounts = {
   total: number;

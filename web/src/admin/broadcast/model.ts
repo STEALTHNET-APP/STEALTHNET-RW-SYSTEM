@@ -1,5 +1,6 @@
 import { ApiError } from '../../lib/api';
 import { dateLong, groupDigits, plural, timeHM } from '../../lib/format';
+import { EMPTY, fromAudience, type Conditions, type FilterAudience, type FilterOptions } from '../clients/filters';
 
 export const BASE = '/api/admin/m/broadcast';
 export const ROOT = '/admin/m/broadcast';
@@ -48,7 +49,8 @@ export type Audience =
   | { kind: 'never_connected' }
   | { kind: 'trial' }
   | { kind: 'no_subscription' }
-  | { kind: 'tariff'; tariff_id: number };
+  | { kind: 'tariff'; tariff_id: number }
+  | FilterAudience;
 
 export type AudienceKind = Audience['kind'];
 
@@ -127,7 +129,11 @@ export type Trigger =
   | 'trial_ended'
   | 'expired'
   | 'no_purchase'
-  | 'not_connected';
+  | 'not_connected'
+  | 'unpaid_order'
+  | 'first_purchase'
+  | 'idle'
+  | 'devices_full';
 
 export type Unit = 'hours' | 'days';
 
@@ -141,7 +147,7 @@ export type AutoOptions = {
   percent_max: number;
   percent_default: number;
   english: boolean;
-  triggers: Array<{ key: Trigger; title: string; min: number; percent: boolean }>;
+  triggers: Array<{ key: Trigger; title: string; min: number; percent: boolean; fixed: boolean; tariff: boolean; autorenew: boolean }>;
 };
 
 export type Options = {
@@ -150,6 +156,7 @@ export type Options = {
   mail: { ready: boolean; reason: string | null; site?: boolean };
   sections: Array<{ key: Section; title: string; available: boolean }>;
   tariffs: Array<{ id: number; name: string }>;
+  filter: FilterOptions;
   limits: Limits;
   auto: AutoOptions;
 };
@@ -175,6 +182,8 @@ export type Rule = {
   image: Image | null;
   buttons: ButtonSpec[];
   en: Localized | null;
+  audience: Omit<FilterAudience, 'kind'> | null;
+  audience_label: string | null;
   preset: string | null;
   enabled: boolean;
   notice: string | null;
@@ -200,6 +209,7 @@ export type RuleItem = {
   has_image: boolean;
   buttons: number;
   english: boolean;
+  audience_label: string | null;
   preset: string | null;
   enabled: boolean;
   notice: string | null;
@@ -217,6 +227,10 @@ export const TRIGGER_HINTS: Record<Trigger, string> = {
   expired: 'Подписку не продлили, другой действующей нет. Пробные — отдельным событием',
   no_purchase: 'Прошло столько времени с регистрации, оплаченных покупок нет. Пробный период — не покупка',
   not_connected: 'Оплаченная подписка действует, но с покупки ни одного подключения',
+  unpaid_order: 'Клиент начал оплату подписки и не оплатил. Пишет по последней попытке и только если после неё оплат не было',
+  first_purchase: 'Прошло столько времени с первой оплаченной покупки подписки. Перенесённым из старой панели не пишет',
+  idle: 'Подписка действует, но столько времени ни одного подключения. Один раз на каждый перерыв',
+  devices_full: 'Подключено столько устройств, сколько позволяет подписка. Только если тариф продаёт дополнительные устройства',
 };
 
 export const TRIGGER_WHEN: Record<Trigger, { before: string; after: string; amount: number; unit: Unit }> = {
@@ -228,6 +242,10 @@ export const TRIGGER_WHEN: Record<Trigger, { before: string; after: string; amou
   expired: { before: 'Через', after: 'после окончания подписки', amount: 1, unit: 'days' },
   no_purchase: { before: 'Через', after: 'после регистрации', amount: 3, unit: 'days' },
   not_connected: { before: 'Через', after: 'после покупки', amount: 2, unit: 'days' },
+  unpaid_order: { before: 'Через', after: 'после создания счёта', amount: 1, unit: 'hours' },
+  first_purchase: { before: 'Через', after: 'после первой покупки', amount: 24, unit: 'hours' },
+  idle: { before: 'Когда прошло', after: 'без подключений', amount: 7, unit: 'days' },
+  devices_full: { before: '', after: '', amount: 0, unit: 'days' },
 };
 
 export function unitWord(n: number, unit: Unit): string {
@@ -251,6 +269,14 @@ export function timing(trigger: Trigger, amount: number, unit: Unit, percent: nu
       return `через ${span} после регистрации`;
     case 'not_connected':
       return `через ${span} после покупки`;
+    case 'unpaid_order':
+      return `через ${span} после создания счёта`;
+    case 'first_purchase':
+      return `через ${span} после первой покупки`;
+    case 'idle':
+      return `после ${span} без подключений`;
+    case 'devices_full':
+      return 'когда заняты все устройства';
   }
 }
 
@@ -260,26 +286,31 @@ export function reachTotal(reach: Reach, channel: Channel): number {
   return (hasBot(channel) ? reach.recipients : 0) + (hasEmail(channel) ? reach.emails : 0);
 }
 
-export const AUDIENCES: Array<{ kind: AudienceKind; title: string; hint: string }> = [
-  { kind: 'all', title: 'Все клиенты', hint: 'Каждый, кто запускал бота или указал почту' },
-  { kind: 'active', title: 'С активной подпиской', hint: 'Подписка действует, пробные не входят' },
-  { kind: 'expiring', title: 'Подписка скоро закончится', hint: 'Действует ещё не больше указанного числа дней' },
-  { kind: 'expired', title: 'Подписка закончилась', hint: 'Была подписка, сейчас не продлена' },
-  { kind: 'never_connected', title: 'Не подключались', hint: 'Подписка есть, но ни одного подключения' },
-  { kind: 'trial', title: 'На пробном периоде', hint: 'Сейчас действует пробная подписка' },
-  { kind: 'no_subscription', title: 'Ни разу не было подписки', hint: 'Есть аккаунт, но ничего не оформили' },
-  { kind: 'tariff', title: 'По тарифу', hint: 'Действующая подписка на выбранном тарифе' },
-];
-
-export function audienceOf(kind: AudienceKind, days: number, tariff: number | null): Audience | null {
-  switch (kind) {
+export function conditionsOf(audience: Audience): Conditions {
+  switch (audience.kind) {
+    case 'filter':
+      return fromAudience(audience);
+    case 'active':
+      return { ...EMPTY, status: 'active' };
     case 'expiring':
-      return { kind, days };
+      return { ...EMPTY, ends: audience.days };
+    case 'expired':
+      return { ...EMPTY, status: 'expired' };
+    case 'never_connected':
+      return { ...EMPTY, status: 'never_connected' };
+    case 'trial':
+      return { ...EMPTY, status: 'trial' };
+    case 'no_subscription':
+      return { ...EMPTY, status: 'no_subscription' };
     case 'tariff':
-      return tariff === null ? null : { kind, tariff_id: tariff };
+      return { ...EMPTY, tariff: [audience.tariff_id], status: 'active' };
     default:
-      return { kind };
+      return { ...EMPTY };
   }
+}
+
+export function isLegacy(audience: Audience): boolean {
+  return audience.kind !== 'filter' && audience.kind !== 'all';
 }
 
 export function failText(err: unknown, fallback: string): string {

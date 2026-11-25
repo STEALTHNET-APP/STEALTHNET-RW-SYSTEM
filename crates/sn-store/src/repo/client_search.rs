@@ -1,17 +1,18 @@
+use super::client_filter::{SqlArg, SqlArgs};
 use super::clients::{
     COLUMNS, ClientFilter, ClientListItem, ClientRow, ClientSegment, ClientsRepo, display_name,
     fold_case,
 };
 use super::settings::SettingsRepo;
 use super::subscriptions::{PAID_LIKE, SubscriptionsRepo, effective_status};
-use crate::error::{StoreError, StoreResult};
-use chrono::{DateTime, Duration, Utc};
+use crate::error::StoreResult;
+use chrono::{DateTime, Utc};
 use sn_domain::client::Client;
 use sn_domain::ids::SubscriptionId;
 use sn_domain::money::Currency;
 use sn_domain::paging::{Page, PageRequest};
 use sn_domain::settings::keys;
-use sn_domain::subscription::{EXPIRING_SOON_DAYS, Subscription};
+use sn_domain::subscription::Subscription;
 use std::collections::HashMap;
 use uuid::Uuid;
 
@@ -110,33 +111,65 @@ fn needle(raw: &str) -> Option<Needle> {
     })
 }
 
-fn needle_condition(needle: &Needle) -> &'static str {
+fn needle_condition(needle: &Needle, args: &mut SqlArgs) -> String {
     match needle {
-        Needle::ShortUuid(_) => {
-            "c.id IN (SELECT q.client_id FROM subscriptions q WHERE q.short_uuid = $6)"
+        Needle::ShortUuid(value) => {
+            let v = args.push(SqlArg::Text(value.clone()));
+            format!("c.id IN (SELECT q.client_id FROM subscriptions q WHERE q.short_uuid = {v})")
         }
-        Needle::Uuid(_) => {
-            "c.id IN (SELECT q.id FROM clients q WHERE q.public_id = $6 \
-             UNION ALL SELECT q.client_id FROM subscriptions q WHERE q.public_id = $6)"
+        Needle::Uuid(value) => {
+            let v = args.push(SqlArg::Text(value.to_string()));
+            format!(
+                "c.id IN (SELECT q.id FROM clients q WHERE q.public_id = {v}::uuid \
+                 UNION ALL SELECT q.client_id FROM subscriptions q WHERE q.public_id = {v}::uuid)"
+            )
         }
-        Needle::Number { .. } => {
-            "c.id IN (SELECT $6::bigint UNION ALL SELECT q.client_id FROM client_identities q \
-             WHERE q.kind = 'telegram' AND q.value = $7)"
+        Needle::Number { id, telegram } => {
+            let n = args.push(SqlArg::Int(*id));
+            let t = args.push(SqlArg::Text(telegram.clone()));
+            format!(
+                "c.id IN (SELECT {n}::bigint UNION ALL SELECT q.client_id FROM client_identities q \
+                 WHERE q.kind = 'telegram' AND q.value = {t})"
+            )
         }
-        Needle::Username(_) => {
-            "c.id IN (SELECT q.client_id FROM client_identities q WHERE q.kind = 'telegram' \
-             AND lower(q.meta ->> 'username') LIKE $6)"
+        Needle::Username(value) => {
+            let v = args.push(SqlArg::Text(format!("{}%", escape_like(value))));
+            format!(
+                "c.id IN (SELECT q.client_id FROM client_identities q WHERE q.kind = 'telegram' \
+                 AND lower(q.meta ->> 'username') LIKE {v})"
+            )
         }
-        Needle::Email(_) => {
-            "c.id IN (SELECT q.client_id FROM client_identities q WHERE q.kind = 'email' \
-             AND q.value LIKE $6)"
+        Needle::Email(value) => {
+            let v = args.push(SqlArg::Text(format!("{}%", escape_like(value))));
+            format!(
+                "c.id IN (SELECT q.client_id FROM client_identities q WHERE q.kind = 'email' \
+                 AND q.value LIKE {v})"
+            )
         }
-        Needle::Words { .. } => {
-            "c.id IN (SELECT q.client_id FROM subscriptions q WHERE q.short_uuid = $7 OR q.remna_username = $7 \
-             UNION ALL SELECT q.client_id FROM client_identities q \
-             WHERE NOT EXISTS (SELECT 1 FROM unnest($6::text[]) w WHERE strpos(q.search_text, w) = 0))"
+        Needle::Words { words, exact } => {
+            let w = args.push(SqlArg::Texts(words.clone()));
+            let e = args.push(SqlArg::Text(exact.clone()));
+            format!(
+                "c.id IN (SELECT q.client_id FROM subscriptions q WHERE q.short_uuid = {e} OR q.remna_username = {e} \
+                 UNION ALL SELECT q.client_id FROM client_identities q \
+                 WHERE NOT EXISTS (SELECT 1 FROM unnest({w}::text[]) w WHERE strpos(q.search_text, w) = 0))"
+            )
         }
     }
+}
+
+fn filter_conditions(
+    filter: &ClientFilter,
+    args: &mut SqlArgs,
+    now: DateTime<Utc>,
+    currency: Currency,
+) -> StoreResult<Vec<String>> {
+    let mut conditions = vec!["c.deleted_at IS NULL".to_string()];
+    conditions.extend(filter.conditions.conditions(args, now, currency)?);
+    if let Some(needle) = filter.query.as_deref().and_then(needle) {
+        conditions.push(needle_condition(&needle, args));
+    }
+    Ok(conditions)
 }
 
 pub(crate) fn priority(alias: &str) -> String {
@@ -173,7 +206,7 @@ fn client_condition(segment: ClientSegment, alias: &str) -> String {
     }
 }
 
-fn segment_condition(segment: ClientSegment) -> String {
+pub(super) fn segment_condition(segment: ClientSegment) -> String {
     let primary = client_condition(segment, "s");
     match segment {
         ClientSegment::Blocked | ClientSegment::NoSubscription => primary,
@@ -219,15 +252,11 @@ impl<'c> ClientsRepo<'c> {
         now: DateTime<Utc>,
         currency: Currency,
     ) -> StoreResult<Page<ClientListItem>> {
-        let soon = expiring_bound(now)?;
-        let needle = filter.query.as_deref().and_then(needle);
-        let mut conditions = vec!["c.deleted_at IS NULL".to_string()];
-        if let Some(segment) = filter.segment {
-            conditions.push(segment_condition(segment));
-        }
-        if let Some(needle) = &needle {
-            conditions.push(needle_condition(needle).to_string());
-        }
+        let mut args = SqlArgs::with_clock(now)?;
+        args.push(SqlArg::Text(currency.code().into()));
+        let after = args.push(SqlArg::Int(page.after.unwrap_or(0)));
+        let limit = args.push(SqlArg::Int(page.fetch_limit()));
+        let conditions = filter_conditions(filter, &mut args, now, currency)?;
         let sql = format!(
             "SELECT {COLUMNS}, s.id AS subscription_id, tg.value AS telegram_id, \
              tg.meta ->> 'username' AS telegram_username, tg.meta ->> 'first_name' AS first_name, \
@@ -243,28 +272,16 @@ impl<'c> ClientsRepo<'c> {
                  AND i.kind = 'telegram' ORDER BY i.id LIMIT 1) tg ON true \
              LEFT JOIN LATERAL (SELECT i.value FROM client_identities i WHERE i.client_id = c.id \
                  AND i.kind = 'email' ORDER BY i.id LIMIT 1) em ON true \
-             WHERE {conditions} AND ($4::bigint IS NULL OR (c.created_at, c.id) < \
-                 (SELECT k.created_at, k.id FROM clients k WHERE k.id = $4)) \
-             ORDER BY c.created_at DESC, c.id DESC LIMIT $5",
+             WHERE {conditions} AND ({after} = 0 OR (c.created_at, c.id) < \
+                 (SELECT k.created_at, k.id FROM clients k WHERE k.id = {after})) \
+             ORDER BY c.created_at DESC, c.id DESC LIMIT {limit}",
             order = priority("x"),
             conditions = conditions.join(" AND "),
         );
-        let mut query = sqlx::query_as::<_, ListRow>(&sql)
-            .bind(now)
-            .bind(soon)
-            .bind(currency.code())
-            .bind(page.after)
-            .bind(page.fetch_limit());
-        query = match &needle {
-            None => query,
-            Some(Needle::ShortUuid(value)) => query.bind(value.clone()),
-            Some(Needle::Uuid(value)) => query.bind(*value),
-            Some(Needle::Number { id, telegram }) => query.bind(*id).bind(telegram.clone()),
-            Some(Needle::Username(value)) => query.bind(format!("{}%", escape_like(value))),
-            Some(Needle::Email(value)) => query.bind(format!("{}%", escape_like(value))),
-            Some(Needle::Words { words, exact }) => query.bind(words.clone()).bind(exact.clone()),
-        };
-        let rows = query.fetch_all(&mut *self.conn).await?;
+        let rows = args
+            .bind_as(sqlx::query_as::<_, ListRow>(&sql).persistent(false))
+            .fetch_all(&mut *self.conn)
+            .await?;
         let ids: Vec<SubscriptionId> = rows
             .iter()
             .filter_map(|row| row.subscription_id.map(SubscriptionId))
@@ -297,7 +314,20 @@ impl<'c> ClientsRepo<'c> {
     }
 
     pub async fn segment_counts(&mut self, now: DateTime<Utc>) -> StoreResult<SegmentCounts> {
-        let soon = expiring_bound(now)?;
+        self.segment_counts_where(&ClientFilter::default(), now, Currency::default())
+            .await
+    }
+
+    pub async fn segment_counts_where(
+        &mut self,
+        filter: &ClientFilter,
+        now: DateTime<Utc>,
+        currency: Currency,
+    ) -> StoreResult<SegmentCounts> {
+        let mut args = SqlArgs::with_clock(now)?;
+        let mut scope = filter.clone();
+        scope.conditions.status = None;
+        let conditions = filter_conditions(&scope, &mut args, now, currency)?;
         let count = |segment: ClientSegment| {
             format!(
                 "count(*) FILTER (WHERE {}) AS {}",
@@ -310,13 +340,13 @@ impl<'c> ClientsRepo<'c> {
              LEFT JOIN (SELECT DISTINCT ON (x.client_id) x.* FROM subscriptions x \
                  WHERE x.ended_at IS NULL AND x.remna_missing_at IS NULL \
                  ORDER BY x.client_id, {order}) s ON s.client_id = c.id \
-             WHERE c.deleted_at IS NULL",
+             WHERE {conditions}",
             ClientSegment::ALL.map(count).join(", "),
             order = priority("x"),
+            conditions = conditions.join(" AND "),
         );
-        let row: SegmentCountsRow = sqlx::query_as(&sql)
-            .bind(now)
-            .bind(soon)
+        let row: SegmentCountsRow = args
+            .bind_as(sqlx::query_as(&sql).persistent(false))
             .fetch_one(&mut *self.conn)
             .await?;
         Ok(SegmentCounts {
@@ -344,11 +374,6 @@ struct SegmentCountsRow {
     expired: i64,
     limited: i64,
     blocked: i64,
-}
-
-fn expiring_bound(now: DateTime<Utc>) -> StoreResult<DateTime<Utc>> {
-    now.checked_add_signed(Duration::days(EXPIRING_SOON_DAYS))
-        .ok_or_else(|| StoreError::Invalid("дата вне допустимого диапазона".into()))
 }
 
 #[cfg(test)]
@@ -413,7 +438,7 @@ mod tests {
         assert!(ClientSegment::parse("все").is_err());
         let filter: ClientFilter =
             serde_json::from_value(serde_json::json!({"segment": "expiring_soon"})).unwrap();
-        assert_eq!(filter.segment, Some(ClientSegment::ExpiringSoon));
+        assert_eq!(filter.conditions.status, Some(ClientSegment::ExpiringSoon));
         assert_eq!(filter.query, None);
     }
 

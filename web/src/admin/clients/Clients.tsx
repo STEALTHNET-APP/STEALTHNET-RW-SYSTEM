@@ -10,6 +10,9 @@ import { RowMenu, type RowAction, type RowItem } from './RowMenu';
 import { displayName, STATUS_WORD, type ClientRow, type Segment, type SegmentCounts } from './types';
 import './clients.css';
 import { Avatar } from '../Avatar';
+import { usePhone } from '../../lib/media';
+import { FilterBar, filterCount } from './Conditions';
+import { EMPTY, apiQuery, found, readParams, sameConditions, writeParams, type Conditions, type FilterOptions } from './filters';
 
 const SEGMENTS: Array<[Segment, string, keyof SegmentCounts]> = [
   ['all', 'Все', 'total'],
@@ -20,6 +23,7 @@ const SEGMENTS: Array<[Segment, string, keyof SegmentCounts]> = [
   ['expired', 'Истекли', 'expired'],
   ['limited', 'Трафик исчерпан', 'limited'],
   ['blocked', 'Заблокированы', 'blocked'],
+  ['no_subscription', 'Нет подписки', 'no_subscription'],
 ];
 
 type Page = { items: ClientRow[]; next: number | null };
@@ -148,11 +152,16 @@ function rowView(row: ClientRow) {
 export function Clients() {
   const navigate = useNavigate();
   const { can, me } = useSession();
+  const phone = usePhone();
   const [params, setParams] = useSearchParams();
-  const segment = (params.get('segment') as Segment | null) ?? 'all';
+  const paramsKey = params.toString();
+  const cond = useMemo(() => readParams(new URLSearchParams(paramsKey)), [paramsKey]);
+  const segment: Segment = cond.status ?? 'all';
   const query = params.get('q') ?? '';
   const [input, setInput] = useState(query);
   const [counts, setCounts] = useState<SegmentCounts | null>(null);
+  const [scoped, setScoped] = useState<SegmentCounts | null>(null);
+  const [options, setOptions] = useState<FilterOptions | null>(null);
   const [page, setPage] = useState<Page | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -166,33 +175,66 @@ export function Clients() {
   const requestRef = useRef(0);
   const writable = can('clients_write');
   const moneyOk = can('money');
+  const scope = useMemo(() => ({ ...cond, status: null }), [cond]);
+  const filtered = !sameConditions(scope, EMPTY) || query.trim() !== '';
 
   const url = useCallback(
     (after?: number | null) => {
       const search = new URLSearchParams({ limit: '50' });
-      if (segment !== 'all') {
-        search.set('segment', segment);
-      }
       if (query.trim()) {
         search.set('q', query.trim());
       }
       if (after) {
         search.set('after', String(after));
       }
-      return `/api/admin/clients?${search.toString()}`;
+      return `/api/admin/clients?${apiQuery(cond, search).toString()}`;
     },
-    [segment, query],
+    [cond, query],
   );
+
+  const countsUrl = useMemo(() => {
+    const search = new URLSearchParams();
+    if (query.trim()) {
+      search.set('q', query.trim());
+    }
+    return `/api/admin/clients/segments?${apiQuery(scope, search).toString()}`;
+  }, [scope, query]);
+
+  useEffect(() => {
+    let alive = true;
+    api<FilterOptions>('/api/admin/clients/filter-options')
+      .then((value) => {
+        if (alive) {
+          setOptions(value);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const reload = useCallback(async (): Promise<Page | null> => {
     const id = ++requestRef.current;
     setError(null);
+    const all = api<SegmentCounts>('/api/admin/clients/segments').then((value) => {
+      if (id === requestRef.current) {
+        setCounts(value);
+      }
+    });
+    const part = filtered
+      ? api<SegmentCounts>(countsUrl).then((value) => {
+          if (id === requestRef.current) {
+            setScoped(value);
+          }
+        })
+      : Promise.resolve(setScoped(null));
     try {
-      const [list, segs] = await Promise.all([api<Page>(url()), api<SegmentCounts>('/api/admin/clients/segments')]);
+      const list = await api<Page>(url());
       if (id === requestRef.current) {
         setPage(list);
-        setCounts(segs);
       }
+      await Promise.all([all, part]);
       return list;
     } catch (err) {
       if (id === requestRef.current) {
@@ -200,7 +242,7 @@ export function Clients() {
       }
       return null;
     }
-  }, [url]);
+  }, [url, countsUrl, filtered]);
 
   useEffect(() => {
     setSelected(new Set());
@@ -228,13 +270,16 @@ export function Clients() {
   }, [input, query, params, setParams]);
 
   const pickSegment = (value: Segment) => {
-    const next = new URLSearchParams(params);
-    if (value === 'all') {
-      next.delete('segment');
-    } else {
-      next.set('segment', value);
-    }
-    setParams(next);
+    setParams(writeParams({ ...cond, status: value === 'all' ? null : value }, params));
+  };
+
+  const setCond = (next: Conditions) => {
+    setParams(writeParams({ ...next, status: cond.status }, params), { replace: true });
+  };
+
+  const resetAll = () => {
+    setInput('');
+    setParams(new URLSearchParams());
   };
 
   const more = async () => {
@@ -266,7 +311,26 @@ export function Clients() {
   };
 
   const chosen = useMemo(() => rows.filter((row) => selected.has(row.client.id)), [rows, selected]);
-  const total = counts ? counts[SEGMENTS.find(([key]) => key === segment)?.[2] ?? 'total'] : null;
+  const segKey = SEGMENTS.find(([key]) => key === segment)?.[2] ?? 'total';
+  const chipCounts = filtered ? scoped : counts;
+  const total = chipCounts ? chipCounts[segKey] : null;
+  const extra = filterCount(cond, 'clients');
+  const mailable = (extra > 0 || segment !== 'all') && !query.trim() && cond.status !== 'blocked' && can('marketing') && (me.modules ?? []).includes('broadcast');
+  const mailLink = `/admin/m/broadcast/new?${writeParams(cond, new URLSearchParams()).toString()}`;
+  const tail =
+    extra > 0 || segment !== 'all' || query.trim() ? (
+      <>
+        {total !== null ? <span className="flt-found">{found(total)}</span> : null}
+        {mailable ? (
+          <Link to={mailLink} className="flt-reset hov">
+            Рассылка по этому отбору
+          </Link>
+        ) : null}
+        <button type="button" className="flt-reset hov" onClick={resetAll}>
+          Сбросить всё
+        </button>
+      </>
+    ) : null;
 
   const runBulk = async (action: Bulk) => {
     setBulkBusy(true);
@@ -436,14 +500,16 @@ export function Clients() {
 
       <ClientsTabs />
 
-      <div role="group" aria-label="Кого показать" className="chips">
+      <div role="group" aria-label="Кого показать" className="chips flt-scroll">
         {SEGMENTS.map(([key, label, countKey]) => (
           <button key={key} type="button" className="chip" aria-pressed={segment === key} onClick={() => pickSegment(key)}>
             <span>{label}</span>
-            <span className="chip-n">{counts ? groupDigits(counts[countKey]) : ''}</span>
+            <span className="chip-n">{chipCounts ? groupDigits(chipCounts[countKey]) : ''}</span>
           </button>
         ))}
       </div>
+
+      <FilterBar value={cond} onChange={setCond} options={options} currency={me.currency} money={moneyOk} mode="clients" phone={phone} tail={tail} />
 
       <section aria-label="Список клиентов" className="cl-sec">
         {chosen.length > 0 && writable ? (
@@ -458,7 +524,7 @@ export function Clients() {
             <button type="button" className="b3 hov" onClick={() => setBulk('message')}>
               Написать
             </button>
-            {segment === 'blocked' ? (
+            {cond.status === 'blocked' ? (
               <button type="button" className="b3 hov" onClick={() => setBulk('unblock')}>
                 Разблокировать
               </button>
@@ -558,7 +624,7 @@ export function Clients() {
               );
             })}
             {page && rows.length === 0 ? (
-              <div className="cl-empty">{query ? 'Никого не нашли. Проверьте запрос или сбросьте фильтр.' : 'В этом списке пока никого нет.'}</div>
+              <div className="cl-empty">{filtered ? 'Никого не нашли. Проверьте условия или сбросьте фильтры.' : 'В этом списке пока никого нет.'}</div>
             ) : null}
             {error ? (
               <div className="cl-empty" role="alert" style={{ color: 'var(--bad)' }}>
@@ -570,7 +636,7 @@ export function Clients() {
         <div className="cl-foot">
           <span>
             Показано {groupDigits(rows.length)}
-            {total !== null && !query ? ` из ${groupDigits(total)}` : ''}
+            {total !== null ? ` из ${groupDigits(total)}` : ''}
           </span>
           {page?.next ? (
             <button type="button" className="cl-more hov" onClick={() => void more()} disabled={loadingMore}>

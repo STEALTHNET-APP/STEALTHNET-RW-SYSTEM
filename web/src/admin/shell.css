@@ -1351,3 +1351,308 @@ a.btn-line {
 .pv-fail .btn-line {
   margin-top: 6px;
 }
+
+.flt-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.flt-item {
+  position: relative;
+}
+
+.flt-add {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 14px 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ink-2);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.flt-add[aria-expanded='true'] {
+  border-color: var(--ink-2);
+  color: var(--ink);
+}
+
+.flt-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  height: 36px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.flt-chip.open {
+  border-color: var(--ink-2);
+}
+
+.flt-chip-text {
+  min-width: 0;
+  max-width: 340px;
+  overflow: hidden;
+  padding: 0 6px 0 12px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.flt-chip-x,
+.flt-x {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  margin-right: 2px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.flt-x {
+  width: 36px;
+  height: 36px;
+  margin: 0;
+}
+
+.flt-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 12;
+  width: max-content;
+  min-width: 280px;
+  max-width: min(440px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.flt-pop.flt-menu {
+  min-width: 260px;
+  padding: 6px;
+}
+
+.flt-pop-title {
+  font-weight: 700;
+}
+
+.flt-pop-acts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.flt-done {
+  height: 38px;
+  padding: 0 16px;
+}
+
+.flt-menu-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.flt-sheet .flt-menu-list {
+  padding: 4px 8px 12px;
+}
+
+.flt-menu-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.flt-group-name {
+  padding: 8px 10px 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.flt-menu-item {
+  min-height: 36px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.flt-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.flt-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.flt-group .flt-group-name {
+  padding: 6px 4px 2px;
+}
+
+.flt-check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 34px;
+  padding: 0 4px;
+  cursor: pointer;
+}
+
+.flt-check input {
+  flex: none;
+  width: 17px;
+  height: 17px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.flt-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.flt-select {
+  width: auto;
+}
+
+.flt-pop .flt-line {
+  flex-wrap: nowrap;
+}
+
+.flt-money {
+  width: 110px;
+}
+
+.flt-date {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1 1 140px;
+}
+
+.flt-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.flt-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.flt-tail {
+  margin-left: auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 14px;
+  color: var(--muted);
+}
+
+.flt-found {
+  color: var(--ink-2);
+  font-weight: 600;
+}
+
+.flt-reset {
+  display: inline-flex;
+  align-items: center;
+  height: 36px;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-weight: 700;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.flt-sheet {
+  display: flex;
+  flex-direction: column;
+}
+
+.flt-sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 10px 10px 20px;
+  border-bottom: 1px solid var(--line);
+}
+
+.flt-sheet-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+}
+
+@media (max-width: 760px) {
+  .flt-tail {
+    margin-left: 0;
+    width: 100%;
+  }
+
+  .flt-chip-text {
+    max-width: calc(100vw - 110px);
+  }
+
+  .chips.flt-scroll {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    margin: 0 -16px;
+    padding: 0 16px 2px;
+    scrollbar-width: none;
+  }
+
+  .chips.flt-scroll .chip {
+    flex: none;
+  }
+}
+
+.flt-pop .segs,
+.flt-rows .segs,
+.flt-sheet-body .segs {
+  align-self: flex-start;
+}

@@ -84,6 +84,7 @@ fn rule_draft(trigger: Trigger, days: u16, channel: Channel) -> RuleDraft {
         }],
         en: None,
         enabled: true,
+        audience: None,
     }
 }
 
@@ -265,6 +266,7 @@ async fn скорое_окончание_срабатывает_один_раз_
             percent: None,
             with_autorenew: false,
             id: Some(rule.id),
+            audience: None,
         },
     )
     .await
@@ -584,6 +586,7 @@ async fn автоматическая_рассылка_не_пишет_на_по
         percent: None,
         with_autorenew: false,
         id: None,
+        audience: None,
     };
     let probe = rule_reach(&ctx, &query).await.unwrap();
     assert_eq!((probe.cases, probe.recipients, probe.emails), (1, 0, 0));
@@ -645,6 +648,7 @@ async fn остановившие_бота_и_отписавшиеся_не_по
             percent: None,
             with_autorenew: false,
             id: None,
+            audience: None,
         },
     )
     .await
@@ -1161,6 +1165,7 @@ async fn заканчивается_трафик_один_раз_до_сброс
             percent: Some(80),
             with_autorenew: false,
             id: None,
+            audience: None,
         },
     )
     .await
@@ -1679,5 +1684,476 @@ async fn админка_включает_стандартные_правила_�
         .unwrap();
     assert_eq!(reach.status(), StatusCode::OK);
     assert_eq!(json_of(reach).await["cases"], 0);
+    db.cleanup().await;
+}
+
+async fn tariff(store: &Store, extra_max: i32) -> i64 {
+    let mut conn = store.conn().await.unwrap();
+    let category: i64 = sqlx::query_scalar(
+        "INSERT INTO tariff_categories (name) VALUES ('Категория') RETURNING id",
+    )
+    .fetch_one(conn.conn())
+    .await
+    .unwrap();
+    sqlx::query_scalar(
+        "INSERT INTO tariffs (category_id, name, extra_devices_enabled, extra_devices_max) \
+         VALUES ($1, 'Тариф', $2 > 0, $2) RETURNING id",
+    )
+    .bind(category)
+    .bind(extra_max)
+    .fetch_one(conn.conn())
+    .await
+    .unwrap()
+}
+
+async fn order(store: &Store, client: ClientId, sql: &str, at: DateTime<Utc>) -> i64 {
+    let mut conn = store.conn().await.unwrap();
+    sqlx::query_scalar(&format!(
+        "INSERT INTO orders (client_id, kind, status, intent, quote, currency, total_minor, created_at, \
+         paid_at, channel) VALUES ({sql}) RETURNING id"
+    ))
+    .bind(client.0)
+    .bind(at)
+    .fetch_one(conn.conn())
+    .await
+    .unwrap()
+}
+
+fn with_audience(mut draft: RuleDraft, audience: serde_json::Value) -> RuleDraft {
+    draft.audience = Some(serde_json::from_value(audience).unwrap());
+    draft
+}
+
+#[test]
+fn условия_кому_в_правиле_проверяются() {
+    let of = |value: serde_json::Value| {
+        serde_json::from_value::<sn_store::ClientConditions>(value).unwrap()
+    };
+    let bad = |trigger: Trigger, value: serde_json::Value| {
+        code(auto::check_audience(trigger, Some(&of(value))).unwrap_err())
+    };
+    assert_eq!(
+        bad(Trigger::Expired, serde_json::json!({"status": "active"})),
+        "broadcast.invalid"
+    );
+    assert_eq!(
+        bad(Trigger::Expired, serde_json::json!({"ends": 3})),
+        "broadcast.invalid"
+    );
+    assert_eq!(
+        bad(
+            Trigger::Expired,
+            serde_json::json!({"from": "2026-01-01T00:00:00Z"})
+        ),
+        "broadcast.invalid"
+    );
+    assert_eq!(
+        bad(Trigger::NoPurchase, serde_json::json!({"tariff": [1]})),
+        "broadcast.invalid"
+    );
+    assert_eq!(
+        bad(
+            Trigger::NoSubscription,
+            serde_json::json!({"category": [1]})
+        ),
+        "broadcast.invalid"
+    );
+    assert_eq!(
+        bad(Trigger::UnpaidOrder, serde_json::json!({"autorenew": true})),
+        "broadcast.invalid"
+    );
+    assert_eq!(
+        bad(Trigger::Expired, serde_json::json!({"utm": "a b"})),
+        "broadcast.invalid"
+    );
+    assert!(
+        auto::check_audience(
+            Trigger::UnpaidOrder,
+            Some(&of(serde_json::json!({"tariff": [1]})))
+        )
+        .unwrap()
+        .is_some()
+    );
+    assert_eq!(
+        auto::check_audience(Trigger::Expired, Some(&of(serde_json::json!({})))).unwrap(),
+        None
+    );
+    assert_eq!(auto::check_audience(Trigger::Expired, None).unwrap(), None);
+    assert!(Trigger::DevicesFull.fixed());
+    assert_eq!(
+        Trigger::Idle.timing(Delay::days(7), None),
+        "после 7 дней без подключений"
+    );
+    assert_eq!(
+        Trigger::UnpaidOrder.timing(Delay::hours(1), None),
+        "через 1 час после создания счёта"
+    );
+    assert_eq!(
+        Trigger::FirstPurchase.timing(Delay::hours(24), None),
+        "через 24 часа после первой покупки"
+    );
+    assert_eq!(
+        Trigger::DevicesFull.timing(Delay::days(0), None),
+        "когда заняты все устройства"
+    );
+    assert_eq!(
+        Trigger::TrafficLow.timing(Delay::days(0), Some(100)),
+        "когда израсходовано 100% трафика"
+    );
+}
+
+#[tokio::test]
+async fn кому_правила_берёт_тариф_подписки_события_и_свойства_клиента() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let store = &db.store;
+    let ctx = context_with(store, Some(FakeSender::new()), None);
+    let now = now_of(store).await;
+    let standard = tariff(store, 0).await;
+    let other = tariff(store, 0).await;
+    let on_standard = tg_client(store, 9801).await;
+    let on_other = tg_client(store, 9802).await;
+    let from_site = tg_client(store, 9803).await;
+    let mixed = tg_client(store, 9804).await;
+    for (client, tariff_id) in [
+        (on_standard, standard),
+        (on_other, other),
+        (from_site, standard),
+        (mixed, other),
+    ] {
+        let id = sub(store, client, "paid", now - Span::days(1) - Span::hours(1)).await;
+        let mut conn = store.conn().await.unwrap();
+        sqlx::query("UPDATE subscriptions SET tariff_id = $2 WHERE id = $1")
+            .bind(id)
+            .bind(tariff_id)
+            .execute(conn.conn())
+            .await
+            .unwrap();
+    }
+    let live = sub(store, mixed, "paid", now + Span::days(20)).await;
+    {
+        let mut conn = store.conn().await.unwrap();
+        sqlx::query("UPDATE subscriptions SET status = 'disabled', tariff_id = $2 WHERE id = $1")
+            .bind(live)
+            .bind(standard)
+            .execute(conn.conn())
+            .await
+            .unwrap();
+    }
+    run(
+        store,
+        "UPDATE clients SET registration_source = 'web' WHERE id = $1",
+        from_site.0,
+    )
+    .await;
+    let by_tariff = create_rule(
+        &ctx,
+        &with_audience(
+            rule_draft(Trigger::Expired, 1, Channel::Bot),
+            serde_json::json!({"tariff": [standard]}),
+        ),
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(
+        by_tariff
+            .audience_label
+            .as_deref()
+            .unwrap_or_default()
+            .starts_with("Тариф")
+    );
+    let by_source = create_rule(
+        &ctx,
+        &with_audience(
+            rule_draft(Trigger::Expired, 1, Channel::Bot),
+            serde_json::json!({"source": ["web"]}),
+        ),
+        None,
+    )
+    .await
+    .unwrap();
+    let everyone = create_rule(&ctx, &rule_draft(Trigger::Expired, 1, Channel::Bot), None)
+        .await
+        .unwrap();
+    assert_eq!(everyone.audience, None);
+    let reach = auto::rule_reach(
+        &ctx,
+        &auto::ReachQuery {
+            trigger: Trigger::Expired,
+            amount: 1,
+            unit: Unit::Days,
+            percent: None,
+            with_autorenew: false,
+            id: None,
+            audience: Some(
+                serde_json::from_value(serde_json::json!({"tariff": [standard]})).unwrap(),
+            ),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(reach.cases, 2);
+    auto::check(&ctx, now).await.unwrap();
+    assert_eq!(
+        fired(store, by_tariff.id).await,
+        ids(&[on_standard, from_site])
+    );
+    assert_eq!(fired(store, by_source.id).await, ids(&[from_site]));
+    assert_eq!(
+        fired(store, everyone.id).await,
+        ids(&[on_standard, on_other, from_site, mixed])
+    );
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn неоплаченный_счёт_пишет_по_последней_попытке() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let store = &db.store;
+    let ctx = context_with(store, Some(FakeSender::new()), None);
+    let now = now_of(store).await;
+    let plan = tariff(store, 0).await;
+    let unpaid = format!(
+        "$1, 'new', 'pending', '{{\"type\": \"subscription\", \"tariff_id\": {plan}}}', '{{}}', 'USD', 500, $2, NULL, 'bot'"
+    );
+    let left = tg_client(store, 9811).await;
+    let retried = tg_client(store, 9812).await;
+    let paid_later = tg_client(store, 9813).await;
+    let renewing = tg_client(store, 9814).await;
+    let early = tg_client(store, 9815).await;
+    order(store, left, &unpaid, now - Span::minutes(90)).await;
+    order(store, retried, &unpaid, now - Span::minutes(90)).await;
+    order(store, retried, &unpaid, now - Span::minutes(20)).await;
+    order(store, paid_later, &unpaid, now - Span::minutes(90)).await;
+    order(
+        store,
+        paid_later,
+        "$1, 'topup', 'fulfilled', '{}', '{}', 'USD', 500, $2, $2, 'bot'",
+        now - Span::minutes(30),
+    )
+    .await;
+    order(
+        store,
+        renewing,
+        "$1, 'renewal', 'canceled', '{}', '{}', 'USD', 500, $2, NULL, 'autorenew'",
+        now - Span::minutes(90),
+    )
+    .await;
+    order(store, early, &unpaid, now - Span::minutes(30)).await;
+    let rule = create_rule(
+        &ctx,
+        &RuleDraft {
+            unit: Unit::Hours,
+            ..rule_draft(Trigger::UnpaidOrder, 1, Channel::Bot)
+        },
+        None,
+    )
+    .await
+    .unwrap();
+    let narrow = create_rule(
+        &ctx,
+        &with_audience(
+            RuleDraft {
+                unit: Unit::Hours,
+                ..rule_draft(Trigger::UnpaidOrder, 1, Channel::Bot)
+            },
+            serde_json::json!({"tariff": [plan + 1000]}),
+        ),
+        None,
+    )
+    .await
+    .unwrap();
+    auto::check(&ctx, now).await.unwrap();
+    assert_eq!(fired(store, rule.id).await, ids(&[left]));
+    assert!(fired(store, narrow.id).await.is_empty());
+    auto::check(&ctx, now + Span::minutes(45)).await.unwrap();
+    assert_eq!(fired(store, rule.id).await, ids(&[left, retried, early]));
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn первая_покупка_один_раз_и_не_перенесённым() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let store = &db.store;
+    let ctx = context_with(store, Some(FakeSender::new()), None);
+    let now = now_of(store).await;
+    let bought = "$1, 'new', 'fulfilled', '{}', '{}', 'USD', 500, $2, $2, 'bot'";
+    let fresh = tg_client(store, 9821).await;
+    let returning = tg_client(store, 9822).await;
+    let moved = tg_client(store, 9823).await;
+    order(store, fresh, bought, now - Span::hours(25)).await;
+    order(store, returning, bought, now - Span::days(40)).await;
+    order(store, returning, bought, now - Span::hours(25)).await;
+    run(
+        store,
+        "UPDATE clients SET registration_source = 'import' WHERE id = $1",
+        moved.0,
+    )
+    .await;
+    order(store, moved, bought, now - Span::hours(25)).await;
+    let rule = create_rule(
+        &ctx,
+        &RuleDraft {
+            unit: Unit::Hours,
+            ..rule_draft(Trigger::FirstPurchase, 24, Channel::Bot)
+        },
+        None,
+    )
+    .await
+    .unwrap();
+    auto::check(&ctx, now).await.unwrap();
+    assert_eq!(fired(store, rule.id).await, ids(&[fresh]));
+    order(store, fresh, bought, now - Span::hours(1)).await;
+    auto::check(&ctx, now + Span::hours(24)).await.unwrap();
+    assert_eq!(fired(store, rule.id).await, ids(&[fresh]));
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn давно_нет_подключений_только_после_сверки() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let store = &db.store;
+    let ctx = context_with(store, Some(FakeSender::new()), None);
+    let now = now_of(store).await;
+    let quiet = tg_client(store, 9831).await;
+    let unchecked = tg_client(store, 9832).await;
+    let limited = tg_client(store, 9833).await;
+    let active = tg_client(store, 9834).await;
+    for (client, synced, status) in [
+        (quiet, now, None),
+        (unchecked, now - Span::days(2), None),
+        (limited, now, Some("limited")),
+        (active, now, None),
+    ] {
+        let id = sub(store, client, "paid", now + Span::days(20)).await;
+        let online = if client == active {
+            now - Span::hours(3)
+        } else {
+            now - Span::days(7) - Span::hours(2)
+        };
+        let mut conn = store.conn().await.unwrap();
+        sqlx::query(
+            "UPDATE subscriptions SET online_at = $2, synced_at = $3, status = $4 WHERE id = $1",
+        )
+        .bind(id)
+        .bind(online)
+        .bind(synced)
+        .bind(status)
+        .execute(conn.conn())
+        .await
+        .unwrap();
+    }
+    let short = auto::create_rule(
+        &ctx,
+        &RuleDraft {
+            unit: Unit::Hours,
+            ..rule_draft(Trigger::Idle, 12, Channel::Bot)
+        },
+        None,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(code(short), "broadcast.invalid");
+    let rule = create_rule(&ctx, &rule_draft(Trigger::Idle, 7, Channel::Bot), None)
+        .await
+        .unwrap();
+    auto::check(&ctx, now).await.unwrap();
+    assert_eq!(fired(store, rule.id).await, ids(&[quiet]));
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn заняты_все_устройства_только_когда_можно_докупить() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let store = &db.store;
+    let ctx = context_with(store, Some(FakeSender::new()), None);
+    let now = now_of(store).await;
+    let sells = tariff(store, 2).await;
+    let closed = tariff(store, 0).await;
+    let full = tg_client(store, 9841).await;
+    let no_extra = tg_client(store, 9842).await;
+    let maxed = tg_client(store, 9843).await;
+    let free = tg_client(store, 9844).await;
+    let mut subs = Vec::new();
+    for (client, tariff_id, extra, count) in [
+        (full, sells, 0, 3),
+        (no_extra, closed, 0, 3),
+        (maxed, sells, 2, 3),
+        (free, sells, 0, 2),
+    ] {
+        let id = sub(store, client, "paid", now + Span::days(20)).await;
+        let mut conn = store.conn().await.unwrap();
+        sqlx::query(
+            "UPDATE subscriptions SET tariff_id = $2, extra_devices = $3, hwid_limit = 3, devices_count = $4 WHERE id = $1",
+        )
+        .bind(id)
+        .bind(tariff_id)
+        .bind(extra)
+        .bind(count)
+        .execute(conn.conn())
+        .await
+        .unwrap();
+        subs.push(id);
+    }
+    let rule = create_rule(
+        &ctx,
+        &rule_draft(Trigger::DevicesFull, 0, Channel::Bot),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(rule.amount, 0);
+    auto::check(&ctx, now).await.unwrap();
+    assert_eq!(fired(store, rule.id).await, ids(&[full]));
+    auto::check(&ctx, now + Span::minutes(10)).await.unwrap();
+    assert_eq!(fired(store, rule.id).await, ids(&[full]));
+    run(
+        store,
+        "UPDATE subscriptions SET extra_devices = 1, hwid_limit = 4, devices_count = 4 WHERE id = $1",
+        subs[0],
+    )
+    .await;
+    auto::check(&ctx, now + Span::minutes(20)).await.unwrap();
+    assert_eq!(case_clients(store, rule.id).await.len(), 2);
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn трафик_закончился_полностью_при_пороге_сто() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let store = &db.store;
+    let ctx = context_with(store, Some(FakeSender::new()), None);
+    let now = now_of(store).await;
+    let out = tg_client(store, 9851).await;
+    let almost = tg_client(store, 9852).await;
+    let first = sub(store, out, "paid", now + Span::days(20)).await;
+    let second = sub(store, almost, "paid", now + Span::days(20)).await;
+    traffic(store, first, 100, Some(100)).await;
+    traffic(store, second, 99, Some(100)).await;
+    let rule = create_rule(
+        &ctx,
+        &RuleDraft {
+            percent: Some(100),
+            ..rule_draft(Trigger::TrafficLow, 0, Channel::Bot)
+        },
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(rule.percent, Some(100));
+    auto::check(&ctx, now).await.unwrap();
+    assert_eq!(fired(store, rule.id).await, ids(&[out]));
     db.cleanup().await;
 }

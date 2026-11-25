@@ -74,12 +74,26 @@ impl ClientSegment {
             .find(|s| s.as_str() == value)
             .ok_or_else(|| StoreError::Invalid(format!("неизвестный сегмент клиентов: {value}")))
     }
+
+    pub const fn title(self) -> &'static str {
+        match self {
+            ClientSegment::Active => "подписка действует",
+            ClientSegment::Trial => "пробный период",
+            ClientSegment::NoSubscription => "нет подписки",
+            ClientSegment::ExpiringSoon => "подписка истекает за 3 дня",
+            ClientSegment::NeverConnected => "не подключились",
+            ClientSegment::Expired => "подписка истекла",
+            ClientSegment::Limited => "трафик исчерпан",
+            ClientSegment::Blocked => "заблокированы",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
 #[serde(default)]
 pub struct ClientFilter {
-    pub segment: Option<ClientSegment>,
+    #[serde(flatten)]
+    pub conditions: super::client_filter::ClientConditions,
     pub query: Option<String>,
 }
 

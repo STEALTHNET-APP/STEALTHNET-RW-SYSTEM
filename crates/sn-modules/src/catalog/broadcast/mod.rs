@@ -28,11 +28,13 @@ use serde::{Deserialize, Serialize};
 use sn_domain::bot_content::{CAPTION_MAX, TEXT_MAX, normalize_markup, visible_len};
 use sn_domain::client::Locale;
 use sn_domain::format::plural_ru;
-use sn_domain::ids::{AdminId, ClientId, TariffId};
+use sn_domain::ids::{AdminId, CategoryId, ClientId, TariffId};
 use sn_domain::image::{self, ImageKind};
 use sn_domain::module::ModuleId;
+use sn_domain::money::Currency;
 use sn_domain::paging::{Page, PageRequest};
-use sn_store::{ActorKind, AuditEntry, Db, StoreError};
+use sn_store::{ActorKind, AuditEntry, ClientConditions, ClientSegment, Db, StoreError};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
@@ -272,7 +274,7 @@ impl BotSection {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Audience {
     All,
@@ -283,6 +285,13 @@ pub enum Audience {
     Trial,
     NoSubscription,
     Tariff { tariff_id: TariffId },
+    Filter(ClientConditions),
+}
+
+pub struct AudienceNames {
+    pub tariffs: HashMap<TariffId, String>,
+    pub categories: HashMap<CategoryId, String>,
+    pub currency: Currency,
 }
 
 impl Audience {
@@ -294,16 +303,27 @@ impl Audience {
             Audience::Tariff { tariff_id } if tariff_id.0 <= 0 => {
                 Err(invalid("Кому: выберите тариф"))
             }
+            Audience::Filter(conditions) => {
+                conditions
+                    .check()
+                    .map_err(|message| invalid(format!("Кому: {message}")))?;
+                if conditions.status == Some(ClientSegment::Blocked) {
+                    return Err(invalid(
+                        "Кому: заблокированным клиентам рассылки не отправляются",
+                    ));
+                }
+                Ok(Audience::Filter(conditions))
+            }
             other => Ok(other),
         }
     }
 
-    pub fn describe(self, tariff: Option<&str>) -> String {
+    pub fn describe(&self, tariff: Option<&str>, names: Option<&AudienceNames>) -> String {
         match self {
             Audience::All => "Все клиенты".into(),
             Audience::Active => "С активной подпиской".into(),
             Audience::Expiring { days } => {
-                let n = u64::from(days);
+                let n = u64::from(*days);
                 format!(
                     "Подписка закончится в течение {n} {}",
                     plural_ru(n, "дня", "дней", "дней")
@@ -317,14 +337,34 @@ impl Audience {
                 Some(name) => format!("Тариф «{name}»"),
                 None => "Тариф удалён".into(),
             },
+            Audience::Filter(conditions) => {
+                let fallback = AudienceNames {
+                    tariffs: HashMap::new(),
+                    categories: HashMap::new(),
+                    currency: Currency::default(),
+                };
+                let names = names.unwrap_or(&fallback);
+                let text = conditions
+                    .describe(&names.tariffs, &names.categories, names.currency)
+                    .join(", ");
+                let mut chars = text.chars();
+                match chars.next() {
+                    Some(first) => first.to_uppercase().chain(chars).collect(),
+                    None => "Все клиенты".into(),
+                }
+            }
         }
     }
 
-    pub const fn tariff(self) -> Option<TariffId> {
+    pub const fn tariff(&self) -> Option<TariffId> {
         match self {
-            Audience::Tariff { tariff_id } => Some(tariff_id),
+            Audience::Tariff { tariff_id } => Some(*tariff_id),
             _ => None,
         }
+    }
+
+    pub fn uses_money(&self) -> bool {
+        matches!(self, Audience::Filter(conditions) if conditions.uses_money())
     }
 }
 
@@ -587,7 +627,7 @@ async fn cleaned(db: &mut impl Db, draft: &Draft) -> Result<Cleaned, BroadcastEr
             "Картинка не найдена: загрузите её заново",
         ));
     }
-    let audience = draft.audience.check()?;
+    let audience = draft.audience.clone().check()?;
     if let Some(tariff) = audience.tariff()
         && !store::tariff_alive(db, tariff).await?
     {
@@ -716,7 +756,7 @@ pub async fn reach(ctx: &ModuleContext, audience: Audience) -> Result<Reach, Bro
     let audience = audience.check()?;
     let mut conn = ctx.store.conn().await?;
     let now = crate::catalog::db_now(&mut conn).await?;
-    Ok(store::reach(&mut conn, audience, now).await?)
+    Ok(store::reach(&mut conn, &audience, now).await?)
 }
 
 pub async fn start(
@@ -732,7 +772,7 @@ pub async fn start(
     }
     let now = crate::catalog::db_now(&mut tx).await?;
     let current = store::view(&mut tx, id).await?;
-    current.audience.check()?;
+    current.audience.clone().check()?;
     if current.channel.has(Lane::Email) {
         mail_site(ctx)?;
         if current.subject.as_deref().is_none_or(str::is_empty) {
@@ -763,7 +803,7 @@ pub async fn start(
         }
         None => {
             let total =
-                store::launch(&mut tx, id, current.audience, current.channel, now, admin).await?;
+                store::launch(&mut tx, id, &current.audience, current.channel, now, admin).await?;
             if total == 0 {
                 return Err(rejected(
                     "broadcast.empty",
@@ -1142,6 +1182,7 @@ pub struct Options {
     pub mail: MailState,
     pub sections: Vec<SectionOption>,
     pub tariffs: Vec<TariffOption>,
+    pub filter: sn_store::FilterOptions,
     pub limits: Limits,
     pub auto: auto::AutoOptions,
 }
@@ -1192,6 +1233,7 @@ pub async fn options(ctx: &ModuleContext) -> Result<Options, BroadcastError> {
             })
             .collect(),
         tariffs,
+        filter: sn_store::filter_options(conn.conn()).await?,
         limits: LIMITS,
         auto: auto::options(&mut conn).await?,
     })
