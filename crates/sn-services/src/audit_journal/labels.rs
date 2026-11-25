@@ -180,6 +180,11 @@ pub const ACTIONS: &[ActionLabel] = &[
         "Регистрация через Google или Apple",
         Area::Clients,
     ),
+    a(
+        "client.merged_into",
+        "Пустой аккаунт Telegram закрыт при привязке",
+        Area::Clients,
+    ),
     a("client.telegram_linked", "Привязан Telegram", Area::Clients),
     a(
         "client.oauth_linked",
@@ -1239,6 +1244,8 @@ const FIELDS: &[(&str, &str)] = &[
     ("count", "Количество"),
     ("telegram", "Telegram"),
     ("telegram_id", "ID в Telegram"),
+    ("closed_client", "Закрытый пустой аккаунт"),
+    ("into", "Присоединён к аккаунту"),
     ("username", "Имя в Telegram"),
     ("endpoint", "Адрес хранилища"),
     ("bucket", "Бакет"),

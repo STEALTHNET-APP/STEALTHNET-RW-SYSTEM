@@ -21,6 +21,24 @@ use sn_store::{Db, LockSpace, Tx};
 pub const START_PREFIX: &str = LINK_PREFIX;
 pub const TEMPLATE_LINKED: &str = "telegram_linked";
 pub const LINKED_AUDIT: &str = "client.telegram_linked";
+pub const MERGED_AUDIT: &str = "client.merged_into";
+
+const LEFT_BEHIND: [&str; 14] = [
+    "client_identities",
+    "client_sessions",
+    "client_login_requests",
+    "client_photos",
+    "client_utm",
+    "referral_codes",
+    "notifications_sent",
+    "broadcast_recipients",
+    "broadcast_unsubscribes",
+    "auto_broadcast_cases",
+    "antibot_events",
+    "oauth_requests",
+    "site_signups",
+    "app_links",
+];
 pub const EXPIRED: &str = "telegram_link.expired";
 pub const TAKEN: &str = "telegram_link.taken";
 pub const ALREADY_LINKED: &str = "telegram_link.already_linked";
@@ -39,7 +57,11 @@ pub struct TelegramLinkStart {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TelegramLinkPrompt {
-    Ask { account: String, site: String },
+    Ask {
+        account: String,
+        site: String,
+        closes_empty: bool,
+    },
     Linked,
 }
 
@@ -167,6 +189,81 @@ async fn request(db: &mut impl Db, code: &str, lock: &str) -> ServiceResult<Opti
     .bind(token_hash(&code))
     .fetch_optional(db.conn())
     .await?)
+}
+
+async fn is_empty(db: &mut impl Db, client: &Client) -> ServiceResult<bool> {
+    if client.is_blocked() {
+        return Ok(false);
+    }
+    let identities = db.clients().identities(client.id).await?;
+    if identities.iter().any(|i| i.kind != IdentityKind::Telegram) {
+        return Ok(false);
+    }
+    let pending: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM domain_events WHERE client_id = $1 AND dispatched_at IS NULL)",
+    )
+    .bind(client.id.0)
+    .fetch_one(db.conn())
+    .await?;
+    if pending {
+        return Ok(false);
+    }
+    let checks: Vec<(String, String)> = sqlx::query_as(
+        "SELECT c.conrelid::regclass::text, \
+                format('SELECT EXISTS (SELECT 1 FROM %s WHERE %I = $1)', c.conrelid::regclass, a.attname) \
+         FROM pg_constraint c \
+         JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey) \
+         WHERE c.contype = 'f' AND c.confrelid = 'clients'::regclass",
+    )
+    .fetch_all(db.conn())
+    .await?;
+    for (table, query) in checks {
+        if LEFT_BEHIND.contains(&table.as_str()) {
+            continue;
+        }
+        let used: bool = if table == "client_balances" {
+            sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM client_balances WHERE client_id = $1 AND amount_minor <> 0)",
+            )
+            .bind(client.id.0)
+            .fetch_one(db.conn())
+            .await?
+        } else {
+            sqlx::query_scalar(&query)
+                .bind(client.id.0)
+                .fetch_one(db.conn())
+                .await?
+        };
+        if used {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+async fn close_empty(tx: &mut Tx, empty: ClientId, into: ClientId) -> ServiceResult<()> {
+    let identities = tx.clients().delete_identities(empty).await?;
+    sqlx::query("DELETE FROM client_balances WHERE client_id = $1 AND amount_minor = 0")
+        .bind(empty.0)
+        .execute(tx.conn())
+        .await?;
+    sqlx::query("DELETE FROM analytics_clients WHERE client_id = $1")
+        .bind(empty.0)
+        .execute(tx.conn())
+        .await?;
+    sqlx::query("DELETE FROM clients WHERE id = $1")
+        .bind(empty.0)
+        .execute(tx.conn())
+        .await?;
+    tx.audit()
+        .record(&Actor::Client(into).audit(
+            MERGED_AUDIT,
+            "client",
+            Some(empty.0),
+            serde_json::json!({ "into": into.0, "identities": identities }),
+        ))
+        .await?;
+    Ok(())
 }
 
 async fn notify_linked(
@@ -410,9 +507,11 @@ impl<'a> TelegramLinks<'a> {
         if mine {
             return Ok(TelegramLinkPrompt::Linked);
         }
-        if owner.is_some() {
-            return Err(taken());
-        }
+        let closes_empty = match &owner {
+            Some(owner) if is_empty(&mut conn, owner).await? => true,
+            Some(_) => return Err(taken()),
+            None => false,
+        };
         if self.bot(&mut conn).await?.is_none() {
             return Err(unavailable());
         }
@@ -436,6 +535,7 @@ impl<'a> TelegramLinks<'a> {
         Ok(TelegramLinkPrompt::Ask {
             account: masked_account(&identities),
             site,
+            closes_empty,
         })
     }
 
@@ -452,11 +552,27 @@ impl<'a> TelegramLinks<'a> {
             .map(|row| ClientId(row.client_id))
             .ok_or_else(expired)?;
         tx.lock(LockSpace::Telegram, profile.id).await?;
-        let client = tx.clients().lock(client_id).await?;
+        let found = self.owner(&mut tx, profile).await?;
+        let mut owner = None;
+        let mut client = None;
+        let mut ids = vec![client_id];
+        ids.extend(found.as_ref().map(|o| o.id).filter(|id| *id != client_id));
+        ids.sort_by_key(|id| id.0);
+        for id in ids {
+            let locked = tx.clients().lock(id).await?;
+            if id == client_id {
+                client = Some(locked);
+            } else {
+                owner = Some(locked);
+            }
+        }
+        let client = client.ok_or_else(expired)?;
+        if found.as_ref().is_some_and(|o| o.id == client_id) {
+            owner = Some(client.clone());
+        }
         let row = request(&mut tx, code, "FOR UPDATE")
             .await?
             .ok_or_else(expired)?;
-        let owner = self.owner(&mut tx, profile).await?;
         let mine = owner.as_ref().is_some_and(|o| o.id == client_id);
         let repeated = TelegramLinked {
             client_id,
@@ -468,9 +584,15 @@ impl<'a> TelegramLinks<'a> {
         if row.status != "pending" || row.expires_at <= now {
             return Err(expired());
         }
-        if owner.is_some() && !mine {
-            return Err(taken());
-        }
+        let empty = match &owner {
+            Some(other) if !mine => {
+                if !is_empty(&mut tx, other).await? {
+                    return Err(taken());
+                }
+                Some(other.id)
+            }
+            _ => None,
+        };
         if self.bot(&mut tx).await?.is_none() {
             return Err(unavailable());
         }
@@ -486,6 +608,9 @@ impl<'a> TelegramLinks<'a> {
                 return Err(already_linked());
             }
             self.check_email(&identities)?;
+            if let Some(empty) = empty {
+                close_empty(&mut tx, empty, client_id).await?;
+            }
             if !tx
                 .clients()
                 .add_identity_if_free(client_id, &NewIdentity::telegram(profile))
@@ -502,6 +627,7 @@ impl<'a> TelegramLinks<'a> {
                 serde_json::json!({
                     "telegram_id": profile.id,
                     "username": profile.username,
+                    "closed_client": empty.map(|id| id.0),
                 }),
             );
             entry.ip = row.ip.clone();

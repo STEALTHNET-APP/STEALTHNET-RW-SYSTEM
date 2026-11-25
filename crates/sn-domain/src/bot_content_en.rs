@@ -473,6 +473,9 @@ pub fn default(key: &str) -> Option<&'static str> {
         "link.title" => "<b>Linking Telegram</b>",
         "link.account" => "Account on {site}: {account}",
         "link.who" => "Your Telegram: {who}",
+        "link.empty" => {
+            "This Telegram has its own account in the bot, but it is empty: no subscriptions or payments. After linking, this Telegram moves to the account on the website, and the empty bot account will be closed."
+        }
         "link.hint" => {
             "This is not a website sign-in. After linking, the bot and the app open this account, and your Telegram can be used to sign in to it on the website. If you didn't start this, tap “Cancel”."
         }

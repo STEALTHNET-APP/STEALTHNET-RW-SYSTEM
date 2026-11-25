@@ -63,8 +63,12 @@ pub async fn opened(turn: &mut Turn<'_>, param: &str) -> Result<Screen, BotError
         .telegram_links()
         .prompt(code, &profile(turn.user))
         .await;
-    let (account, site) = match prompt {
-        Ok(TelegramLinkPrompt::Ask { account, site }) => (account, site),
+    let (account, site, closes_empty) = match prompt {
+        Ok(TelegramLinkPrompt::Ask {
+            account,
+            site,
+            closes_empty,
+        }) => (account, site, closes_empty),
         Ok(TelegramLinkPrompt::Linked) => {
             return reply(turn, ui::text(c, "link.same", &[])).await;
         }
@@ -78,6 +82,9 @@ pub async fn opened(turn: &mut Turn<'_>, param: &str) -> Result<Screen, BotError
         &[("site", Text(&site)), ("account", Text(&account))],
     ));
     lines.add(ui::text(c, "link.who", &[("who", Text(&who(turn.user)))]));
+    if closes_empty {
+        lines.add(ui::text(c, "link.empty", &[]));
+    }
     lines.add(ui::text(c, "link.hint", &[]));
     Ok(Screen::new(lines.text())
         .keyboard(

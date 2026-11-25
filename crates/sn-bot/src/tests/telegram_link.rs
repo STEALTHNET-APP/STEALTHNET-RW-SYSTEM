@@ -219,6 +219,16 @@ async fn занятый_telegram_получает_понятный_отказ() 
     site(&services).await;
     handle_update(&ctx, text_update(1, USER, "/start")).await;
     let before = client_of(&services, USER).await.unwrap().id;
+    {
+        let mut conn = services.store().conn().await.unwrap();
+        sqlx::query(
+            "INSERT INTO trial_claims (kind, value, client_id) VALUES ('telegram', '9301', $1)",
+        )
+        .bind(before.0)
+        .execute(conn.conn())
+        .await
+        .unwrap();
+    }
     let owner = account(&services, "alexey@mail.example").await;
     let (param, start) = begin(&services, &owner).await;
     handle_update(&ctx, text_update(2, USER, &format!("/start {param}"))).await;
@@ -360,5 +370,40 @@ async fn о_привязке_telegram_приходит_письмо_а_не_со
         letter.contains("https://vpn.example.com/cabinet/security"),
         "{letter}"
     );
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn пустой_аккаунт_бота_закрывается_и_бот_открывает_аккаунт_с_сайта() {
+    let Some((db, services, server, ctx)) = setup().await else {
+        return;
+    };
+    site(&services).await;
+    handle_update(&ctx, text_update(1, USER, "/start")).await;
+    services.events().dispatch_pending(100).await.unwrap();
+    let empty = client_of(&services, USER).await.unwrap().id;
+    let owner = account(&services, "alexey@mail.example").await;
+    let (param, _) = begin(&services, &owner).await;
+    handle_update(&ctx, text_update(2, USER, &format!("/start {param}"))).await;
+    let text = last_text(&server).await;
+    assert!(
+        text.contains("Telegram перейдёт к аккаунту на сайте, а пустой аккаунт бота закроется"),
+        "{text}"
+    );
+    let buttons = last_buttons(&server).await;
+    handle_update(&ctx, callback_update(3, USER, &buttons[0])).await;
+    assert!(last_text(&server).await.contains("Telegram привязан."));
+    assert_eq!(client_of(&services, USER).await.unwrap().id, owner.client);
+    let mut conn = services.store().conn().await.unwrap();
+    let left: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM clients WHERE id = $1)")
+        .bind(empty.0)
+        .fetch_one(conn.conn())
+        .await
+        .unwrap();
+    assert!(!left);
+    drop(conn);
+    handle_update(&ctx, text_update(4, USER, "/start")).await;
+    assert!(last_text(&server).await.contains("Подписки пока нет"));
+    assert_eq!(clients(&services).await, 1);
     db.cleanup().await;
 }

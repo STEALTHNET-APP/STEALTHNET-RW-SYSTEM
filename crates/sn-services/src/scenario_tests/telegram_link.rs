@@ -168,6 +168,7 @@ async fn telegram_привязывается_к_аккаунту_кабинет�
         TelegramLinkPrompt::Ask {
             account: "a***@mail.example".into(),
             site: "vpn.example.com".into(),
+            closes_empty: false,
         }
     );
     assert_eq!(owner_of(services, TG).await, None);
@@ -415,13 +416,16 @@ async fn параллельные_подтверждения_привязыва�
     let linked = linking.await.unwrap();
     let (entered, created) = starting.await.unwrap().unwrap();
     match linked {
-        Ok(linked) => assert_eq!(
-            (linked.client_id, entered.id, created),
-            (racer, racer, false)
-        ),
+        Ok(linked) => {
+            assert_eq!(
+                (linked.client_id, entered.id, created),
+                (racer, racer, false)
+            );
+        }
         Err(err) => {
             assert_eq!(err.code(), TAKEN);
             assert!(created);
+            assert_eq!(owner_of(services, TG + 200).await, Some(entered.id));
         }
     }
     env.db.cleanup().await;
@@ -527,6 +531,16 @@ async fn занятый_telegram_и_другой_telegram_у_аккаунта_д
     let services = &env.services;
     let links = services.telegram_links();
     let busy = telegram_client(services, 42).await;
+    {
+        let mut conn = services.store().conn().await.unwrap();
+        sqlx::query(
+            "INSERT INTO trial_claims (kind, value, client_id) VALUES ('telegram', '42', $1)",
+        )
+        .bind(busy.0)
+        .execute(conn.conn())
+        .await
+        .unwrap();
+    }
     let client = by_email(services, "alexey@mail.example").await;
     let (_, me) = cabinet(services, client).await;
     let start = begin(services, &me).await;
@@ -755,6 +769,7 @@ async fn неподтверждённая_почта_сначала_подтве
         TelegramLinkPrompt::Ask {
             account: "v***@mail.example".into(),
             site: "vpn.example.com".into(),
+            closes_empty: false,
         }
     );
     let plain_google = site_client(services, &[google("g-3")]).await;
@@ -765,6 +780,7 @@ async fn неподтверждённая_почта_сначала_подтве
         TelegramLinkPrompt::Ask {
             account: "b***@gmail.example".into(),
             site: "vpn.example.com".into(),
+            closes_empty: false,
         }
     );
     {
@@ -852,5 +868,235 @@ async fn старые_запросы_привязки_убираются() {
         .unwrap();
     assert_eq!(left, 1);
     drop(conn);
+    env.db.cleanup().await;
+}
+
+async fn used(services: &Services, sql: &str, id: ClientId) {
+    let mut conn = services.store().conn().await.unwrap();
+    sqlx::query(sql)
+        .bind(id.0)
+        .execute(conn.conn())
+        .await
+        .unwrap();
+}
+
+async fn bot_client(services: &Services, telegram: i64) -> ClientId {
+    let id = telegram_client(services, telegram).await;
+    services.events().dispatch_pending(100).await.unwrap();
+    id
+}
+
+async fn exists(services: &Services, id: ClientId) -> bool {
+    let mut conn = services.store().conn().await.unwrap();
+    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM clients WHERE id = $1)")
+        .bind(id.0)
+        .fetch_one(conn.conn())
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn пустой_аккаунт_telegram_присоединяется_а_непустой_нет() {
+    let Some(env) = env().await else { return };
+    let services = &env.services;
+    let links = services.telegram_links();
+    let empty = bot_client(services, TG).await;
+    let mini = services
+        .auth()
+        .client_session_for(
+            empty,
+            sn_store::SessionChannel::Miniapp,
+            &meta("203.0.113.9"),
+            false,
+        )
+        .await
+        .unwrap();
+    used(
+        services,
+        "INSERT INTO client_balances (client_id, wallet, currency, amount_minor) VALUES ($1, 'main', 'RUB', 0)",
+        empty,
+    )
+    .await;
+    used(
+        services,
+        "INSERT INTO analytics_clients (client_id, created_at, reg_channel, login_kind, source_type, source_key, utm_medium, utm_campaign, deleted) \
+         VALUES ($1, now(), 'bot', 'telegram', 'none', '', '', '', false)",
+        empty,
+    )
+    .await;
+    let client = by_email(services, "alexey@mail.example").await;
+    let (_, me) = cabinet(services, client).await;
+    let start = begin(services, &me).await;
+    assert_eq!(
+        links.prompt(&param(&start), &profile(TG)).await.unwrap(),
+        TelegramLinkPrompt::Ask {
+            account: "a***@mail.example".into(),
+            site: "vpn.example.com".into(),
+            closes_empty: true,
+        }
+    );
+    let linked = links.confirm(&param(&start), &profile(TG)).await.unwrap();
+    assert_eq!((linked.client_id, linked.repeated), (client, false));
+    assert_eq!(owner_of(services, TG).await, Some(client));
+    assert!(!exists(services, empty).await);
+    assert!(matches!(
+        services.auth().client_session(&mini.token).await,
+        Err(ServiceError::Unauthorized)
+    ));
+    let (entered, created) = services
+        .clients()
+        .ensure_telegram(&profile(TG), RegistrationSource::Miniapp, None)
+        .await
+        .unwrap();
+    assert_eq!((entered.id, created), (client, false));
+    let mut conn = services.store().conn().await.unwrap();
+    let (merged,): (serde_json::Value,) = sqlx::query_as(
+        "SELECT details FROM audit_log WHERE action = 'client.merged_into' AND entity_id = $1",
+    )
+    .bind(empty.0)
+    .fetch_one(conn.conn())
+    .await
+    .unwrap();
+    assert_eq!(merged["into"], client.0);
+    let (linked_details,): (serde_json::Value,) =
+        sqlx::query_as("SELECT details FROM audit_log WHERE action = $1 AND entity_id = $2")
+            .bind(LINKED_AUDIT)
+            .bind(client.0)
+            .fetch_one(conn.conn())
+            .await
+            .unwrap();
+    assert_eq!(linked_details["closed_client"], empty.0);
+    let analytics: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM analytics_clients WHERE client_id = $1")
+            .bind(empty.0)
+            .fetch_one(conn.conn())
+            .await
+            .unwrap();
+    assert_eq!(analytics, 0);
+    let page = conn
+        .clients()
+        .search(
+            &Default::default(),
+            sn_domain::paging::PageRequest::new(Some(50), None),
+        )
+        .await
+        .unwrap();
+    assert_eq!(page.items.len(), 1);
+    drop(conn);
+
+    let fills = [
+        "INSERT INTO trial_claims (kind, value, client_id) VALUES ('telegram', 'x' || $1, $1)",
+        "INSERT INTO client_balances (client_id, wallet, currency, amount_minor) VALUES ($1, 'main', 'RUB', 100)",
+        "UPDATE clients SET status = 'blocked' WHERE id = $1",
+        "INSERT INTO client_identities (client_id, kind, value, verified, meta, search_text) VALUES ($1, 'email', 'e' || $1 || '@mail.example', false, '{}', '')",
+        "INSERT INTO tickets (client_id, channel, subject) VALUES ($1, 'bot', 'вопрос')",
+        "INSERT INTO antibot_marks (client_id) VALUES ($1)",
+        "INSERT INTO referral_links (client_id, referrer_id) VALUES ($1, (SELECT min(id) FROM clients))",
+        "INSERT INTO referral_links (client_id, referrer_id) VALUES ((SELECT min(id) FROM clients), $1)",
+        "INSERT INTO domain_events (kind, client_id, payload) VALUES ('client_registered', $1, '{}')",
+    ];
+    for (n, fill) in fills.into_iter().enumerate() {
+        let telegram = TG + 10 + i64::try_from(n).unwrap();
+        let account = by_email(services, &format!("n{n}@mail.example")).await;
+        let full = bot_client(services, telegram).await;
+        used(services, fill, full).await;
+        let (_, principal) = cabinet(services, account).await;
+        let start = begin(services, &principal).await;
+        assert_eq!(
+            code(links.prompt(&param(&start), &profile(telegram)).await),
+            TAKEN,
+            "{fill}"
+        );
+        assert_eq!(
+            code(links.confirm(&param(&start), &profile(telegram)).await),
+            TAKEN,
+            "{fill}"
+        );
+        assert_eq!(owner_of(services, telegram).await, Some(full), "{fill}");
+        assert!(exists(services, full).await, "{fill}");
+    }
+    env.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn запись_в_пустой_аккаунт_во_время_присоединения_не_теряется() {
+    let Some(env) = env().await else { return };
+    let services = &env.services;
+    let admin = owner(services).await;
+    let rub = |minor| Money::new(minor, Currency::Rub);
+
+    let account = by_email(services, "alexey@mail.example").await;
+    let empty = bot_client(services, TG).await;
+    let (_, me) = cabinet(services, account).await;
+    let code_part = param(&begin(services, &me).await);
+    let mut writer = services.store().begin().await.unwrap();
+    sqlx::query(
+        "INSERT INTO trial_claims (kind, value, client_id) VALUES ('email', 'w@mail.example', $1)",
+    )
+    .bind(empty.0)
+    .execute(writer.conn())
+    .await
+    .unwrap();
+    let confirming = {
+        let services = services.clone();
+        tokio::spawn(async move {
+            services
+                .telegram_links()
+                .confirm(&code_part, &profile(TG))
+                .await
+        })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(!confirming.is_finished());
+    writer.commit().await.unwrap();
+    assert_eq!(code(confirming.await.unwrap()), TAKEN);
+    assert_eq!(owner_of(services, TG).await, Some(empty));
+
+    for round in 0..12_i64 {
+        let telegram = TG + 1000 + round;
+        let account = by_email(services, &format!("r{round}@mail.example")).await;
+        let empty = bot_client(services, telegram).await;
+        let (_, me) = cabinet(services, account).await;
+        let code_part = param(&begin(services, &me).await);
+        let confirming = {
+            let services = services.clone();
+            tokio::spawn(async move {
+                services
+                    .telegram_links()
+                    .confirm(&code_part, &profile(telegram))
+                    .await
+            })
+        };
+        let paying = {
+            let services = services.clone();
+            tokio::spawn(async move {
+                services
+                    .clients()
+                    .adjust_balance(empty, rub(500), "гонка", admin, &format!("race-{round}"))
+                    .await
+            })
+        };
+        let linked = confirming.await.unwrap();
+        let paid = paying.await.unwrap();
+        match (linked, paid) {
+            (Ok(_), Err(_)) => {
+                assert_eq!(owner_of(services, telegram).await, Some(account));
+                assert!(!exists(services, empty).await);
+            }
+            (Err(err), Ok(_)) => {
+                assert_eq!(err.code(), TAKEN);
+                assert_eq!(owner_of(services, telegram).await, Some(empty));
+                let mut conn = services.store().conn().await.unwrap();
+                let entries: i64 =
+                    sqlx::query_scalar("SELECT count(*) FROM balance_entries WHERE client_id = $1")
+                        .bind(empty.0)
+                        .fetch_one(conn.conn())
+                        .await
+                        .unwrap();
+                assert_eq!(entries, 1);
+            }
+            other => panic!("раунд {round}: {other:?}"),
+        }
+    }
     env.db.cleanup().await;
 }
