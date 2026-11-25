@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { api, ApiError } from '../lib/api';
-import { money } from '../lib/format';
+import { money, moneyExact } from '../lib/format';
 import { t } from '../lib/i18n';
 import { Icon } from '../lib/icons';
 import { Card, useCabinet } from './CabinetApp';
@@ -127,7 +127,7 @@ export function TopUpPage() {
       : null;
   const sum = amount !== null && inRange ? money({ minor: amount, currency }) : null;
   const bonus = amount !== null && inRange ? bonusText(amount, currency, chosen) : null;
-  const after = amount !== null && inRange ? money({ minor: me.balance.minor + amount + topUpBonus(amount, chosen), currency }) : null;
+  const after = amount !== null && inRange ? moneyExact({ minor: me.balance.minor + amount + topUpBonus(amount, chosen), currency }) : null;
 
   useEffect(() => {
     if (!fixed || (preset !== null && fixed.some((m) => m.minor === preset) && !custom.trim())) {

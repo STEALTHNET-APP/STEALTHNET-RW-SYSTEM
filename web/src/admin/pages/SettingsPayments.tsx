@@ -819,7 +819,10 @@ function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved, onChec
   const pickable = offered.length > 1 || bonus.methods.length > 0;
   const covers = (code: string) => bonus.methods.length === 0 || bonus.methods.includes(code);
   const nowhere = bonus.methods.length > 0 && !offered.some((r) => bonus.methods.includes(r.code));
-  const bonusPending = withBonus && JSON.stringify(bonus) !== savedBonus;
+  const bonusMethods = bonus.methods.filter((code) => rows.some((r) => r.code === code));
+  const bonusRows = offered.length > 0 ? rows.filter((r) => r.on || bonus.methods.includes(r.code)) : rows;
+  const bonusStale = foreign && bonus.on;
+  const bonusPending = withBonus && (bonusStale || JSON.stringify(bonus) !== savedBonus);
 
   useEffect(() => {
     api<{ provider: Provider; schema: SettingField[] }>(`/api/admin/payments/providers/${provider.id}`)
@@ -866,8 +869,8 @@ function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved, onChec
   const toggle = (code: string) => setRows((list) => settle(list.map((r) => (r.code === code ? { ...r, on: !r.on } : r))));
 
   const toggleBonus = (code: string) => {
-    const codes = offered.map((r) => r.code);
-    const picked = bonus.methods.length ? bonus.methods : codes;
+    const codes = (offered.length > 0 ? offered : rows).map((r) => r.code);
+    const picked = bonus.methods.length ? bonusMethods : codes;
     const next = covers(code) ? picked.filter((c) => c !== code) : [...picked, code];
     if (next.length > 0) {
       const all = next.length === codes.length && codes.every((c) => next.includes(c));
@@ -933,6 +936,10 @@ function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved, onChec
         setError('Сумма в настройках бонуса — число больше нуля, пустое поле — без ограничения');
         return;
       }
+      if (bonus.on && bonus.methods.length > 0 && bonusMethods.length === 0) {
+        setError('Отметьте способы, для которых действует бонус');
+        return;
+      }
     }
     setBusy(true);
     setError(null);
@@ -953,7 +960,7 @@ function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved, onChec
                   percent,
                   min_minor: minLimit,
                   max_minor: maxLimit,
-                  methods: bonus.methods.filter((code) => rows.some((r) => r.code === code)),
+                  methods: bonusMethods,
                 },
               }
             : {}),
@@ -1079,7 +1086,7 @@ function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved, onChec
           <span className="cap" id={`pay-bh-${provider.id}`}>
             Процент от суммы придёт на баланс сверх пополнения этим способом. При возврате бонус снимается.
           </span>
-          {foreign ? <span className="warn-line">Порог или предел задан в другой валюте. Бонус не действует, пока настройки не сохранены заново.</span> : null}
+          {bonusStale ? <span className="warn-line">Порог или предел задан в другой валюте. Бонус не действует, пока настройки не сохранены заново.</span> : null}
           {bonus.on ? (
             <>
               <span className="pay-lrow">
@@ -1128,14 +1135,12 @@ function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved, onChec
               {pickable ? (
                 <span className="pay-bonus-methods" role="group" aria-label="Для каких способов действует бонус">
                   <span className="cap">Для каких способов</span>
-                  {rows
-                    .filter((r) => r.on || bonus.methods.includes(r.code))
-                    .map((r) => (
-                      <label key={r.code} className="pay-check">
-                        <input type="checkbox" checked={covers(r.code)} onChange={() => toggleBonus(r.code)} disabled={busy} />
-                        {r.custom.trim() || r.title}
-                      </label>
-                    ))}
+                  {bonusRows.map((r) => (
+                    <label key={r.code} className="pay-check">
+                      <input type="checkbox" checked={covers(r.code)} onChange={() => toggleBonus(r.code)} disabled={busy} />
+                      {r.custom.trim() || r.title}
+                    </label>
+                  ))}
                 </span>
               ) : null}
               {nowhere ? <span className="warn-line">Выбранные способы не показываются клиентам, бонус никто не получит</span> : null}
