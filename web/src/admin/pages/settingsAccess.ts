@@ -12,6 +12,7 @@ export const SECTIONS: SettingsSection[] = [
   { label: 'Бот', to: '/admin/settings/bot', need: SETTINGS },
   { label: 'Документы', to: '/admin/settings/documents', need: SETTINGS },
   { label: 'Лендинг', to: '/admin/settings/landing', need: SETTINGS },
+  { label: 'Кабинет на сайте', to: '/admin/settings/cabinet', need: SETTINGS },
   { label: 'Мини-приложение', to: '/admin/settings/miniapp', need: SETTINGS },
   { label: 'Кабинет и мини-приложение', to: '/admin/settings/client', need: SETTINGS },
   { label: 'Языки', to: '/admin/settings/languages', need: SETTINGS },

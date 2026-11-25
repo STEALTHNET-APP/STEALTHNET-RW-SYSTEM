@@ -35,6 +35,7 @@ mod backups;
 mod balance_off;
 mod bot_content;
 mod broadcast;
+mod cabinet;
 mod captcha;
 mod channels;
 mod client_access;

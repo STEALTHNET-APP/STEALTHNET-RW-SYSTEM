@@ -69,6 +69,7 @@ struct Runtime {
     settings: Arc<CoreSettings>,
     landing_style: Option<Arc<crate::own_css::StyleFile>>,
     miniapp_style: Option<Arc<crate::own_css::StyleFile>>,
+    cabinet_style: Option<Arc<crate::own_css::StyleFile>>,
     remna: Option<Arc<dyn RemnawaveApi>>,
     remna_webhook_secret: Option<String>,
     bot_token: Option<String>,
@@ -117,6 +118,7 @@ impl Services {
             }),
             landing_style: None,
             miniapp_style: None,
+            cabinet_style: None,
             remna: None,
             remna_webhook_secret: deps
                 .env
@@ -238,10 +240,12 @@ impl Services {
         self.inner.modules.set_currency(settings.currency);
         let landing_style = crate::own_css::StyleFile::of(&settings.landing.css);
         let miniapp_style = crate::own_css::StyleFile::of(&settings.miniapp.css);
+        let cabinet_style = crate::own_css::StyleFile::of(&settings.cabinet_css);
         self.write(|r| {
             r.settings = Arc::new(settings);
             r.landing_style = landing_style;
             r.miniapp_style = miniapp_style;
+            r.cabinet_style = cabinet_style;
         });
     }
 
@@ -251,6 +255,10 @@ impl Services {
 
     pub fn miniapp_style(&self) -> Option<Arc<crate::own_css::StyleFile>> {
         self.read(|r| r.miniapp_style.clone())
+    }
+
+    pub fn cabinet_style(&self) -> Option<Arc<crate::own_css::StyleFile>> {
+        self.read(|r| r.cabinet_style.clone())
     }
 
     pub fn remna(&self) -> ServiceResult<Arc<dyn RemnawaveApi>> {
@@ -430,10 +438,12 @@ impl Services {
         let token_changed = self.bot_token() != bot_token;
         let landing_style = crate::own_css::StyleFile::of(&core.landing.css);
         let miniapp_style = crate::own_css::StyleFile::of(&core.miniapp.css);
+        let cabinet_style = crate::own_css::StyleFile::of(&core.cabinet_css);
         self.write(|r| {
             r.settings = Arc::new(core);
             r.landing_style = landing_style;
             r.miniapp_style = miniapp_style;
+            r.cabinet_style = cabinet_style;
             r.remna = client;
             r.remna_webhook_secret = remna.webhook_secret;
             r.bot_token = bot_token;
@@ -601,6 +611,10 @@ impl Services {
 
     pub fn miniapp(&self) -> crate::miniapp::MiniAppOps<'_> {
         crate::miniapp::MiniAppOps::new(self)
+    }
+
+    pub fn cabinet(&self) -> crate::cabinet::CabinetOps<'_> {
+        crate::cabinet::CabinetOps::new(self)
     }
 
     pub fn connect_apps(&self) -> crate::connect_apps::ConnectAppsOps<'_> {

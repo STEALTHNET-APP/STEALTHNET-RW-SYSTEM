@@ -449,7 +449,7 @@ export function Login({ site, onDone, langSwitch }: { site: Site; onDone: () => 
     ) : null;
 
   return (
-    <div className="cb-solo">
+    <div className="cb-solo" data-part="login">
       <div className="cb-solo-box cb-login">
         <div className="cb-brand" aria-hidden="true">
           <BrandMark name={site.brand_name} logo={site.logo_url} className="cb-mark" />

@@ -43,6 +43,14 @@ function checkPath(path: string): void {
   }
 }
 
+export type Answer = (path: string, options: { method: Method; body?: unknown }) => Promise<unknown>;
+
+let answer: Answer | null = null;
+
+export function setAnswer(next: Answer | null): void {
+  answer = next;
+}
+
 let bearer: string | null = null;
 
 export function setBearer(token: string | null): void {
@@ -51,6 +59,9 @@ export function setBearer(token: string | null): void {
 
 export async function api<T>(path: string, options: Options = {}): Promise<T> {
   checkPath(path);
+  if (answer) {
+    return (await answer(path, { method: options.method ?? 'GET', body: options.body })) as T;
+  }
   const headers: Record<string, string> = { accept: 'application/json' };
   if (bearer && path.startsWith('/api/client')) {
     headers.authorization = `Bearer ${bearer}`;
@@ -110,6 +121,9 @@ function clientHeaders(path: string, headers: Record<string, string>): Record<st
 
 export async function upload<T>(path: string, file: Blob): Promise<T> {
   checkPath(path);
+  if (answer) {
+    return (await answer(path, { method: 'POST' })) as T;
+  }
   let response: Response;
   try {
     response = await fetch(path, {
@@ -126,6 +140,9 @@ export async function upload<T>(path: string, file: Blob): Promise<T> {
 
 export async function fetchBlob(path: string): Promise<Blob> {
   checkPath(path);
+  if (answer) {
+    return (await answer(path, { method: 'GET' })) as Blob;
+  }
   let response: Response;
   try {
     response = await fetch(path, { headers: clientHeaders(path, {}), credentials: 'same-origin' });

@@ -16,7 +16,7 @@
   color: var(--ink);
 }
 
-.cb a {
+:where(.cb) a {
   color: inherit;
   text-decoration: none;
 }
@@ -95,7 +95,7 @@
   align-items: center;
   padding: 0 14px;
   border-radius: 10px;
-  color: var(--ink-2);
+  color: inherit;
   font-weight: 500;
 }
 
@@ -423,7 +423,7 @@
 .cb-main {
   border: 0;
   background: var(--btn);
-  color: var(--btn-ink) !important;
+  color: var(--btn-ink);
 }
 
 .cb-main:hover {
@@ -684,7 +684,7 @@
 }
 
 .cb-accent-link {
-  color: var(--accent-ink) !important;
+  color: var(--accent-ink);
   font-weight: 700;
 }
 
@@ -1567,11 +1567,11 @@
   font-size: 13px;
 }
 
-.cb-auto {
-  flex-direction: row !important;
+.cb-card.cb-auto {
+  flex-direction: row;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 16px !important;
+  padding: 8px 16px;
 }
 
 .cb-auto .cb-small {

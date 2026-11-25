@@ -5,6 +5,7 @@ mod audit;
 mod auth;
 mod backups;
 mod bot_content;
+mod cabinet;
 mod catalog;
 mod clients;
 mod connect_apps;
@@ -58,6 +59,7 @@ pub fn routes() -> Router<AppState> {
         .merge(settings::routes())
         .merge(landing::routes())
         .merge(miniapp::routes())
+        .merge(cabinet::routes())
         .merge(connect_apps::routes())
         .merge(system::routes())
         .merge(backups::routes())

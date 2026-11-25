@@ -2,7 +2,7 @@ import { useLayoutEffect, useState } from 'react';
 
 const WAIT_MS = 2500;
 
-export function styleFile(value: unknown, folder: 'landing' | 'miniapp'): string | null {
+export function styleFile(value: unknown, folder: 'landing' | 'miniapp' | 'cabinet'): string | null {
   return typeof value === 'string' && new RegExp(`^/api/public/${folder}/[0-9a-f]{16}\\.css$`).test(value) ? value : null;
 }
 

@@ -71,6 +71,7 @@ fn landing_preview(path: &str) -> bool {
         "/admin/landing-preview",
         "/admin/document-preview",
         "/admin/mini-preview",
+        "/admin/cabinet-preview",
     ]
     .iter()
     .any(|frame| path == *frame || path.starts_with(&format!("{frame}/")))
@@ -520,7 +521,8 @@ async fn page(state: &AppState, dir: &Path, path: &str, wanted: Option<Locale>) 
     let style = match page {
         Page::Landing => state.services.landing().style(),
         Page::MiniApp => state.services.miniapp().style(),
-        Page::Cabinet | Page::Admin | Page::Other => None,
+        Page::Cabinet => state.services.cabinet().style(),
+        Page::Admin | Page::Other => None,
     };
     if let Some(style) = style {
         tags.push_str(&format!(

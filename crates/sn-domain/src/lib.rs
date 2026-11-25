@@ -3,6 +3,7 @@ pub mod alerts;
 pub mod bot_content;
 pub mod bot_content_en;
 pub mod bot_layout;
+pub mod cabinet_css;
 pub mod client;
 pub mod connect;
 pub mod css;

@@ -6,6 +6,7 @@ use chrono::{DateTime, Utc};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use sn_domain::cabinet_css::CabinetCss;
 use sn_domain::client::Languages;
 use sn_domain::format;
 use sn_domain::ids::AdminId;
@@ -182,6 +183,11 @@ pub async fn load_core(db: &mut impl Db) -> ServiceResult<CoreSettings> {
                     tracing::warn!(key, "настройка не разобрана, взято значение по умолчанию");
                 }
             },
+            keys::CABINET_CSS => {
+                if let Some(v) = parse::<CabinetCss>(&key, value) {
+                    settings.cabinet_css = v;
+                }
+            }
             keys::LANGUAGES => {
                 if let Some(v) = parse::<Languages>(&key, value) {
                     settings.languages = v;

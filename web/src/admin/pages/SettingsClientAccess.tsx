@@ -210,6 +210,15 @@ export function SettingsClientAccess() {
               </span>
             </div>
           ) : null}
+          <div className="row">
+            <span className="cap">
+              Свой CSS кабинета настраивается в{' '}
+              <Link className="link" to="/admin/settings/cabinet">
+                «Кабинете на сайте»
+              </Link>
+              .
+            </span>
+          </div>
         </section>
         <section className="sec" aria-labelledby="self-h">
           <div className="sec-head">

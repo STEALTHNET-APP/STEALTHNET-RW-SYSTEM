@@ -38,6 +38,7 @@ export type Site = {
   client_access?: { miniapp: boolean; miniapp_fullscreen?: boolean; site_login: boolean; devices: boolean; reissue: boolean };
   languages?: { list: Array<'ru' | 'en'>; default: 'ru' | 'en' };
   miniapp?: unknown;
+  cabinet?: { css?: string | null } | null;
 };
 
 export type Permission =

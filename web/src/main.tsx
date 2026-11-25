@@ -17,6 +17,7 @@ const PageMissing = lazy(() => import('./site/Soon').then((m) => ({ default: m.P
 const PageFailed = lazy(() => import('./site/Soon').then((m) => ({ default: m.PageFailed })));
 const CabinetApp = lazy(() => import('./cabinet/CabinetApp').then((m) => ({ default: m.CabinetApp })));
 const MiniApp = lazy(() => import('./mini/MiniApp').then((m) => ({ default: m.MiniApp })));
+const CabinetPreview = lazy(() => import('./cabinet/preview/CabinetPreview').then((m) => ({ default: m.CabinetPreview })));
 const MiniPreview = lazy(() => import('./mini/MiniPreview').then((m) => ({ default: m.MiniPreview })));
 const Landing = lazy(() => import('./site/Landing').then((m) => ({ default: m.Landing })));
 const LandingPreview = lazy(() => import('./site/Landing').then((m) => ({ default: m.LandingPreview })));
@@ -49,7 +50,16 @@ function SiteNote({ site, failed, loading, onRetry }: { site: Site | null; faile
   return failed ? <PageFailed site={site} busy={loading} onRetry={onRetry} /> : <PageMissing site={site} />;
 }
 
+const CABINET_PREVIEW_PATH = '/admin/cabinet-preview';
+
 function App() {
+  if (window.location.pathname === CABINET_PREVIEW_PATH) {
+    return (
+      <Suspense fallback={<Blank />}>
+        <CabinetPreview />
+      </Suspense>
+    );
+  }
   return (
     <BrowserRouter>
       <Suspense fallback={<Blank />}>

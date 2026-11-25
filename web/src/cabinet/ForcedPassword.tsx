@@ -22,7 +22,7 @@ export function ForcedPassword({ onDone, onLogout }: { onDone: () => void; onLog
   };
 
   return (
-    <div className="cb-solo">
+    <div className="cb-solo" data-part="login">
       <form className="cb-solo-box" onSubmit={submit}>
         <h1>{t('Задайте свой пароль')}</h1>
         <p>{t('Вы вошли с паролем от администратора. Он одноразовый: придумайте свой пароль, чтобы открыть кабинет.')}</p>

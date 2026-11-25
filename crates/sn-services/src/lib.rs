@@ -14,6 +14,7 @@ pub mod bot_layout;
 pub mod bot_runtime;
 pub mod bot_webhook;
 pub mod branding;
+pub mod cabinet;
 pub mod checkout;
 pub mod clients;
 pub mod clock;

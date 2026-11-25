@@ -7,6 +7,7 @@ import { avatarColor, money } from '../lib/format';
 import { Icon } from '../lib/icons';
 import { applyLang, guessLang, msg, NATIVE, otherLang, rememberLang, siteLangs, t, useApplied, useLang, type Lang } from '../lib/i18n';
 import { usePhone } from '../lib/media';
+import { styleFile, useOwnStyles } from '../lib/ownStyles';
 import { DEFAULT_SITE, showTitle, useSite } from '../lib/site';
 import { supportLink, supportTickets } from '../lib/support';
 import { useSupportUnread } from '../lib/supportUnread';
@@ -18,6 +19,7 @@ import { FriendsPage } from './Friends';
 import { GiftsPage } from './Gifts';
 import { HelpPage } from './Help';
 import { Login } from './Login';
+import { partOf, type Part } from './parts';
 import { photoUrl, type ClientMe } from './model';
 import { Pay } from './Pay';
 import { ForcedPassword } from './ForcedPassword';
@@ -76,7 +78,8 @@ export function CabinetApp() {
   const wanted: Lang | null = loadedSite ? (picked && langs.includes(picked) ? picked : (account ?? guessLang(loadedSite))) : null;
   const ready = useApplied(wanted);
   const lang = useLang();
-  const opened = ready && state.kind !== 'loading';
+  const styled = useOwnStyles(styleFile(loadedSite?.cabinet?.css, 'cabinet'));
+  const opened = ready && styled && state.kind !== 'loading';
   useEffect(() => {
     if (opened) {
       showTitle(loadedSite, (known) => t('Личный кабинет — {brand}', { brand: known.brand_name }));
@@ -148,7 +151,7 @@ export function CabinetApp() {
     [state, site, load, logout, theme, flipTheme, fixed, phone, lang, nextLang, switchLang, unread, setUnread],
   );
 
-  if (state.kind === 'loading' || !ready) {
+  if (state.kind === 'loading' || !ready || !styled) {
     return <div className="cb-blank" aria-busy="true" />;
   }
   if (state.kind === 'guest') {
@@ -186,11 +189,16 @@ export function CabinetApp() {
     );
   }
 
+  return <CabinetShell ctx={ctx} />;
+}
+
+export function CabinetShell({ ctx }: { ctx: CabinetCtx }) {
+  const { pathname } = useLocation();
   return (
     <Ctx.Provider value={ctx}>
-      <div key={lang} className={phone ? 'cb cb-phone' : 'cb'}>
-        {phone ? <PhoneHeader /> : <Header />}
-        <main className="cb-main-area">
+      <div key={ctx.lang} className={ctx.phone ? 'cb cb-phone' : 'cb'}>
+        {ctx.phone ? <PhoneHeader /> : <Header />}
+        <main className="cb-main-area" data-part={partOf(pathname)}>
           <Routes>
             <Route index element={<SubscriptionPage />} />
             <Route path="pay" element={<Pay />} />
@@ -357,7 +365,7 @@ function Header() {
   const tabs = useTabs();
   const answered = useAnswered();
   return (
-    <header className="cb-head">
+    <header className="cb-head" data-part="header">
       <div className="cb-head-in">
         <Brand />
         <nav aria-label={t('Кабинет')} className="cb-tabs">
@@ -424,7 +432,7 @@ function PhoneHeader() {
   const tabs = useTabs();
   const answered = useAnswered();
   return (
-    <header className="cb-phead">
+    <header className="cb-phead" data-part="header">
       <Brand small />
       <span className="cb-grow" />
       {me.balance_enabled !== false || me.balance.minor > 0 ? (
@@ -478,7 +486,7 @@ function Footer() {
   const { site } = useCabinet();
   const link = supportLink(site);
   return (
-    <footer className="cb-foot">
+    <footer className="cb-foot" data-part="footer">
       {supportTickets(site) ? (
         <Link to="/cabinet/help">{t('Помощь')}</Link>
       ) : link ? (
@@ -499,9 +507,9 @@ function Footer() {
   );
 }
 
-export function Card({ id, className, children, label }: { id?: string; className?: string; children: ReactNode; label?: string }) {
+export function Card({ id, part, className, children, label }: { id?: string; part?: Part; className?: string; children: ReactNode; label?: string }) {
   return (
-    <section id={id} aria-label={label} className={className ? `cb-card ${className}` : 'cb-card'}>
+    <section id={id} data-part={part} aria-label={label} className={className ? `cb-card ${className}` : 'cb-card'}>
       {children}
     </section>
   );

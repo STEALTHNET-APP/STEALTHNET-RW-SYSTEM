@@ -34,6 +34,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/public/landing", get(landing))
         .route("/api/public/landing/{file}", get(landing_file))
         .route("/api/public/miniapp/{file}", get(miniapp_file))
+        .route("/api/public/cabinet/{file}", get(cabinet_file))
         .route("/api/public/pages/{*path}", get(document_page))
         .route("/api/public/connect-apps", get(connect_apps))
         .route("/api/public/app-icon/{file}", get(app_icon))
@@ -209,6 +210,7 @@ async fn site(State(state): State<AppState>, headers: HeaderMap) -> Response {
                 "default": settings.languages.fallback(),
             },
             "miniapp": state.services.miniapp().public().await,
+            "cabinet": { "css": state.services.cabinet().style().map(|style| style.path()) },
         }),
     )
 }
@@ -359,6 +361,20 @@ async fn miniapp_file(
         return style_file(state.services.miniapp().style(), tag, &headers);
     }
     image_response(state.services.miniapp().image_file(tag).await, extension)
+}
+
+async fn cabinet_file(
+    State(state): State<AppState>,
+    Path(file): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let Some((tag, extension)) = file.split_once('.') else {
+        return ApiError::not_found().into_response();
+    };
+    if extension == "css" {
+        return style_file(state.services.cabinet().style(), tag, &headers);
+    }
+    image_response(state.services.cabinet().image_file(tag).await, extension)
 }
 
 async fn connect_apps(State(state): State<AppState>, headers: HeaderMap) -> Response {

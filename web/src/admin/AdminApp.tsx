@@ -45,6 +45,7 @@ const SettingsBotLayout = lazy(() => import('./botlayout/BotLayout').then((m) =>
 const SettingsDocuments = lazy(() => import('./pages/SettingsDocuments').then((m) => ({ default: m.SettingsDocuments })));
 const SettingsDocument = lazy(() => import('./pages/SettingsDocument').then((m) => ({ default: m.SettingsDocument })));
 const SettingsLanding = lazy(() => import('./pages/SettingsLanding').then((m) => ({ default: m.SettingsLanding })));
+const SettingsCabinet = lazy(() => import('./cabinet/SettingsCabinet').then((m) => ({ default: m.SettingsCabinet })));
 const SettingsMiniApp = lazy(() => import('./miniapp/MiniAppEditor').then((m) => ({ default: m.SettingsMiniApp })));
 const SettingsAdmins = lazy(() => import('./pages/SettingsAdmins').then((m) => ({ default: m.SettingsAdmins })));
 const SettingsApiKeys = lazy(() => import('./pages/SettingsApiKeys').then((m) => ({ default: m.SettingsApiKeys })));
@@ -283,6 +284,7 @@ export function AdminApp() {
             <Route path="documents" element={<SettingsDocuments />} />
             <Route path="documents/:id" element={<SettingsDocument />} />
             <Route path="landing" element={<SettingsLanding />} />
+            <Route path="cabinet" element={<SettingsCabinet />} />
             <Route path="miniapp" element={<SettingsMiniApp />} />
             <Route path="admins" element={<SettingsAdmins />} />
             <Route path="api-keys" element={<SettingsApiKeys />} />

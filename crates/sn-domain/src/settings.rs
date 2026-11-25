@@ -1,3 +1,4 @@
+use crate::cabinet_css::CabinetCss;
 use crate::client::Languages;
 use crate::ids::SquadId;
 use crate::image::{FAVICON_RULES, ImageKind, ImageRules, LOGO_RULES};
@@ -595,6 +596,8 @@ pub struct CoreSettings {
     #[serde(default)]
     pub miniapp: MiniAppConfig,
     #[serde(default)]
+    pub cabinet_css: CabinetCss,
+    #[serde(default)]
     pub multi_subscriptions: bool,
     #[serde(default)]
     pub client_access: ClientAccess,
@@ -806,6 +809,7 @@ impl Default for CoreSettings {
             favicon: None,
             landing: LandingConfig::standard(),
             miniapp: MiniAppConfig::standard(),
+            cabinet_css: CabinetCss::default(),
             multi_subscriptions: false,
             client_access: ClientAccess::default(),
             languages: Languages::default(),
@@ -896,6 +900,7 @@ pub mod keys {
     pub const FAVICON: &str = "core.favicon";
     pub const LANDING: &str = "core.landing";
     pub const MINIAPP: &str = "core.miniapp";
+    pub const CABINET_CSS: &str = "core.cabinet_css";
     pub const LANGUAGES: &str = "core.languages";
     pub const BOT_UPDATES: &str = "bot.updates";
     pub const BOT_FLOOD: &str = "bot.flood";

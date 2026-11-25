@@ -654,6 +654,9 @@ fn settings_place(action: &str) -> Option<TargetView> {
         "settings.bot_image" => ("Картинки бота", "/admin/settings/bot/images"),
         "settings.documents" => ("Документы", "/admin/settings/documents"),
         "settings.landing" | "settings.landing_image" => ("Лендинг", "/admin/settings/landing"),
+        "settings.cabinet" | "settings.cabinet_image" => {
+            ("Кабинет на сайте", "/admin/settings/cabinet")
+        }
         "settings.miniapp" | "settings.miniapp_image" => {
             ("Мини-приложение", "/admin/settings/miniapp")
         }

@@ -442,7 +442,7 @@ export function SubscriptionPage() {
   );
 
   const connectCard = view ? (
-    <Card id="connect" className="cb-connect" label={t('Подключение')}>
+    <Card id="connect" part="connect" className="cb-connect" label={t('Подключение')}>
       <h2 className="cb-h2">{t('Подключение')}</h2>
       {mode === 'remnawave' ? (
         <>
