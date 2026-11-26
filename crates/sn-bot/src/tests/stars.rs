@@ -193,6 +193,7 @@ pub(super) async fn stars_invoice(db: &TestDb, services: &Services, telegram_id:
         extra_devices: 0,
         sell_extra_devices: false,
         adjustments: &[],
+        promotion: None,
     })
     .unwrap();
     let order = tx

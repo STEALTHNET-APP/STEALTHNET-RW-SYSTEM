@@ -565,6 +565,10 @@ impl Services {
         TariffAdmin::new(self)
     }
 
+    pub fn promotions(&self) -> crate::promotions::Promotions<'_> {
+        crate::promotions::Promotions::new(self)
+    }
+
     pub fn update_config(&self) -> Option<Arc<crate::updates::UpdateConfig>> {
         self.read(|r| r.updates.clone())
     }

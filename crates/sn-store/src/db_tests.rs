@@ -247,6 +247,7 @@ async fn заказ_и_платёж_проходят_статусы_идемпо
         extra_devices: 1,
         sell_extra_devices: true,
         adjustments: &[],
+        promotion: None,
     })
     .unwrap();
     let order = tx

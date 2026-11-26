@@ -58,6 +58,7 @@ async fn gram_payment(
         extra_devices: 0,
         sell_extra_devices: true,
         adjustments: &[],
+        promotion: None,
     })
     .unwrap();
     let payment = {

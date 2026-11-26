@@ -192,6 +192,13 @@ pub(crate) async fn kit() -> Option<Kit> {
 }
 
 pub(crate) async fn kit_with(modules: Vec<Arc<dyn Module>>) -> Option<Kit> {
+    kit_clocked(modules, Arc::new(SystemClock)).await
+}
+
+pub(crate) async fn kit_clocked(
+    modules: Vec<Arc<dyn Module>>,
+    clock: Arc<dyn crate::Clock>,
+) -> Option<Kit> {
     let db = test_store().await?;
     let pay = Arc::new(TestPay::default());
     let registry = ProviderRegistry::new(vec![
@@ -204,7 +211,7 @@ pub(crate) async fn kit_with(modules: Vec<Arc<dyn Module>>) -> Option<Kit> {
         payments: Arc::new(registry),
         modules: Arc::new(ModuleRegistry::new(modules).unwrap()),
         secrets: Some(SecretBox::from_base64(&SecretBox::generate_key_base64()).unwrap()),
-        clock: Arc::new(SystemClock),
+        clock,
         env: EnvFallbacks::default(),
     });
     {

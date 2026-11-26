@@ -117,7 +117,13 @@ async fn offers(
     let currency = installation_currency(&mut conn).await?;
     let settings = super::settings(&mut conn).await?;
     Ok(Json(OffersView {
-        offers: super::offers(&mut conn, currency).await?,
+        offers: super::offers(
+            &mut conn,
+            currency,
+            ctx.core.now(),
+            ctx.core.core_settings().remna_offset(),
+        )
+        .await?,
         code_days: settings.code_days,
     }))
 }

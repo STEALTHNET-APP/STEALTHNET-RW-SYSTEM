@@ -2,7 +2,9 @@ use crate::DomainError;
 use crate::access::ClientChannel;
 use crate::ids::{CategoryId, PeriodId, SquadId, TariffId};
 use crate::money::{Currency, Money, Stars, div_round_half_up};
+use crate::promotion::{PromotionTerms, discounted, discounted_stars};
 use crate::traffic::{GIB, TrafficPolicy};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -491,6 +493,20 @@ pub struct PeriodOffer {
     pub stars: Option<Stars>,
     pub stars_per_month: Option<Stars>,
     pub stars_savings_percent: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub promotion: Option<OfferPromotion>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OfferPromotion {
+    pub id: i64,
+    pub name: String,
+    pub percent: u8,
+    pub ends_at: DateTime<Utc>,
+    pub full_price: Money,
+    pub full_stars: Option<Stars>,
+    #[serde(default)]
+    pub until: String,
 }
 
 fn savings(price: i64, monthly_base: i64, months: u32) -> Option<u8> {
@@ -502,23 +518,46 @@ fn savings(price: i64, monthly_base: i64, months: u32) -> Option<u8> {
     u8::try_from(percent).ok().filter(|p| *p > 0)
 }
 
-pub fn period_offers(tariff: &Tariff, currency: Currency) -> Vec<PeriodOffer> {
+pub fn period_offers(
+    tariff: &Tariff,
+    currency: Currency,
+    promotion: Option<&PromotionTerms>,
+) -> Vec<PeriodOffer> {
     let periods = tariff.offered_periods(currency);
     let base = periods.iter().find(|p| p.months() == 1).copied();
     periods
         .into_iter()
         .filter_map(|p| {
-            let price = p.price(currency)?;
+            let full = p.price(currency)?;
             let months = p.months();
-            let per_month = price.divide_round(months).ok()?;
             let savings_percent = base
                 .and_then(|b| b.price(currency))
-                .and_then(|b| savings(price.minor, b.minor, months));
-            let stars_per_month = p.stars.and_then(|s| s.divide_round(months).ok());
+                .and_then(|b| savings(full.minor, b.minor, months));
             let stars_savings_percent = match (p.stars, base.and_then(|b| b.stars)) {
                 (Some(s), Some(b)) => savings(s.0, b.0, months),
                 _ => None,
             };
+            let (price, stars) = match promotion {
+                Some(promotion) => (
+                    discounted(full, promotion.percent),
+                    p.stars.map(|s| discounted_stars(s, promotion.percent)),
+                ),
+                None => (full, p.stars),
+            };
+            let promotion =
+                promotion
+                    .filter(|_| price != full || stars != p.stars)
+                    .map(|promotion| OfferPromotion {
+                        id: promotion.id,
+                        name: promotion.name.clone(),
+                        percent: promotion.percent,
+                        ends_at: promotion.ends_at,
+                        full_price: full,
+                        full_stars: p.stars,
+                        until: String::new(),
+                    });
+            let per_month = price.divide_round(months).ok()?;
+            let stars_per_month = stars.and_then(|s| s.divide_round(months).ok());
             Some(PeriodOffer {
                 period_id: p.id,
                 days: p.days,
@@ -526,9 +565,10 @@ pub fn period_offers(tariff: &Tariff, currency: Currency) -> Vec<PeriodOffer> {
                 price,
                 per_month,
                 savings_percent,
-                stars: p.stars,
+                stars,
                 stars_per_month,
                 stars_savings_percent,
+                promotion,
             })
         })
         .collect()
@@ -645,17 +685,17 @@ mod tests {
 
     #[test]
     fn выгода_и_цена_за_месяц_как_в_currency_md() {
-        let offers = period_offers(&standard(), Currency::Usd);
+        let offers = period_offers(&standard(), Currency::Usd, None);
         assert_eq!(offers.len(), 3);
         assert_eq!(offers[1].per_month, Money::new(233, Currency::Usd));
         assert_eq!(offers[1].savings_percent, Some(22));
         assert_eq!(offers[2].savings_percent, Some(33));
         assert_eq!(offers[0].savings_percent, None);
-        let rub = period_offers(&standard(), Currency::Rub);
+        let rub = period_offers(&standard(), Currency::Rub, None);
         assert_eq!(rub[1].savings_percent, Some(16));
         assert_eq!(rub[2].savings_percent, Some(29));
         assert_eq!(rub[2].per_month, Money::new(14_100, Currency::Rub));
-        let unblock = period_offers(&unblock(), Currency::Usd);
+        let unblock = period_offers(&unblock(), Currency::Usd, None);
         assert_eq!(unblock[1].savings_percent, Some(14));
         assert_eq!(unblock[2].savings_percent, Some(28));
         assert_eq!(unblock[1].stars_savings_percent, Some(14));

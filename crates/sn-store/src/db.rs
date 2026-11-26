@@ -207,6 +207,10 @@ pub trait Db: Send {
         TariffsRepo::new(self.conn())
     }
 
+    fn promotions(&mut self) -> PromotionsRepo<'_> {
+        PromotionsRepo::new(self.conn())
+    }
+
     fn subscriptions(&mut self) -> SubscriptionsRepo<'_> {
         SubscriptionsRepo::new(self.conn())
     }

@@ -4,6 +4,7 @@ import { api } from '../lib/api';
 import { money } from '../lib/format';
 import { t } from '../lib/i18n';
 import { methodKey } from '../lib/methods';
+import { promoCut, promoOf, promoTitle } from '../lib/promo';
 import type { ItemQuote, PayResult } from '../cabinet/extras';
 import { codeDaysText, failText, firstTarget, giftItem, giftState, GIFTS, limitNote, planText, targetBody, term, type GiftOffers, type GiftTarget, type MyGift, type RedeemPreview, type Redeemed } from '../cabinet/gifting';
 import { stars } from '../cabinet/model';
@@ -190,6 +191,7 @@ export function MiniGifts() {
 
   const list = offers?.offers ?? [];
   const offer = list.find((o) => o.tariff.id === tariff) ?? null;
+  const giftPromo = promoOf(offer?.periods);
   const periodOffer = offer?.periods.find((p) => p.period_id === period) ?? null;
 
   useEffect(() => {
@@ -322,6 +324,7 @@ export function MiniGifts() {
         </div>
       ) : null}
 
+      {giftPromo ? <p className="mn-sale">{promoTitle(giftPromo)}</p> : null}
       {offer ? (
         <div role="radiogroup" aria-label={t('Срок')} className="mn-terms">
           {offer.periods.map((p) => (
@@ -333,8 +336,12 @@ export function MiniGifts() {
                     {list.length === 1 ? `${offer.tariff.name} · ` : ''}
                     {term(p.days)}
                   </strong>
-                  <strong className="num">{starsMode && p.stars ? stars(p.stars) : money(p.price)}</strong>
+                  <span className="mn-term-price">
+                    {p.promotion ? <s className="mn-old num">{starsMode && p.promotion.full_stars ? stars(p.promotion.full_stars) : money(p.promotion.full_price)}</s> : null}
+                    <strong className="num">{starsMode && p.stars ? stars(p.stars) : money(p.price)}</strong>
+                  </span>
                 </span>
+                {p.promotion ? <span className="mn-term-sub">{promoCut(p.promotion.percent)}</span> : null}
               </span>
             </button>
           ))}

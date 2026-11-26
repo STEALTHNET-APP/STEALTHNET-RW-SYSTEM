@@ -9,6 +9,7 @@ import { fullCategory, fullNote, NEWEST, newTargetNote, payTargets, remember, re
 import { BackHead, MINI_SUB_KEY, useMini } from './MiniApp';
 import { openExternal, webApp } from './telegram';
 import { methodKey } from '../lib/methods';
+import { promoCut, promoOf, promoQuoteNote, promoTitle } from '../lib/promo';
 import { categoryOffers, categoryPick, firstPick, offerById, offerCategories, renewsCurrent, tariffPick, targetPick, type OfferPick } from '../lib/offers';
 
 function failText(err: unknown, fallback: string): string {
@@ -172,6 +173,9 @@ export function MiniPlans() {
   const ladder = ladderText(offer?.tariff.device_discounts);
   const deviceCut = q ? (linesOf(q.lines, 'device_discount')[0] ?? null) : null;
   const promoLines = q ? linesOf(q.lines, 'adjustment') : [];
+  const saleLines = q ? linesOf(q.lines, 'promotion') : [];
+  const quoteNote = promoQuoteNote(quote?.promotion);
+  const offerPromo = promoOf(offer?.periods);
   const promoMinor = promoLines.reduce((sum, line) => sum - line.amount.minor, 0);
   const promoStars = promoLines.reduce((sum, line) => sum - (line.stars ?? 0), 0);
 
@@ -306,6 +310,7 @@ export function MiniPlans() {
           ) : null}
         </div>
       ) : null}
+      {offerPromo ? <p className="mn-sale">{promoTitle(offerPromo)}</p> : null}
       {offer ? (
         <div role="radiogroup" aria-label={t('Срок')} className="mn-terms">
           {offer.periods.map((p) => {
@@ -316,11 +321,15 @@ export function MiniPlans() {
                 <span className="mn-term-text">
                   <span className="mn-term-top">
                     <strong>{termName(p.months, p.days)}</strong>
-                    <strong className="num">{starsMode && p.stars ? stars(p.stars) : money(p.price)}</strong>
+                    <span className="mn-term-price">
+                      {p.promotion ? <s className="mn-old num">{starsMode && p.promotion.full_stars ? stars(p.promotion.full_stars) : money(p.promotion.full_price)}</s> : null}
+                      <strong className="num">{starsMode && p.stars ? stars(p.stars) : money(p.price)}</strong>
+                    </span>
                   </span>
                   <span className="mn-term-sub">
                     {starsMode && p.stars_per_month ? t('{price} в месяц', { price: stars(p.stars_per_month) }) : t('{price} в месяц', { price: money(p.per_month) })}
-                    {save ? <span className="mn-save"> · {t('выгоднее на {percent}%', { percent: save })}</span> : null}
+                    {p.promotion ? <span className="mn-save"> · {promoCut(p.promotion.percent)}</span> : null}
+                    {save && !p.promotion ? <span className="mn-save"> · {t('выгоднее на {percent}%', { percent: save })}</span> : null}
                   </span>
                 </span>
               </button>
@@ -402,6 +411,13 @@ export function MiniPlans() {
             </button>
           </p>
         ) : null}
+        {saleLines.map((line) => (
+          <p key={line.label} className="mn-muted small">
+            {line.label}: {MINUS}
+            {starsMode && line.stars !== null ? stars(Math.abs(line.stars)) : money({ minor: Math.abs(line.amount.minor), currency: line.amount.currency })}
+          </p>
+        ))}
+        {quoteNote ? <p className="mn-muted small">{quoteNote}</p> : null}
         {q && (starsMode ? promoStars > 0 : promoMinor > 0) ? (
           <p className="mn-muted small">
             {t('Скидка по промокоду: {amount}', { amount: `${MINUS}${starsMode ? stars(promoStars) : money({ minor: promoMinor, currency: q.currency })}` })}

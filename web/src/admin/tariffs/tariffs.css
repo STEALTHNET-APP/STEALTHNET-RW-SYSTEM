@@ -360,3 +360,71 @@
   flex-basis: 100%;
   font-size: 13px;
 }
+
+.tf-promo-note {
+  font-size: 13px;
+}
+
+.tf-promos {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tf-promo {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+}
+
+.tf-promo-main {
+  flex: 1 1 240px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.tf-promo-name {
+  font-size: 15px;
+}
+
+.tf-promo-on {
+  color: var(--ok);
+  font-weight: 600;
+}
+
+.tf-promo-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+}
+
+.tf-when legend {
+  font-weight: 600;
+}
+
+.tf-when .tf-inline {
+  flex-wrap: wrap;
+}
+
+.tf-when .field {
+  min-width: 0;
+}
+
+.tf-when input[type='date'] {
+  width: 160px;
+}
+
+.tf-when input[type='time'] {
+  width: 110px;
+}

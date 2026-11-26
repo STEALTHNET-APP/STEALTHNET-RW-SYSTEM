@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { api } from '../lib/api';
-import { money } from '../lib/format';
+import { money, MINUS } from '../lib/format';
 import { t } from '../lib/i18n';
 import { methodKey } from '../lib/methods';
+import { promoCut, promoOf, promoTitle } from '../lib/promo';
 import { Card, useCabinet } from './CabinetApp';
 import type { ItemQuote, PayResult } from './extras';
 import { codeDaysText, failText, firstTarget, giftItem, giftState, GIFTS, limitNote, planText, shareLink, targetBody, term, type GiftOffers, type GiftTarget, type MyGift, type RedeemPreview, type Redeemed } from './gifting';
-import { stars, type CheckoutMethod } from './model';
+import { stars, type CheckoutMethod, type QuoteLineView } from './model';
 
 const PAYMENT_KEY = 'sn.cabinet.gift';
 
@@ -361,6 +362,7 @@ export function GiftsPage() {
 
   const list = offers?.offers ?? [];
   const offer = list.find((o) => o.tariff.id === tariff) ?? null;
+  const giftPromo = promoOf(offer?.periods);
   const periodOffer = offer?.periods.find((p) => p.period_id === period) ?? null;
 
   useEffect(() => {
@@ -427,6 +429,8 @@ export function GiftsPage() {
   const starsMode = chosen?.kind === 'stars';
   const q = quote?.quote ?? null;
   const totalText = starsMode && q?.stars ? stars(q.stars.total) : q ? money(q.total) : '';
+  const lineText = (line: QuoteLineView) => (starsMode && line.stars !== null ? `${line.stars < 0 ? MINUS : ''}${stars(Math.abs(line.stars))}` : money(line.amount));
+  const giftFull = q?.lines.some((line) => line.kind.type === 'promotion') ? (q.lines.find((line) => line.kind.type === 'period') ?? null) : null;
   const newest = useMemo<MyGift | null>(() => mine?.[0] ?? null, [mine]);
 
   const pay = async () => {
@@ -536,10 +540,16 @@ export function GiftsPage() {
                     ) : null}
                   </div>
                   {offer?.tariff.description ? <p className="cb-muted cb-small">{offer.tariff.description}</p> : null}
+                  {giftPromo ? <p className="cb-sale">{promoTitle(giftPromo)}</p> : null}
                   <div role="radiogroup" aria-label={t('Срок')} className={starsMode ? 'cb-terms wide' : 'cb-terms'}>
                     {offer?.periods.map((p) => (
                       <button key={p.period_id} type="button" role="radio" aria-checked={period === p.period_id} className="cb-term-card" onClick={() => setPeriod(p.period_id)}>
                         <span className="cb-term-name">{term(p.days)}</span>
+                        {p.promotion ? (
+                          <span className="cb-term-old">
+                            <s>{starsMode && p.promotion.full_stars ? stars(p.promotion.full_stars) : money(p.promotion.full_price)}</s> <strong>{promoCut(p.promotion.percent)}</strong>
+                          </span>
+                        ) : null}
                         <span className="cb-term-price">{starsMode && p.stars ? stars(p.stars) : money(p.price)}</span>
                       </button>
                     ))}
@@ -592,9 +602,19 @@ export function GiftsPage() {
                       <span>
                         {t('Подарок: «{name}» на {term}', { name: offer.tariff.name, term: term(periodOffer.days) })}
                       </span>
-                      <span className="num">{totalText}</span>
+                      <span className="num">{giftFull ? lineText(giftFull) : totalText}</span>
                     </div>
                   ) : null}
+                  {q
+                    ? q.lines
+                        .filter((line) => line.kind.type === 'promotion')
+                        .map((line) => (
+                          <div key={line.label} className="cb-line">
+                            <span>{line.label}</span>
+                            <span className="num">{lineText(line)}</span>
+                          </div>
+                        ))
+                    : null}
                   <div className="cb-due">
                     <strong>{t('К оплате')}</strong>
                     <span className="cb-due-sum">{totalText}</span>

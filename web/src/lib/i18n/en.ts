@@ -6,11 +6,12 @@ import { CONNECT } from './en-connect';
 import { MINI } from './en-mini';
 import { OPEN } from './en-open';
 import { PROMO } from './en-promo';
+import { SALE } from './en-sale';
 import { SITE } from './en-site';
 import { SUPPORT } from './en-support';
 import { VERIFY } from './en-verify';
 
-export const EN: Record<string, string> = { ...COMMON, ...CABINET, ...CABINET2, ...MINI, ...SITE, ...ACCOUNT, ...CONNECT, ...PROMO, ...VERIFY, ...SUPPORT, ...OPEN };
+export const EN: Record<string, string> = { ...COMMON, ...CABINET, ...CABINET2, ...MINI, ...SITE, ...ACCOUNT, ...CONNECT, ...PROMO, ...VERIFY, ...SUPPORT, ...OPEN, ...SALE };
 
 export const PLURALS: Record<string, [string, string]> = {
   день: ['day', 'days'],

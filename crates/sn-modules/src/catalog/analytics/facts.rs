@@ -64,7 +64,7 @@ const PAYMENT_INSERT: &str = "INSERT INTO analytics_payments (payment_id, client
              AND jsonb_typeof(l #> '{amount,minor}') = 'number' THEN -(l #>> '{amount,minor}')::bigint END)::bigint AS promo, \
          max(CASE WHEN l #>> '{kind,source,type}' = 'promo' THEN l #>> '{kind,source,code}' END) AS code, \
          sum(CASE WHEN ((l #>> '{kind,type}' = 'adjustment' AND l #>> '{kind,source,type}' <> 'promo') \
-             OR l #>> '{kind,type}' = 'device_discount') AND jsonb_typeof(l #> '{amount,minor}') = 'number' \
+             OR l #>> '{kind,type}' IN ('device_discount', 'promotion')) AND jsonb_typeof(l #> '{amount,minor}') = 'number' \
              THEN -(l #>> '{amount,minor}')::bigint END)::bigint AS other, \
          sum(CASE WHEN l #>> '{kind,type}' IN ('extra_devices', 'device_addon', 'traffic_addon') \
              AND jsonb_typeof(l #> '{amount,minor}') = 'number' THEN (l #>> '{amount,minor}')::bigint END)::bigint AS addon \

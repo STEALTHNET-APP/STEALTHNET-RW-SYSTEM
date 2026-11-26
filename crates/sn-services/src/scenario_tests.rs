@@ -2089,6 +2089,7 @@ async fn pending_payment(
         extra_devices: 0,
         sell_extra_devices: true,
         adjustments: &[],
+        promotion: None,
     })
     .unwrap();
     let amount: sn_domain::money::Amount = if stars {

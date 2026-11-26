@@ -94,6 +94,10 @@ const SAMPLES: Record<string, string> = {
   agent: 'Chrome на macOS',
   body: 'Отправили чек повторно на почту.',
   comment: 'реквизиты не подходят',
+  promotion: 'Чёрная пятница',
+  ends: 'до 30 ноября',
+  full_price: '399 ₽',
+  full_per_month: '332 ₽',
 };
 
 const SAMPLES_EN: Record<string, string> = {
@@ -130,6 +134,10 @@ const SAMPLES_EN: Record<string, string> = {
   body: 'We have sent the receipt to your email again.',
   comment: 'the details are wrong',
   variant: 'Europe',
+  promotion: 'Black Friday',
+  ends: 'until November 30',
+  full_price: '$3.99',
+  full_per_month: '$3.32',
 };
 
 function englishEntry(entry: Entry): Entry {

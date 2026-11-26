@@ -233,6 +233,7 @@ async fn pending_payment_by(
         extra_devices: 0,
         sell_extra_devices: false,
         adjustments: &[],
+        promotion: None,
     })
     .unwrap();
     let mut tx = services.store().begin().await.unwrap();

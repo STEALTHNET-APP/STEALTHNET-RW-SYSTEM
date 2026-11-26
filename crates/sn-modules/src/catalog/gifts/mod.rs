@@ -13,7 +13,7 @@ use crate::error::ModuleError;
 use crate::module::{BotEntry, ItemHook, Module, ModuleConfig};
 use async_trait::async_trait;
 use axum::Router;
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, FixedOffset, Utc};
 use serde::{Deserialize, Serialize};
 use sn_domain::client::Locale;
 use sn_domain::events::DomainEvent;
@@ -24,6 +24,9 @@ use sn_domain::order::{Order, OrderStatus, PurchaseIntent};
 use sn_domain::paging::{Page, PageRequest};
 use sn_domain::plan::PlanKind;
 use sn_domain::pricing::{Quote, QuoteLine, QuoteLineKind, StarsTotal};
+use sn_domain::promotion::{
+    PromotionTerms, discounted, discounted_stars, line_label, running_for, until_text,
+};
 use sn_domain::settings::keys;
 use sn_domain::tariff::{DevicePolicy, PeriodOffer, Tariff, period_offers};
 use sn_domain::traffic::TrafficPolicy;
@@ -364,14 +367,27 @@ pub struct GiftOffer {
     pub periods: Vec<PeriodOffer>,
 }
 
-pub async fn offers(db: &mut impl Db, currency: Currency) -> Result<Vec<GiftOffer>, ModuleError> {
+pub async fn offers(
+    db: &mut impl Db,
+    currency: Currency,
+    now: DateTime<Utc>,
+    offset: FixedOffset,
+) -> Result<Vec<GiftOffer>, ModuleError> {
     let settings = settings(db).await?;
     let tariffs = db.tariffs().list(false).await?;
+    let running = db.promotions().running(now).await?;
+    let locale = lang::current();
     Ok(tariffs
         .into_iter()
         .filter(|t| settings.allows(t.id) && !t.squads.is_empty())
         .filter_map(|tariff| {
-            let periods = period_offers(&tariff, currency);
+            let promotion = running_for(&running, tariff.id, now);
+            let mut periods = period_offers(&tariff, currency, promotion.as_ref());
+            for period in &mut periods {
+                if let Some(promotion) = period.promotion.as_mut() {
+                    promotion.until = until_text(promotion.ends_at, offset, locale, now);
+                }
+            }
             (!periods.is_empty()).then_some(GiftOffer {
                 tariff: GiftTariff {
                     id: tariff.id,
@@ -391,6 +407,7 @@ pub fn gift_quote(
     tariff: &Tariff,
     period_id: PeriodId,
     currency: Currency,
+    promotion: Option<&PromotionTerms>,
 ) -> Result<Quote, GiftError> {
     let period = tariff
         .sellable_period(period_id, currency)
@@ -399,27 +416,53 @@ pub fn gift_quote(
         return rejected(GiftRejection::NoPeriod);
     };
     let stars = period.stars;
+    let mut lines = vec![QuoteLine {
+        kind: QuoteLineKind::Period {
+            tariff_id: tariff.id,
+            period_id: period.id,
+            days: period.days,
+            months: period.months(),
+        },
+        label: format!("Подарок: «{}» на {}", tariff.name, term_ru(period.days)),
+        amount,
+        stars,
+    }];
+    let mut total = amount;
+    let mut stars_total = stars;
+    if let Some(promotion) = promotion {
+        let price = discounted(amount, promotion.percent);
+        let stars_price = stars.map(|s| discounted_stars(s, promotion.percent));
+        if price != amount || stars_price != stars {
+            lines.push(QuoteLine {
+                kind: QuoteLineKind::Promotion {
+                    promotion_id: promotion.id,
+                    percent: promotion.percent,
+                },
+                label: line_label(&promotion.name, promotion.percent),
+                amount: Money::new(price.minor - amount.minor, currency),
+                stars: match (stars, stars_price) {
+                    (Some(full), Some(now)) => Some(Stars(now.0 - full.0)),
+                    _ => None,
+                },
+            });
+            total = price;
+            stars_total = stars_price;
+        }
+    }
     Ok(Quote {
         currency,
-        lines: vec![QuoteLine {
-            kind: QuoteLineKind::Period {
-                tariff_id: tariff.id,
-                period_id: period.id,
-                days: period.days,
-                months: period.months(),
-            },
-            label: format!("Подарок: «{}» на {}", tariff.name, term_ru(period.days)),
-            amount,
-            stars,
-        }],
+        lines,
         subtotal: amount,
-        discount: Money::zero(currency),
-        total: amount,
-        stars: stars.map(|total| StarsTotal {
-            subtotal: total,
-            discount: Stars::ZERO,
-            total,
-        }),
+        discount: Money::new(amount.minor - total.minor, currency),
+        total,
+        stars: match (stars, stars_total) {
+            (Some(subtotal), Some(total)) => Some(StarsTotal {
+                subtotal,
+                discount: Stars(subtotal.0 - total.0),
+                total,
+            }),
+            _ => None,
+        },
         days: period.days,
         extra_devices: 0,
     })
@@ -442,9 +485,12 @@ pub async fn quote(
     db: &mut impl Db,
     request: GiftRequest,
     currency: Currency,
+    now: DateTime<Utc>,
 ) -> Result<Quote, GiftError> {
     let tariff = giftable(db, request.tariff_id).await?;
-    gift_quote(&tariff, request.period_id, currency)
+    let running = db.promotions().running(now).await?;
+    let promotion = running_for(&running, tariff.id, now);
+    gift_quote(&tariff, request.period_id, currency, promotion.as_ref())
 }
 
 fn parse_request(kind: &str, payload: &serde_json::Value) -> Result<GiftRequest, ModuleError> {
@@ -930,7 +976,7 @@ impl Module for GiftsModule {
     async fn quote_item(&self, ctx: &ModuleContext, hook: &ItemHook) -> Result<Quote, ModuleError> {
         let request = parse_request(&hook.kind, &hook.payload)?;
         let mut conn = ctx.store.conn().await?;
-        Ok(quote(&mut conn, request, hook.currency).await?)
+        Ok(quote(&mut conn, request, hook.currency, ctx.core.now()).await?)
     }
 
     async fn fulfill(&self, ctx: &ModuleContext, order: &Order) -> Result<(), ModuleError> {

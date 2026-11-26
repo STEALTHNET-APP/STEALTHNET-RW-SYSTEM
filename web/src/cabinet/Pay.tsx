@@ -3,6 +3,7 @@ import { Link, useLocation, useNavigate, useSearchParams } from 'react-router';
 import { api, ApiError } from '../lib/api';
 import { count, dateLong, days as dayCount, money, MINUS, type Money } from '../lib/format';
 import { t } from '../lib/i18n';
+import { promoCut, promoOf, promoQuoteNote, promoTitle } from '../lib/promo';
 import { supportTickets } from '../lib/support';
 import { Card, useCabinet } from './CabinetApp';
 import { gbText, ladderText, linesOf, resetPlan, stars, transitionText, type Catalog, type CheckoutMethod, type Quote, type QuoteLineView, type TariffOffer } from './model';
@@ -107,6 +108,7 @@ export function Pay() {
   const extra = offer?.tariff.devices.extra ?? null;
   const maxDevices = included + (extra?.max ?? 0);
   const periodOffer = offer?.periods.find((p) => p.period_id === period) ?? null;
+  const offerPromo = promoOf(offer?.periods);
   const subscriptionId = typeof target === 'number' ? target : null;
   const choice: OfferPick | null = tariffId === null ? null : { tariffId, periodId: period, devices };
 
@@ -294,6 +296,7 @@ export function Pay() {
   const extraMonthly: Money | null = extra ? { minor: catalog.currency === 'RUB' ? (extra.monthly.rub ?? 0) : (extra.monthly.usd ?? 0), currency: catalog.currency } : null;
 
   const q = quote?.quote ?? null;
+  const quoteNote = promoQuoteNote(quote?.promotion);
   const totalText = starsMode && q?.stars ? stars(q.stars.total) : q ? priceOf(q.total) : '';
   const deviceCut = q ? (linesOf(q.lines, 'device_discount')[0] ?? null) : null;
   const ladder = ladderText(offer?.tariff.device_discounts);
@@ -466,17 +469,23 @@ export function Pay() {
                 ))}
               </div>
             ) : null}
+            {offerPromo ? <p className="cb-sale">{promoTitle(offerPromo)}</p> : null}
             <div role="radiogroup" aria-label={t('Срок')} className={starsMode ? 'cb-terms wide' : 'cb-terms'}>
               {offer?.periods.map((p) => {
                 const save = starsMode ? p.stars_savings_percent : p.savings_percent;
                 return (
                   <button key={p.period_id} type="button" role="radio" aria-checked={period === p.period_id} className="cb-term-card" onClick={() => setPeriod(p.period_id)}>
                     <span className="cb-term-name">{monthsLabel(p.months, p.days)}</span>
+                    {p.promotion ? (
+                      <span className="cb-term-old">
+                        <s>{starsMode && p.promotion.full_stars ? stars(p.promotion.full_stars) : priceOf(p.promotion.full_price)}</s> <strong>{promoCut(p.promotion.percent)}</strong>
+                      </span>
+                    ) : null}
                     <span className="cb-term-price">{starsMode && p.stars ? stars(p.stars) : priceOf(p.price)}</span>
                     {save ? (
                       <span className="cb-term-save">
                         <span className="cb-muted">{t('{price} в месяц', { price: starsMode && p.stars_per_month ? stars(p.stars_per_month) : priceOf(p.per_month) })}</span>
-                        <strong>{t('Выгоднее на {percent}%', { percent: save })}</strong>
+                        {p.promotion ? null : <strong>{t('Выгоднее на {percent}%', { percent: save })}</strong>}
                       </span>
                     ) : null}
                   </button>
@@ -582,7 +591,7 @@ export function Pay() {
                 })()
               : null}
             {q
-              ? [...linesOf(q.lines, 'device_discount'), ...linesOf(q.lines, 'adjustment')]
+              ? [...linesOf(q.lines, 'promotion'), ...linesOf(q.lines, 'device_discount'), ...linesOf(q.lines, 'adjustment')]
                   .filter((line) => (starsMode ? (line.stars ?? 0) !== 0 : line.amount.minor !== 0))
                   .map((line) => (
                     <div key={`${line.kind.type}:${line.label}`} className="cb-line">
@@ -623,6 +632,7 @@ export function Pay() {
               </form>
             ) : null}
             {promoError ? <p className="cb-error">{promoError}</p> : null}
+            {quoteNote ? <p className="cb-muted">{quoteNote}</p> : null}
             {promoDays ? (
               <div className="cb-ask" role="status">
                 <p>{t('Промокод {code} добавляет {days} к подписке, при оплате он не нужен.', { code: promoDays.code, days: dayCount(promoDays.days) })}</p>

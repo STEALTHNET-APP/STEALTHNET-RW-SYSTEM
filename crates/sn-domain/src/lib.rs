@@ -30,6 +30,7 @@ pub mod paging;
 pub mod payment;
 pub mod plan;
 pub mod pricing;
+pub mod promotion;
 pub mod settings;
 pub mod subscription;
 pub mod support;

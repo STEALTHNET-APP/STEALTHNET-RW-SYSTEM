@@ -91,6 +91,7 @@ fn priced(adjustments: &[PriceAdjustment]) -> Quote {
         extra_devices: 0,
         sell_extra_devices: false,
         adjustments,
+        promotion: None,
     })
     .unwrap()
 }

@@ -1,5 +1,6 @@
 import { count, money, type Money } from '../lib/format';
 import { msg, t } from '../lib/i18n';
+import type { OfferPromotion } from '../lib/promo';
 import type { Currency } from '../lib/types';
 import { withBotStart } from '../lib/utmTags';
 
@@ -14,7 +15,7 @@ export type Offer = {
     devices: { included: number; extra: { max: number; monthly: { usd?: number; rub?: number } } | null };
     traffic: { limit_bytes: number | null; reset: Reset };
   };
-  periods: Array<{ period_id: number; days: number; months: number; price: Money; per_month: Money; savings_percent: number | null }>;
+  periods: Array<{ period_id: number; days: number; months: number; price: Money; per_month: Money; savings_percent: number | null; promotion?: OfferPromotion | null }>;
   countries: string[];
 };
 

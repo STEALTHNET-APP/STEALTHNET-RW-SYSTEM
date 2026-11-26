@@ -523,6 +523,15 @@ pub const ACTIONS: &[ActionLabel] = &[
         Area::Tariffs,
     ),
     a("tariff.delete", "Тариф удалён", Area::Tariffs),
+    a("tariff.promotion_created", "Создана акция", Area::Tariffs),
+    a("tariff.promotion_updated", "Изменена акция", Area::Tariffs),
+    a("tariff.promotion_enabled", "Акция включена", Area::Tariffs),
+    a(
+        "tariff.promotion_disabled",
+        "Акция выключена",
+        Area::Tariffs,
+    ),
+    a("tariff.promotion_deleted", "Акция удалена", Area::Tariffs),
     a(
         "category.create",
         "Создана категория тарифов",
@@ -1376,6 +1385,21 @@ const FIELDS: &[(&str, &str)] = &[
 ];
 
 const ACTION_FIELDS: &[(&str, &str, &str)] = &[
+    ("tariff.promotion_created", "percent", "Скидка, %"),
+    ("tariff.promotion_updated", "percent", "Скидка, %"),
+    ("tariff.promotion_enabled", "percent", "Скидка, %"),
+    ("tariff.promotion_disabled", "percent", "Скидка, %"),
+    ("tariff.promotion_deleted", "percent", "Скидка, %"),
+    ("tariff.promotion_created", "starts_at", "Начало"),
+    ("tariff.promotion_updated", "starts_at", "Начало"),
+    ("tariff.promotion_enabled", "starts_at", "Начало"),
+    ("tariff.promotion_disabled", "starts_at", "Начало"),
+    ("tariff.promotion_deleted", "starts_at", "Начало"),
+    ("tariff.promotion_created", "tariffs", "Тарифы"),
+    ("tariff.promotion_updated", "tariffs", "Тарифы"),
+    ("tariff.promotion_enabled", "tariffs", "Тарифы"),
+    ("tariff.promotion_disabled", "tariffs", "Тарифы"),
+    ("tariff.promotion_deleted", "tariffs", "Тарифы"),
     ("settings.appearance", "admin", "Дизайн админки"),
     ("settings.appearance", "admin_theme", "Тема админки"),
     (

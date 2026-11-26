@@ -4,6 +4,7 @@ import { count, groupDigits, money, NBSP, plural } from '../../lib/format';
 import { Icon } from '../../lib/icons';
 import { ConfirmDialog, Dialog } from '../client/dialogs';
 import { DeleteTariff } from './DeleteTariff';
+import { PromotionsDialog, promotionsSummary, type PromotionsView } from './Promotions';
 import { useSession } from '../session';
 import { Switch } from '../ui';
 import {
@@ -83,7 +84,17 @@ export function Tariffs() {
   const [hwidOff, setHwidOff] = useState(false);
   const [trial, setTrial] = useState<Trial | null>(null);
   const [multi, setMulti] = useState<Multi | null>(null);
-  const [dialog, setDialog] = useState<'' | 'category' | 'category-edit' | 'trial' | 'multi' | 'delete'>('');
+  const [dialog, setDialog] = useState<'' | 'category' | 'category-edit' | 'trial' | 'multi' | 'delete' | 'promotions'>(() =>
+    new URLSearchParams(window.location.search).has('promotions') ? 'promotions' : '',
+  );
+  const [promotions, setPromotions] = useState<PromotionsView | null>(null);
+  const loadPromotions = useCallback(async () => {
+    try {
+      setPromotions(await api<PromotionsView>('/api/admin/tariffs/promotions'));
+    } catch {
+      setPromotions(null);
+    }
+  }, []);
 
   const load = useCallback(async () => {
     try {
@@ -100,6 +111,7 @@ export function Tariffs() {
 
   useEffect(() => {
     void load();
+    void loadPromotions();
     if (remnaOff) {
       setSquads([]);
       setHwidOff(false);
@@ -121,7 +133,7 @@ export function Tariffs() {
         .then(setMulti)
         .catch(() => setMulti(null));
     }
-  }, [load, settingsOk, remnaOff]);
+  }, [load, loadPromotions, settingsOk, remnaOff]);
 
   const currency = view?.currency ?? 'USD';
   const stats = useMemo(() => new Map((view?.stats ?? []).map((s) => [s.tariff_id, s])), [view]);
@@ -256,6 +268,11 @@ export function Tariffs() {
         {settingsOk && trial ? (
           <button type="button" className="b44 hov tf-trial" onClick={() => setDialog('trial')}>
             Пробный период <span className="muted">{trialSummary(trial)}</span>
+          </button>
+        ) : null}
+        {promotions ? (
+          <button type="button" className="b44 hov tf-trial" onClick={() => setDialog('promotions')}>
+            Акции <span className="muted">{promotionsSummary(promotions)}</span>
           </button>
         ) : null}
         <button type="button" className="btn-main btn" onClick={startNew} style={{ padding: '0 18px' }}>
@@ -440,6 +457,19 @@ export function Tariffs() {
             setMulti(next);
             setDialog('');
           }}
+        />
+      ) : null}
+      {dialog === 'promotions' && promotions ? (
+        <PromotionsDialog
+          view={promotions}
+          tariffs={view?.tariffs ?? []}
+          onClose={() => {
+            setDialog('');
+            if (window.location.search.includes('promotions')) {
+              window.history.replaceState(null, '', window.location.pathname);
+            }
+          }}
+          onChanged={loadPromotions}
         />
       ) : null}
       {dialog === 'trial' && trial ? (

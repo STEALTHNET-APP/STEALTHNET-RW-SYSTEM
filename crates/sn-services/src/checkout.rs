@@ -21,6 +21,7 @@ use sn_domain::plan::{
     CurrentTariff, HeldSubscription, PlanKind, classify, new_expire_at, single_target,
 };
 use sn_domain::pricing::{Quote, QuoteRequest, quote, topup_quote};
+use sn_domain::promotion::running_for;
 use sn_domain::settings::{TrialVariant, keys};
 use sn_domain::subscription::{Subscription, SubscriptionKind, SubscriptionStatus};
 use sn_domain::tariff::{Category, PeriodOffer, Tariff, TariffSnapshot, period_offers};
@@ -53,6 +54,8 @@ mod order_channel_tests;
 mod pool_tests;
 #[cfg(test)]
 mod promo_tests;
+#[cfg(test)]
+mod promotion_tests;
 #[cfg(test)]
 mod single_tests;
 #[cfg(test)]
@@ -126,6 +129,8 @@ pub struct QuoteView {
     pub expire_preview: DateTime<Utc>,
     pub methods: Vec<CheckoutMethod>,
     pub current: Option<CurrentSubscription>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub promotion: Option<crate::promotions::PromotionNote>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -251,6 +256,7 @@ struct Prepared {
     kind: PlanKind,
     quote: Quote,
     methods: Vec<CheckoutMethod>,
+    promotion: Option<crate::promotions::PromotionNote>,
 }
 
 pub(crate) async fn held_subscriptions(
@@ -880,6 +886,8 @@ impl<'a> Checkout<'a> {
         let tariffs = conn.tariffs().list(false).await?;
         let ids: Vec<TariffId> = tariffs.iter().map(|t| t.id).collect();
         let channels = conn.tariffs().channels(&ids).await?;
+        let now = self.services.now();
+        let running = crate::promotions::running(&mut conn, now).await?;
         let mut offers = Vec::new();
         for category in categories {
             for tariff in tariffs.iter().filter(|t| t.category_id == category.id) {
@@ -895,10 +903,13 @@ impl<'a> Checkout<'a> {
                 {
                     continue;
                 }
+                let promotion = running_for(&running, tariff.id, now);
+                let mut periods = period_offers(tariff, currency, promotion.as_ref());
+                crate::promotions::label_offers(self.services, &mut periods);
                 offers.push(TariffOffer {
                     category: category.clone(),
                     tariff: tariff.clone(),
-                    periods: period_offers(tariff, currency),
+                    periods,
                 });
             }
         }
@@ -990,6 +1001,7 @@ impl<'a> Checkout<'a> {
         cart: &CartRequest,
         origin: &QuoteOrigin,
         channel: Option<ClientChannel>,
+        promoted: bool,
     ) -> ServiceResult<Prepared> {
         let currency = self.services.settings().currency;
         let modules = self.services.modules();
@@ -1031,6 +1043,12 @@ impl<'a> Checkout<'a> {
         let adjustments = modules
             .quote_adjustments_from(&self.services.module_context(), &hook, origin)
             .await?;
+        let promotion = if promoted {
+            let mut conn = self.services.store().conn().await?;
+            crate::promotions::running_terms(&mut conn, tariff.id, self.services.now()).await?
+        } else {
+            None
+        };
         let quote = quote(&QuoteRequest {
             currency,
             tariff: &tariff,
@@ -1038,7 +1056,14 @@ impl<'a> Checkout<'a> {
             extra_devices: cart.extra_devices,
             sell_extra_devices: modules.is_enabled(ModuleId::Options),
             adjustments: &adjustments,
+            promotion: promotion.as_ref(),
         })?;
+        let promotion = crate::promotions::note(
+            self.services,
+            promotion.as_ref(),
+            &quote,
+            !adjustments.is_empty(),
+        );
         let methods = reachable(
             self.services.payments(),
             self.services.payments().checkout_methods(&MethodsContext {
@@ -1073,6 +1098,7 @@ impl<'a> Checkout<'a> {
             kind,
             quote,
             methods,
+            promotion,
         })
     }
 
@@ -1123,7 +1149,7 @@ impl<'a> Checkout<'a> {
         channel: Option<ClientChannel>,
     ) -> ServiceResult<QuoteView> {
         let prepared = self
-            .prepare(client_id, cart, &QuoteOrigin { address }, channel)
+            .prepare(client_id, cart, &QuoteOrigin { address }, channel, true)
             .await?;
         let expire_preview = new_expire_at(
             prepared.kind,
@@ -1143,6 +1169,7 @@ impl<'a> Checkout<'a> {
             expire_preview,
             methods: prepared.methods,
             current,
+            promotion: prepared.promotion,
         })
     }
 
@@ -1167,6 +1194,7 @@ impl<'a> Checkout<'a> {
                 &request.cart,
                 &QuoteOrigin { address },
                 request.channel.client(),
+                true,
             )
             .await?;
         let (kind, amount, method) = pick_method(
@@ -1383,7 +1411,7 @@ impl<'a> Checkout<'a> {
         cart: &CartRequest,
     ) -> ServiceResult<NewOrder> {
         let prepared = self
-            .prepare(client_id, cart, &QuoteOrigin { address: None }, None)
+            .prepare(client_id, cart, &QuoteOrigin { address: None }, None, false)
             .await?;
         let period = prepared
             .tariff

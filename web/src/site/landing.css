@@ -1121,3 +1121,44 @@
   border-radius: 12px;
   margin-bottom: 10px;
 }
+
+.ld-sale {
+  margin: 0;
+  font-weight: 700;
+}
+
+.ld-old {
+  margin-right: 8px;
+  font-size: 0.7em;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.ld-term-price.sale {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  line-height: 1.15;
+}
+
+.ld-term-price.sale .ld-old {
+  margin-right: 0;
+}
+
+.ld-card-old {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: -10px;
+  font-size: 22px;
+}
+
+.ld-card-old .ld-old {
+  margin-right: 0;
+  font-size: inherit;
+}
+
+.ld-card-old strong {
+  font-size: 16px;
+  color: var(--ink-2);
+}

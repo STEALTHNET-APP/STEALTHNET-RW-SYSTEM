@@ -2465,3 +2465,21 @@ a.cb-card[id] {
   white-space: pre-line;
   overflow-wrap: anywhere;
 }
+
+.cb-sale {
+  margin: 0;
+  font-weight: 700;
+}
+
+.cb-term-old {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  color: var(--ink-2);
+  font-size: 14px;
+}
+
+.cb-term-old s {
+  color: var(--muted);
+}

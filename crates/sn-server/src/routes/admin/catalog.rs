@@ -9,6 +9,7 @@ use serde::Deserialize;
 use sn_domain::access::Permission;
 use sn_domain::ids::{CategoryId, TariffId};
 use sn_domain::tariff::{Category, Tariff, TariffChannels};
+use sn_services::promotions::{PromotionInput, PromotionView, PromotionsView};
 use sn_services::tariffs::{CategoryInput, SquadBrief, TariffInput, TariffsView};
 use sn_store::TariffUsage;
 
@@ -16,6 +17,16 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/tariffs", get(list).post(create))
         .route("/tariffs/squads", get(squads))
+        .route(
+            "/tariffs/promotions",
+            get(promotions).post(create_promotion),
+        )
+        .route(
+            "/tariffs/promotions/{id}",
+            put(update_promotion)
+                .patch(switch_promotion)
+                .delete(remove_promotion),
+        )
         .route(
             "/tariffs/{id}",
             get(one).put(update).patch(visibility).delete(remove),
@@ -32,6 +43,80 @@ pub fn routes() -> Router<AppState> {
 async fn list(admin: CurrentAdmin, State(state): State<AppState>) -> ApiResult<Json<TariffsView>> {
     admin.require(Permission::Tariffs)?;
     Ok(Json(state.services.tariffs().list().await?))
+}
+
+async fn promotions(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+) -> ApiResult<Json<PromotionsView>> {
+    admin.require(Permission::Tariffs)?;
+    Ok(Json(state.services.promotions().list().await?))
+}
+
+async fn create_promotion(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    ApiJson(body): ApiJson<PromotionInput>,
+) -> ApiResult<Json<PromotionView>> {
+    admin.require(Permission::Tariffs)?;
+    Ok(Json(
+        state
+            .services
+            .promotions()
+            .create(&body, admin.0.admin_id)
+            .await?,
+    ))
+}
+
+async fn update_promotion(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    ApiJson(body): ApiJson<PromotionInput>,
+) -> ApiResult<Json<PromotionView>> {
+    admin.require(Permission::Tariffs)?;
+    Ok(Json(
+        state
+            .services
+            .promotions()
+            .update(id, &body, admin.0.admin_id)
+            .await?,
+    ))
+}
+
+#[derive(Deserialize)]
+struct PromotionSwitch {
+    enabled: bool,
+}
+
+async fn switch_promotion(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    ApiJson(body): ApiJson<PromotionSwitch>,
+) -> ApiResult<Json<PromotionView>> {
+    admin.require(Permission::Tariffs)?;
+    Ok(Json(
+        state
+            .services
+            .promotions()
+            .set_enabled(id, body.enabled, admin.0.admin_id)
+            .await?,
+    ))
+}
+
+async fn remove_promotion(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> ApiResult<Json<serde_json::Value>> {
+    admin.require(Permission::Tariffs)?;
+    state
+        .services
+        .promotions()
+        .delete(id, admin.0.admin_id)
+        .await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 async fn one(

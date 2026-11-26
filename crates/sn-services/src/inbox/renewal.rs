@@ -41,6 +41,7 @@ fn renewal_order(
         extra_devices: 0,
         sell_extra_devices: false,
         adjustments: &[],
+        promotion: None,
     })?;
     Ok(NewOrder {
         client_id: subscription.client_id,

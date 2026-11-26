@@ -74,7 +74,13 @@ pub async fn tariffs(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, Bot
     let c = &*content;
     let offers = {
         let mut conn = services.store().conn().await?;
-        gifts::offers(&mut conn, services.settings().currency).await?
+        gifts::offers(
+            &mut conn,
+            services.settings().currency,
+            services.now(),
+            services.settings().remna_offset(),
+        )
+        .await?
     };
     if offers.is_empty() {
         return Ok(Screen::new(ui::text(c, "gift.no_tariffs", &[]))
@@ -108,30 +114,51 @@ pub async fn periods(
     let c = &*content;
     let offers = {
         let mut conn = services.store().conn().await?;
-        gifts::offers(&mut conn, services.settings().currency).await?
+        gifts::offers(
+            &mut conn,
+            services.settings().currency,
+            services.now(),
+            services.settings().remna_offset(),
+        )
+        .await?
     };
     let Some(offer) = offers.into_iter().find(|o| o.tariff.id == tariff_id) else {
         return tariffs(turn, client).await;
     };
     let mut keyboard = Keyboard::new();
     for period in &offer.periods {
-        keyboard = keyboard.push(ui::button(
-            c,
-            "gift.btn.period",
-            &[
-                ("term", Text(&gifts::term(period.days))),
-                ("price", Text(&text::money(period.price))),
-            ],
-            format!("gp:{}:{}", tariff_id, period.period_id),
-        ));
+        let term = gifts::term(period.days);
+        let price = text::money(period.price);
+        let data = format!("gp:{}:{}", tariff_id, period.period_id);
+        keyboard = keyboard.push(match &period.promotion {
+            Some(promotion) => ui::button(
+                c,
+                "gift.btn.period_promo",
+                &[
+                    ("term", Text(&term)),
+                    ("price", Text(&price)),
+                    ("percent", Text(&promotion.percent.to_string())),
+                ],
+                data,
+            ),
+            None => ui::button(
+                c,
+                "gift.btn.period",
+                &[("term", Text(&term)), ("price", Text(&price))],
+                data,
+            ),
+        });
     }
-    Ok(Screen::new(ui::text(
+    let mut lines = Lines::new();
+    lines.add(ui::text(
         c,
         "gift.choose_period",
         &[("tariff", Text(&offer.tariff.name))],
-    ))
-    .keyboard(keyboard.pair(ui::back(c, "gb"), ui::menu(c)))
-    .section(Section::Gifts))
+    ));
+    crate::buy::promotion_lines(c, &mut lines, &offer.periods);
+    Ok(Screen::new(lines.text())
+        .keyboard(keyboard.pair(ui::back(c, "gb"), ui::menu(c)))
+        .section(Section::Gifts))
 }
 
 fn parse_pick(rest: &str) -> Option<(GiftRequest, &str)> {

@@ -530,6 +530,26 @@ const UNTIL: Var = Var {
     name: "until",
     hint: "когда снимется ограничение",
 };
+const PROMOTION: Var = Var {
+    name: "promotion",
+    hint: "название акции",
+};
+const PROMO_PERCENT: Var = Var {
+    name: "percent",
+    hint: "скидка по акции в процентах",
+};
+const PROMO_UNTIL: Var = Var {
+    name: "ends",
+    hint: "до какого числа идёт акция, например «до 30 ноября»",
+};
+const FULL_PRICE: Var = Var {
+    name: "full_price",
+    hint: "цена без скидки",
+};
+const FULL_PER_MONTH: Var = Var {
+    name: "full_per_month",
+    hint: "цена в месяц без скидки",
+};
 const PRIZE: Var = Var {
     name: "prize",
     hint: "приз",
@@ -1245,6 +1265,20 @@ pub static CATALOG: &[Entry] = &[
         "{tariff}",
         &[TARIFF],
     ),
+    text(
+        "buy.tariff_line_promo",
+        Buy,
+        "Тариф в списке по акции",
+        "{tariff} — от <s>{full_per_month}</s> <b>{per_month}</b> в месяц, −{percent}% · {promotion} {ends}",
+        &[
+            TARIFF,
+            PER_MONTH,
+            FULL_PER_MONTH,
+            PROMO_PERCENT,
+            PROMOTION,
+            PROMO_UNTIL,
+        ],
+    ),
     button(
         "buy.btn.tariff",
         Buy,
@@ -1307,6 +1341,27 @@ pub static CATALOG: &[Entry] = &[
         "Кнопка срока с выгодой",
         "{days} — {price}, {per_month} в месяц, выгоднее на {savings}%",
         &[DAYS, PRICE, PER_MONTH, SAVINGS],
+    ),
+    text(
+        "buy.promotion",
+        Buy,
+        "Акция на тарифе",
+        "\n<b>{promotion}</b> {ends}: −{percent}%",
+        &[PROMOTION, PROMO_UNTIL, PROMO_PERCENT],
+    ),
+    line(
+        "buy.promotion_period",
+        Buy,
+        "Срок по акции",
+        "{days} — <s>{full_price}</s> <b>{price}</b>",
+        &[DAYS, PRICE, FULL_PRICE],
+    ),
+    button(
+        "buy.btn.period_promo",
+        Buy,
+        "Кнопка срока по акции",
+        "{days} — {price}, −{percent}%",
+        &[DAYS, PRICE, PROMO_PERCENT],
     ),
     text(
         "buy.extra_devices",
@@ -1419,6 +1474,20 @@ pub static CATALOG: &[Entry] = &[
         "Промокод не подошёл",
         "{error} Промокод убран.",
         &[ERROR],
+    ),
+    text(
+        "buy.promo_beaten",
+        Buy,
+        "Промокод меньше скидки по акции",
+        "Промокод не применён: скидка по акции «{promotion}» больше.",
+        &[PROMOTION],
+    ),
+    text(
+        "buy.promotion_beaten",
+        Buy,
+        "Промокод больше скидки по акции",
+        "Применён промокод: он выгоднее акции «{promotion}».",
+        &[PROMOTION],
     ),
     hideable(
         "buy.btn.change_devices",
@@ -2304,6 +2373,13 @@ pub static CATALOG: &[Entry] = &[
         "Кнопка срока",
         "{term} · {price}",
         &[TERM, PRICE],
+    ),
+    button(
+        "gift.btn.period_promo",
+        Gifts,
+        "Кнопка срока по акции",
+        "{term} · {price}, −{percent}%",
+        &[TERM, PRICE, PROMO_PERCENT],
     ),
     text(
         "gift.quote",

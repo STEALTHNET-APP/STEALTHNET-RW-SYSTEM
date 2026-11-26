@@ -10,6 +10,7 @@ import { Icon } from '../lib/icons';
 import { usePhone } from '../lib/media';
 import { styleFile, useOwnStyles, usePreviewStyles } from '../lib/ownStyles';
 import { maintenanceOf, maintenanceText, untilText } from '../lib/maintenance';
+import { promoCut, promoOf, promoTitle } from '../lib/promo';
 import { DEFAULT_SITE, showTitle, useSite } from '../lib/site';
 import { readStored, useSurface, useSystemTheme, writeStored, type Theme } from '../lib/theme';
 import './landing.css';
@@ -451,6 +452,7 @@ function LandingPage({ mode }: { mode: Mode }) {
           return null;
         }
         const plansText = text(block.text, '');
+        const salePromo = promoOf(offer.periods);
         return (
           <section key="plans" id="plans" aria-labelledby="plans-h" className="ld-sec ld-plans" data-block="plans">
             <div className="ld-plans-head">
@@ -486,6 +488,7 @@ function LandingPage({ mode }: { mode: Mode }) {
               {phone && offer.tariff.description ? `${offer.tariff.description}. ` : ''}
               {everywhere(offer)}
             </p>
+            {salePromo ? <p className="ld-sale">{promoTitle(salePromo)}</p> : null}
             {phone ? (
               <>
                 <div role="radiogroup" aria-label={t('Срок подписки')} className="ld-terms">
@@ -493,10 +496,14 @@ function LandingPage({ mode }: { mode: Mode }) {
                     <button key={p.period_id} type="button" role="radio" aria-checked={selected?.period_id === p.period_id} className="ld-term" onClick={() => setTerm(p.period_id)}>
                       <span className="ld-dot" aria-hidden="true" />
                       <span className="ld-term-name">{termName(p.months, p.days)}</span>
-                      <span className="ld-term-price num">{money(p.price)}</span>
+                      <span className={p.promotion ? 'ld-term-price num sale' : 'ld-term-price num'}>
+                        {p.promotion ? <s className="ld-old">{money(p.promotion.full_price)}</s> : null}
+                        {money(p.price)}
+                      </span>
                       <span className="ld-term-sub">
                         {t('{price} в месяц', { price: money(p.per_month) })}
-                        {p.savings_percent ? <span className="ld-save"> · {t('выгоднее на {n}%', { n: p.savings_percent })}</span> : null}
+                        {p.promotion ? <span className="ld-save"> · {promoCut(p.promotion.percent)}</span> : null}
+                        {p.savings_percent && !p.promotion ? <span className="ld-save"> · {t('выгоднее на {n}%', { n: p.savings_percent })}</span> : null}
                       </span>
                     </button>
                   ))}
@@ -512,10 +519,15 @@ function LandingPage({ mode }: { mode: Mode }) {
                 {offer.periods.map((p, i) => (
                   <div key={p.period_id} className="ld-card">
                     <span className="ld-card-name">{termName(p.months, p.days)}</span>
+                    {p.promotion ? (
+                      <span className="ld-card-old">
+                        <s className="ld-old">{money(p.promotion.full_price)}</s> <strong>{promoCut(p.promotion.percent)}</strong>
+                      </span>
+                    ) : null}
                     <span className="ld-card-price">{money(p.price)}</span>
                     <span className="ld-muted">
                       {t('{price} в месяц', { price: money(p.per_month) })}
-                      {p.savings_percent ? <span className="ld-save"> · {t('выгоднее на {n}%', { n: p.savings_percent })}</span> : null}
+                      {p.savings_percent && !p.promotion ? <span className="ld-save"> · {t('выгоднее на {n}%', { n: p.savings_percent })}</span> : null}
                     </span>
                     <Link
                       to={`/cabinet/pay?tariff=${offer.tariff.id}&period=${p.period_id}`}

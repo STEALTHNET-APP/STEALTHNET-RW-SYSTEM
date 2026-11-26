@@ -234,8 +234,10 @@ export function SubscriptionPage() {
   const url = view?.subscription_url ?? null;
   const offer = view && catalog ? catalog.tariffs.find((t) => t.tariff.id === view.subscription.tariff_id) : null;
   const renewPeriod = offer?.periods.find((p) => p.period_id === view?.subscription.autorenew.period_id) ?? offer?.periods.find((p) => p.days === view?.subscription.period_days) ?? null;
-  const renewPrice: Money | null = renewPeriod?.price ?? null;
   const chargeDate = expire ? new Date(Date.parse(expire) - (site.autorenew_days_before ?? 1) * 86_400_000).toISOString() : null;
+  const renewPromo = renewPeriod?.promotion ?? null;
+  const promoOver = renewPromo !== null && Math.max(Date.now(), chargeDate ? Date.parse(chargeDate) : 0) >= Date.parse(renewPromo.ends_at);
+  const renewPrice: Money | null = renewPeriod ? (renewPromo && promoOver ? renewPromo.full_price : renewPeriod.price) : null;
   const renewal = view?.renewal && (view.renewal.status === 'active' || view.renewal.status === 'cancelling') ? view.renewal : null;
   const autoOn = renewal ? renewal.status === 'active' : (view?.subscription.autorenew.enabled ?? false);
   const balanceOff = me.balance_enabled === false;

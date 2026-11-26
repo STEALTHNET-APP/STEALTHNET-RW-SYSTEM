@@ -315,12 +315,17 @@ async fn настройки_ограничивают_тарифы_и_срок_к
             .any(|t| t.id == standard.id && t.giftable)
     );
     let mut conn = db.store.conn().await.unwrap();
-    let offered = offers(&mut conn, Currency::Usd).await.unwrap();
+    let utc = chrono::FixedOffset::east_opt(0).unwrap();
+    let offered = offers(&mut conn, Currency::Usd, Utc::now(), utc)
+        .await
+        .unwrap();
     assert_eq!(
         offered.iter().map(|o| o.tariff.id).collect::<Vec<_>>(),
         vec![premium.id]
     );
-    let rub = offers(&mut conn, Currency::Rub).await.unwrap();
+    let rub = offers(&mut conn, Currency::Rub, Utc::now(), utc)
+        .await
+        .unwrap();
     assert_eq!(rub[0].periods.len(), 1);
     let refused = quote(
         &mut conn,
@@ -329,6 +334,7 @@ async fn настройки_ограничивают_тарифы_и_срок_к
             period_id: period(&standard, 30),
         },
         Currency::Usd,
+        Utc::now(),
     )
     .await;
     assert!(matches!(
@@ -342,6 +348,7 @@ async fn настройки_ограничивают_тарифы_и_срок_к
             period_id: period(&premium, 90),
         },
         Currency::Rub,
+        Utc::now(),
     )
     .await;
     assert!(matches!(
@@ -751,5 +758,93 @@ async fn суммы_подарков_видны_только_с_правом_д�
     }
     let page = list(&[Permission::Money], Some(7)).await;
     assert_eq!(page["items"][0]["paid"]["minor"], 299, "{page}");
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn подарок_по_тарифу_акции_со_скидкой() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let standard = tariff(&db.store, "Стандарт").await;
+    let premium = tariff(&db.store, "Премиум").await;
+    let now = Utc::now();
+    let promotion = {
+        let mut conn = db.store.conn().await.unwrap();
+        conn.promotions()
+            .create(&sn_domain::promotion::PromotionDraft {
+                name: "Чёрная пятница".into(),
+                percent: 25,
+                tariff_ids: vec![standard.id],
+                starts_at: now - Duration::hours(1),
+                ends_at: now + Duration::days(1),
+                enabled: true,
+            })
+            .await
+            .unwrap()
+    };
+    let mut conn = db.store.conn().await.unwrap();
+    let utc = chrono::FixedOffset::east_opt(0).unwrap();
+    let offered = offers(&mut conn, Currency::Usd, now, utc).await.unwrap();
+    let month = offered
+        .iter()
+        .find(|o| o.tariff.id == standard.id)
+        .unwrap()
+        .periods
+        .iter()
+        .find(|p| p.days == 30)
+        .unwrap();
+    assert_eq!(month.price, Money::new(224, Currency::Usd));
+    assert_eq!(month.stars, Some(Stars(113)));
+    let shown = month.promotion.as_ref().unwrap();
+    assert_eq!(shown.full_price, Money::new(299, Currency::Usd));
+    assert_eq!(shown.percent, 25);
+    assert!(shown.until.starts_with("до "), "{}", shown.until);
+    assert!(
+        offered
+            .iter()
+            .find(|o| o.tariff.id == premium.id)
+            .unwrap()
+            .periods
+            .iter()
+            .all(|p| p.promotion.is_none())
+    );
+    let request = |tariff: &Tariff| GiftRequest {
+        tariff_id: tariff.id,
+        period_id: period(tariff, 30),
+    };
+    let priced = quote(&mut conn, request(&standard), Currency::Usd, now)
+        .await
+        .unwrap();
+    assert_eq!(priced.total, Money::new(224, Currency::Usd));
+    assert_eq!(priced.subtotal, Money::new(299, Currency::Usd));
+    assert_eq!(priced.discount, Money::new(75, Currency::Usd));
+    assert_eq!(priced.stars.unwrap().total, Stars(113));
+    assert_eq!(
+        priced.lines[1].kind,
+        QuoteLineKind::Promotion {
+            promotion_id: promotion.id,
+            percent: 25
+        }
+    );
+    assert_eq!(
+        priced.lines.iter().map(|l| l.amount.minor).sum::<i64>(),
+        priced.total.minor
+    );
+    let plain = quote(&mut conn, request(&premium), Currency::Usd, now)
+        .await
+        .unwrap();
+    assert_eq!(plain.total, Money::new(299, Currency::Usd));
+    assert_eq!(plain.lines.len(), 1);
+    let later = quote(
+        &mut conn,
+        request(&standard),
+        Currency::Usd,
+        now + Duration::days(2),
+    )
+    .await
+    .unwrap();
+    assert_eq!(later.total, Money::new(299, Currency::Usd));
+    drop(conn);
     db.cleanup().await;
 }

@@ -2189,3 +2189,21 @@ button.mn-tab {
   white-space: pre-line;
   overflow-wrap: anywhere;
 }
+
+.mn-sale {
+  margin: 0;
+  font-weight: 700;
+}
+
+.mn-term-price {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  white-space: nowrap;
+}
+
+.mn-old {
+  font-size: 13px;
+  line-height: 1.2;
+  color: var(--muted);
+}

@@ -785,6 +785,12 @@ pub fn target_of(
                 "/admin/tariffs",
             )
         }
+        (Some("promotion"), _) => place(
+            "promotion",
+            &detail_text(details, "name")
+                .map_or_else(|| "Акции".to_string(), |n| format!("Акция «{n}»")),
+            "/admin/tariffs?promotions=1",
+        ),
         (Some("category"), _) => {
             let name = id
                 .and_then(|id| refs.categories.get(&id).cloned())

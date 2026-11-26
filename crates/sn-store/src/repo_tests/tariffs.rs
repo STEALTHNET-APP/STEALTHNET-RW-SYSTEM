@@ -58,6 +58,7 @@ async fn правка_тарифа_выключает_исчезнувший_с�
         extra_devices: 0,
         sell_extra_devices: true,
         adjustments: &[],
+        promotion: None,
     })
     .unwrap();
     let order = conn

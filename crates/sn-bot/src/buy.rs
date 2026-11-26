@@ -14,7 +14,7 @@ use sn_domain::module::ModuleId;
 use sn_domain::money::Money;
 use sn_domain::payment::providers;
 use sn_domain::plan::PlanKind;
-use sn_domain::tariff::{DeviceDiscount, ExtraDevices, Tariff};
+use sn_domain::tariff::{DeviceDiscount, ExtraDevices, PeriodOffer, Tariff};
 use sn_modules::catalog::promo::{self, PromoError, Purpose};
 use sn_payments::Unavailable;
 use sn_services::Services;
@@ -114,20 +114,38 @@ async fn catalog(turn: &mut Turn<'_>) -> Result<Screen, BotError> {
                 &[("category", Text(&offer.category.name))],
             ));
         }
-        let cheapest = offer
-            .periods
-            .iter()
-            .map(|p| p.per_month)
-            .min_by_key(|m| m.minor);
+        let cheapest = offer.periods.iter().min_by_key(|p| p.per_month.minor);
         lines.add(match cheapest {
-            Some(per_month) => ui::text(
-                c,
-                "buy.tariff_line",
-                &[
-                    ("tariff", Text(&offer.tariff.name)),
-                    ("per_month", Text(&text::money(per_month))),
-                ],
-            ),
+            Some(period) => match &period.promotion {
+                Some(promotion) => ui::text(
+                    c,
+                    "buy.tariff_line_promo",
+                    &[
+                        ("tariff", Text(&offer.tariff.name)),
+                        ("per_month", Text(&text::money(period.per_month))),
+                        (
+                            "full_per_month",
+                            Text(&text::money(
+                                promotion
+                                    .full_price
+                                    .divide_round(period.months)
+                                    .unwrap_or(promotion.full_price),
+                            )),
+                        ),
+                        ("percent", Text(&promotion.percent.to_string())),
+                        ("promotion", Text(&promotion.name)),
+                        ("ends", Text(&promotion.until)),
+                    ],
+                ),
+                None => ui::text(
+                    c,
+                    "buy.tariff_line",
+                    &[
+                        ("tariff", Text(&offer.tariff.name)),
+                        ("per_month", Text(&text::money(period.per_month))),
+                    ],
+                ),
+            },
             None => ui::text(
                 c,
                 "buy.tariff_line_plain",
@@ -290,6 +308,7 @@ pub async fn tariff(
         )),
         _ => lines.add(ui::text(c, "buy.tariff_unlimited", &[])),
     }
+    promotion_lines(c, &mut lines, &offer.periods);
     lines.add(ui::text(c, "buy.choose_period", &[]));
     let mut keyboard = Keyboard::new();
     for period in &offer.periods {
@@ -297,6 +316,19 @@ pub async fn tariff(
         let price = text::money(period.price);
         let per_month = text::money(period.per_month);
         let data = format!("p:{}", period.period_id);
+        if let Some(promotion) = &period.promotion {
+            keyboard = keyboard.push(ui::button(
+                c,
+                "buy.btn.period_promo",
+                &[
+                    ("days", Text(&days)),
+                    ("price", Text(&price)),
+                    ("percent", Text(&promotion.percent.to_string())),
+                ],
+                data,
+            ));
+            continue;
+        }
         keyboard = keyboard.push(match period.savings_percent {
             Some(savings) => ui::button(
                 c,
@@ -330,6 +362,35 @@ pub async fn tariff(
     Ok(Screen::new(lines.text())
         .keyboard(keyboard.pair(ui::back(c, back), ui::menu(c)))
         .section(Section::Buy))
+}
+
+pub(crate) fn promotion_lines(c: &BotContent, lines: &mut Lines, periods: &[PeriodOffer]) {
+    let Some(promotion) = periods.iter().find_map(|p| p.promotion.as_ref()) else {
+        return;
+    };
+    lines.add(ui::text(
+        c,
+        "buy.promotion",
+        &[
+            ("promotion", Text(&promotion.name)),
+            ("ends", Text(&promotion.until)),
+            ("percent", Text(&promotion.percent.to_string())),
+        ],
+    ));
+    for period in periods {
+        let Some(promotion) = &period.promotion else {
+            continue;
+        };
+        lines.add(ui::text(
+            c,
+            "buy.promotion_period",
+            &[
+                ("days", Text(&text::days(period.days))),
+                ("price", Text(&text::money(period.price))),
+                ("full_price", Text(&text::money(promotion.full_price))),
+            ],
+        ));
+    }
 }
 
 fn sellable(services: &Services, tariff: &Tariff) -> Option<(ExtraDevices, Money)> {
@@ -617,6 +678,21 @@ pub async fn summary(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, Bot
     }
     if view.methods.iter().all(|m| m.unavailable.is_some()) {
         lines.add(ui::text(c, "buy.no_methods", &[]));
+    }
+    if let Some(promotion) = &view.promotion {
+        if promotion.code_skipped {
+            notes.push(ui::text(
+                c,
+                "buy.promo_beaten",
+                &[("promotion", Text(&promotion.name))],
+            ));
+        } else if !promotion.applied {
+            notes.push(ui::text(
+                c,
+                "buy.promotion_beaten",
+                &[("promotion", Text(&promotion.name))],
+            ));
+        }
     }
     for note in notes {
         lines.add(note);

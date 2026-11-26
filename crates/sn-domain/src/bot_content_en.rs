@@ -122,6 +122,9 @@ pub fn default(key: &str) -> Option<&'static str> {
         "buy.category" => "\n<b>{category}</b>",
         "buy.tariff_line" => "{tariff} — from {per_month} a month",
         "buy.tariff_line_plain" => "{tariff}",
+        "buy.tariff_line_promo" => {
+            "{tariff} — from <s>{full_per_month}</s> <b>{per_month}</b> a month, −{percent}% · {promotion} {ends}"
+        }
         "buy.btn.tariff" => "{tariff}",
         "buy.tariff_title" => "<b>{tariff}</b>",
         "buy.tariff_devices" => "Devices included: {count}",
@@ -131,6 +134,9 @@ pub fn default(key: &str) -> Option<&'static str> {
         "buy.btn.period" => "{days} — {price}",
         "buy.btn.period_monthly" => "{days} — {price}, {per_month}/mo",
         "buy.btn.period_savings" => "{days} — {price}, {per_month}/mo, save {savings}%",
+        "buy.promotion" => "\n<b>{promotion}</b> {ends}: −{percent}%",
+        "buy.promotion_period" => "{days} — <s>{full_price}</s> <b>{price}</b>",
+        "buy.btn.period_promo" => "{days} — {price}, −{percent}%",
         "buy.extra_devices" => {
             "The plan includes {included}. Add more? Each one is {price} a month."
         }
@@ -153,6 +159,10 @@ pub fn default(key: &str) -> Option<&'static str> {
         "buy.balance_short" => "Balance: {missing} short (you have {balance})",
         "buy.no_methods" => "No payment methods are available right now.",
         "buy.promo_removed" => "{error} Promo code removed.",
+        "buy.promo_beaten" => "The promo code is not applied: the “{promotion}” sale gives more.",
+        "buy.promotion_beaten" => {
+            "The promo code is applied: it gives more than the “{promotion}” sale."
+        }
         "buy.btn.change_devices" => "Change extra devices",
         "buy.btn.promo" => "Enter a promo code",
         "buy.btn.promo_remove" => "Remove promo code",
@@ -330,6 +340,7 @@ pub fn default(key: &str) -> Option<&'static str> {
         "gift.no_tariffs" => "Gifting isn't available right now: no plans can be gifted.",
         "gift.choose_period" => "“{tariff}” subscription. For how long?",
         "gift.btn.period" => "{term} · {price}",
+        "gift.btn.period_promo" => "{term} · {price}, −{percent}%",
         "gift.quote" => {
             "{label} — {total}{stars}.\nThe code for your friend will arrive here right after payment. How would you like to pay?"
         }

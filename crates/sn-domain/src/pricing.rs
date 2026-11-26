@@ -4,6 +4,7 @@ use crate::format;
 use crate::ids::{PeriodId, TariffId};
 use crate::module::ModuleId;
 use crate::money::{Amount, Currency, Money, PayCurrency, Stars, div_round_half_up};
+use crate::promotion::{PromotionTerms, discounted, discounted_stars, line_label};
 use crate::tariff::Tariff;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -57,6 +58,10 @@ pub enum QuoteLineKind {
     Adjustment {
         source: AdjustmentSource,
     },
+    Promotion {
+        promotion_id: i64,
+        percent: u8,
+    },
     TopUp,
 }
 
@@ -109,6 +114,7 @@ impl QuoteLine {
                 format!("Traffic: +{}", format::gigabytes_in(u64::from(*gb), en))
             }
             QuoteLineKind::TopUp => "Balance top-up".into(),
+            QuoteLineKind::Promotion { .. } => self.label.clone(),
             QuoteLineKind::Adjustment { source } => {
                 let cut = match self.label.rsplit_once(", ") {
                     Some((_, tail)) if tail.ends_with('%') => tail.to_string(),
@@ -245,6 +251,7 @@ pub struct QuoteRequest<'a> {
     pub extra_devices: u32,
     pub sell_extra_devices: bool,
     pub adjustments: &'a [PriceAdjustment],
+    pub promotion: Option<&'a PromotionTerms>,
 }
 
 fn add_stars(left: Option<Stars>, right: Option<Stars>) -> Result<Option<Stars>, DomainError> {
@@ -255,6 +262,36 @@ fn add_stars(left: Option<Stars>, right: Option<Stars>) -> Result<Option<Stars>,
 }
 
 pub fn quote(req: &QuoteRequest<'_>) -> Result<Quote, DomainError> {
+    let Some(promotion) = req.promotion else {
+        return priced(req, None, req.adjustments);
+    };
+    if req.adjustments.is_empty() {
+        return priced(req, Some(promotion), &[]);
+    }
+    let promoted = priced(req, Some(promotion), &[])?;
+    let adjusted = priced(req, None, req.adjustments)?;
+    Ok(if adjusted.total.minor < promoted.total.minor {
+        adjusted
+    } else {
+        promoted
+    })
+}
+
+pub fn promotion_line(quote: &Quote) -> Option<(i64, u8)> {
+    quote.lines.iter().find_map(|line| match line.kind {
+        QuoteLineKind::Promotion {
+            promotion_id,
+            percent,
+        } => Some((promotion_id, percent)),
+        _ => None,
+    })
+}
+
+fn priced(
+    req: &QuoteRequest<'_>,
+    promotion: Option<&PromotionTerms>,
+    adjustments: &[PriceAdjustment],
+) -> Result<Quote, DomainError> {
     let tariff = req.tariff;
     let period = tariff.sellable_period(req.period_id, req.currency)?;
     tariff
@@ -279,6 +316,28 @@ pub fn quote(req: &QuoteRequest<'_>) -> Result<Quote, DomainError> {
     let mut stars_subtotal = period.stars;
     let mut device_cut = Money::zero(req.currency);
     let mut device_stars_cut: Option<Stars> = None;
+    let mut promotion_cut = Money::zero(req.currency);
+    let mut promotion_stars_cut: Option<Stars> = None;
+    if let Some(promotion) = promotion {
+        let cut = base.checked_sub(discounted(base, promotion.percent))?;
+        let stars_cut = match period.stars {
+            Some(full) => Some(full.checked_sub(discounted_stars(full, promotion.percent))?),
+            None => None,
+        };
+        if !cut.is_zero() || stars_cut.is_some_and(|s| s.0 > 0) {
+            lines.push(QuoteLine {
+                kind: QuoteLineKind::Promotion {
+                    promotion_id: promotion.id,
+                    percent: promotion.percent,
+                },
+                label: line_label(&promotion.name, promotion.percent),
+                amount: cut.checked_neg()?,
+                stars: stars_cut.map(|s| Stars(-s.0)),
+            });
+            promotion_cut = cut;
+            promotion_stars_cut = stars_cut;
+        }
+    }
 
     if req.extra_devices > 0 {
         let extra = tariff
@@ -322,12 +381,19 @@ pub fn quote(req: &QuoteRequest<'_>) -> Result<Quote, DomainError> {
         }
     }
 
-    let mut total = subtotal.checked_sub(device_cut)?;
-    let mut stars_total = match (stars_subtotal, device_stars_cut) {
-        (Some(stars), Some(cut)) => Some(stars.checked_sub(cut)?),
-        (stars, _) => stars,
-    };
-    for adjustment in req.adjustments {
+    let mut total = subtotal
+        .checked_sub(device_cut)?
+        .checked_sub(promotion_cut)?;
+    let mut stars_total = stars_subtotal;
+    for cut in [device_stars_cut, promotion_stars_cut]
+        .into_iter()
+        .flatten()
+    {
+        if let Some(stars) = stars_total {
+            stars_total = Some(stars.checked_sub(cut)?);
+        }
+    }
+    for adjustment in adjustments {
         let (cut, stars_cut) = match &adjustment.kind {
             AdjustmentKind::Percent { percent } => {
                 let cut = total.percent(*percent)?.min(total)?;
@@ -513,6 +579,7 @@ mod tests {
             extra_devices: 2,
             sell_extra_devices: true,
             adjustments: &[promo(10)],
+            promotion: None,
         })
         .unwrap();
         let russian: Vec<String> = q.lines.iter().map(|l| l.label.clone()).collect();
@@ -541,6 +608,7 @@ mod tests {
             extra_devices: 2,
             sell_extra_devices: true,
             adjustments: &[],
+            promotion: None,
         })
         .unwrap();
         assert_eq!(q.subtotal, Money::new(699 + 2 * 99 * 3, Currency::Usd));
@@ -560,6 +628,7 @@ mod tests {
             extra_devices: 0,
             sell_extra_devices: true,
             adjustments: &adjustments,
+            promotion: None,
         })
         .unwrap();
         assert_eq!(q.total, Money::new(629, Currency::Usd));
@@ -579,6 +648,7 @@ mod tests {
             extra_devices: 0,
             sell_extra_devices: true,
             adjustments: &adjustments,
+            promotion: None,
         })
         .unwrap();
         assert_eq!(q.total, Money::new(58_400, Currency::Rub));
@@ -602,6 +672,7 @@ mod tests {
             extra_devices: 0,
             sell_extra_devices: true,
             adjustments: &adjustments,
+            promotion: None,
         })
         .unwrap();
         assert!(q.is_free());
@@ -618,6 +689,7 @@ mod tests {
             extra_devices: 1,
             sell_extra_devices: false,
             adjustments: &[],
+            promotion: None,
         })
         .unwrap_err();
         assert_eq!(err, DomainError::ExtraDevicesNotSold);
@@ -652,6 +724,7 @@ mod tests {
             extra_devices,
             sell_extra_devices: true,
             adjustments,
+            promotion: None,
         })
         .unwrap()
     }
@@ -736,6 +809,164 @@ mod tests {
             device_discount_label(5, 20, Locale::Ru),
             "Скидка за 5\u{a0}доп. устройств, −20%"
         );
+    }
+
+    fn black_friday(percent: u8) -> PromotionTerms {
+        PromotionTerms {
+            id: 7,
+            name: "Чёрная пятница".into(),
+            percent,
+            ends_at: chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 11, 30, 21, 0, 0).unwrap(),
+        }
+    }
+
+    fn promoted(
+        tariff: &Tariff,
+        currency: Currency,
+        period: i64,
+        extra_devices: u32,
+        adjustments: &[PriceAdjustment],
+        promotion: &PromotionTerms,
+    ) -> Quote {
+        quote(&QuoteRequest {
+            currency,
+            tariff,
+            period_id: PeriodId(period),
+            extra_devices,
+            sell_extra_devices: true,
+            adjustments,
+            promotion: Some(promotion),
+        })
+        .unwrap()
+    }
+
+    fn lines_sum(q: &Quote) -> i64 {
+        q.lines.iter().map(|l| l.amount.minor).sum()
+    }
+
+    #[test]
+    fn акция_снижает_цену_срока_вниз_до_цента_и_звёзды_вверх() {
+        let tariff = standard();
+        let q = promoted(&tariff, Currency::Usd, 11, 0, &[], &black_friday(25));
+        assert_eq!(q.lines.len(), 2);
+        assert_eq!(
+            q.lines[1].kind,
+            QuoteLineKind::Promotion {
+                promotion_id: 7,
+                percent: 25
+            }
+        );
+        assert_eq!(q.lines[1].label, "Чёрная пятница, −25%");
+        assert_eq!(q.lines[1].amount, Money::new(-75, Currency::Usd));
+        assert_eq!(q.lines[1].stars, Some(Stars(-37)));
+        assert_eq!(q.subtotal, Money::new(299, Currency::Usd));
+        assert_eq!(q.discount, Money::new(75, Currency::Usd));
+        assert_eq!(q.total, Money::new(224, Currency::Usd));
+        assert_eq!(lines_sum(&q), q.total.minor);
+        let stars = q.stars.unwrap();
+        assert_eq!(stars.total, Stars(113));
+        assert_eq!(stars.discount, Stars(37));
+        assert_eq!(promotion_line(&q), Some((7, 25)));
+        let english = crate::lang::sync_scope(Locale::En, || q.clone().shown());
+        assert_eq!(english.lines[1].label, "Чёрная пятница, −25%");
+    }
+
+    #[test]
+    fn акция_в_рублях_до_целого_рубля_вниз() {
+        let tariff = unblock();
+        let q = promoted(&tariff, Currency::Rub, 32, 0, &[], &black_friday(25));
+        assert_eq!(q.total.minor % 100, 0);
+        assert_eq!(q.total, Money::new(48_600, Currency::Rub));
+        let plain = promoted(&standard(), Currency::Rub, 11, 0, &[], &black_friday(25));
+        assert_eq!(plain.total, Money::new(14_900, Currency::Rub));
+        assert_eq!(plain.lines[1].amount, Money::new(-5_000, Currency::Rub));
+    }
+
+    #[test]
+    fn доп_устройства_по_акции_без_скидки() {
+        let tariff = with_discounts(standard());
+        let q = promoted(&tariff, Currency::Usd, 12, 3, &[], &black_friday(25));
+        assert!(matches!(q.lines[1].kind, QuoteLineKind::Promotion { .. }));
+        assert_eq!(q.lines[1].amount, Money::new(-175, Currency::Usd));
+        assert!(matches!(
+            q.lines[2].kind,
+            QuoteLineKind::ExtraDevices { .. }
+        ));
+        assert_eq!(q.lines[2].amount, Money::new(891, Currency::Usd));
+        assert_eq!(q.lines[3].amount, Money::new(-89, Currency::Usd));
+        assert_eq!(q.total, Money::new(524 + 891 - 89, Currency::Usd));
+        assert_eq!(lines_sum(&q), q.total.minor);
+        assert_eq!(q.stars.unwrap().total, Stars(263 + 450 - 45));
+    }
+
+    #[test]
+    fn промокод_меньше_акции_не_применяется() {
+        let tariff = standard();
+        let q = promoted(
+            &tariff,
+            Currency::Usd,
+            12,
+            0,
+            &[promo(10)],
+            &black_friday(25),
+        );
+        assert_eq!(promotion_line(&q), Some((7, 25)));
+        assert!(
+            !q.lines
+                .iter()
+                .any(|l| matches!(l.kind, QuoteLineKind::Adjustment { .. }))
+        );
+        assert_eq!(q.total, Money::new(524, Currency::Usd));
+        let tie = promoted(
+            &tariff,
+            Currency::Usd,
+            12,
+            0,
+            &[promo(25)],
+            &black_friday(25),
+        );
+        assert_eq!(promotion_line(&tie), Some((7, 25)));
+        assert_eq!(tie.lines.len(), 2);
+    }
+
+    #[test]
+    fn промокод_больше_акции_берётся_от_полной_цены() {
+        let tariff = standard();
+        let q = promoted(
+            &tariff,
+            Currency::Usd,
+            12,
+            0,
+            &[promo(30)],
+            &black_friday(25),
+        );
+        assert_eq!(promotion_line(&q), None);
+        assert!(matches!(q.lines[1].kind, QuoteLineKind::Adjustment { .. }));
+        assert_eq!(q.total, Money::new(699 - 210, Currency::Usd));
+        assert_eq!(q.stars.unwrap().total, Stars(350 - 105));
+        let fixed = [PriceAdjustment {
+            source: AdjustmentSource::Promo {
+                code: "MINUS".into(),
+                promo_id: Some(2),
+            },
+            kind: AdjustmentKind::Fixed {
+                amount: Money::new(300, Currency::Usd),
+            },
+            label: "Промокод MINUS".into(),
+        }];
+        let q = promoted(&tariff, Currency::Usd, 12, 0, &fixed, &black_friday(25));
+        assert_eq!(promotion_line(&q), None);
+        assert_eq!(q.total, Money::new(399, Currency::Usd));
+        let devices = promoted(
+            &with_discounts(standard()),
+            Currency::Usd,
+            12,
+            2,
+            &[promo(20)],
+            &black_friday(25),
+        );
+        assert_eq!(promotion_line(&devices), None);
+        assert_eq!(lines_sum(&devices), devices.total.minor);
     }
 
     #[test]

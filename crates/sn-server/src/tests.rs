@@ -356,6 +356,7 @@ impl Http {
             extra_devices: 0,
             sell_extra_devices: true,
             adjustments: &[],
+            promotion: None,
         })
         .unwrap();
         let mut tx = self.services().store().begin().await.unwrap();

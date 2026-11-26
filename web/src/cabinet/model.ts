@@ -1,6 +1,7 @@
 import type { Renewal, Subscription } from '../admin/clients/types';
 import { count, dateLong, days, NBSP, type Money } from '../lib/format';
 import { lang, t } from '../lib/i18n';
+import type { OfferPromotion, QuotePromotion } from '../lib/promo';
 import type { Currency } from '../lib/types';
 
 export type TrafficReset = 'no_reset' | 'day' | 'week' | 'month' | 'month_rolling' | 'on_payment';
@@ -75,6 +76,7 @@ export type PeriodOffer = {
   stars: number | null;
   stars_per_month: number | null;
   stars_savings_percent: number | null;
+  promotion?: OfferPromotion | null;
 };
 
 export type TariffOffer = {
@@ -124,6 +126,7 @@ export type Quote = {
   expire_preview: string | null;
   methods: CheckoutMethod[];
   current?: { subscription_id: number; tariff: string | null; trial: boolean; expire_at: string | null } | null;
+  promotion?: QuotePromotion | null;
 };
 
 export function transitionText(current: string | null): string {

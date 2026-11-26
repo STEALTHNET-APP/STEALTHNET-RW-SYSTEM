@@ -436,6 +436,7 @@ async fn pending(
         extra_devices: 0,
         sell_extra_devices: true,
         adjustments: &[],
+        promotion: None,
     })
     .unwrap();
     let mut tx = kit.services.store().begin().await.unwrap();

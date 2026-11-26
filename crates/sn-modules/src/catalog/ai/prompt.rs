@@ -2,8 +2,10 @@ use super::llm::ChatMessage;
 use chrono::{DateTime, FixedOffset, Utc};
 use serde::Deserialize;
 use sn_domain::access::ClientChannel;
+use sn_domain::client::Locale;
 use sn_domain::format;
 use sn_domain::money::{Currency, Money};
+use sn_domain::promotion::{discounted, running_for, until_text};
 use sn_domain::settings::{ConnectMode, CoreSettings};
 use sn_domain::subscription::{Subscription, SubscriptionKind, SubscriptionStatus};
 use sn_domain::support::{HandoffReason, MessageAuthor, TicketMessage};
@@ -102,6 +104,8 @@ pub async fn facts(
     let tariffs = db.tariffs().list(false).await?;
     let ids: Vec<_> = tariffs.iter().map(|t| t.id).collect();
     let channels = db.tariffs().channels(&ids).await?;
+    let now = crate::catalog::db_now(db).await?;
+    let running = db.promotions().running(now).await?;
     let mut prices: Vec<i64> = vec![0];
     let mut lines = Vec::new();
     lines.push(format!("Сервис: {}.", settings.brand_name.trim()));
@@ -152,6 +156,28 @@ pub async fn facts(
                 })
                 .collect();
             line.push_str(&format!(" Сроки и цены: {}.", periods.join("; ")));
+            if let Some(promotion) = running_for(&running, tariff.id, now) {
+                let promoted: Vec<String> = tariff
+                    .offered_periods(currency)
+                    .into_iter()
+                    .filter_map(|p| {
+                        let price = discounted(p.price(currency)?, promotion.percent);
+                        prices.push(price.minor);
+                        Some(format!(
+                            "{} — {}",
+                            format::days(p.days),
+                            format::money(price)
+                        ))
+                    })
+                    .collect();
+                line.push_str(&format!(
+                    " Сейчас идёт акция «{}» {}: скидка {}%, цены по акции: {}.",
+                    promotion.name,
+                    until_text(promotion.ends_at, settings.remna_offset(), Locale::Ru, now),
+                    promotion.percent,
+                    promoted.join("; ")
+                ));
+            }
             if let Some(extra) = &tariff.devices.extra
                 && extra.max > 0
                 && let Some(price) = extra.monthly.get(currency)

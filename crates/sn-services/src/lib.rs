@@ -45,6 +45,7 @@ pub mod oauth;
 pub mod own_css;
 pub mod pause;
 pub mod private_files;
+pub mod promotions;
 pub mod remna_link;
 pub mod remna_sync;
 pub mod remna_transfer;

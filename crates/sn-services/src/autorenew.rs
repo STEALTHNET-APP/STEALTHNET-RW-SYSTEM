@@ -631,6 +631,8 @@ impl<'a> AutoRenew<'a> {
         let adjustments = modules
             .quote_adjustments(&self.services.module_context(), &hook)
             .await?;
+        let promotion =
+            crate::promotions::running_terms(tx, tariff_id, self.services.now()).await?;
         let quote = quote(&QuoteRequest {
             currency,
             tariff: &tariff,
@@ -638,6 +640,7 @@ impl<'a> AutoRenew<'a> {
             extra_devices,
             sell_extra_devices: selling,
             adjustments: &adjustments,
+            promotion: promotion.as_ref(),
         })?;
         let total = quote.total;
         Ok((
