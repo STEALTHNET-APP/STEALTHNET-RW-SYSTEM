@@ -4,7 +4,10 @@ use chrono::Duration;
 use serde_json::json;
 use sn_domain::ids::PaymentId;
 use sn_domain::payment::{AmountCheck, check_paid_amount};
-use wiremock::matchers::{body_json, header, header_exists, method, path};
+use wiremock::matchers::{
+    any, body_json, body_partial_json, header, header_exists, method, path, query_param,
+    query_param_is_missing,
+};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const KEY: &str = "rpk_live_abc123def456";
@@ -1153,5 +1156,270 @@ async fn проверка_подключения_сверяет_адрес_ув�
             .filter(|r| r.url.path().starts_with("/api/v1/terminals"))
             .count(),
         1
+    );
+}
+
+fn with_terminal(terminal: &str) -> ProviderConfig {
+    let mut settings = settings();
+    settings.set("terminal_id", json!(terminal));
+    settings
+}
+
+fn paid_object() -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(json!({
+        "payment_id": PAY, "order_id": PAYMENT.to_string(), "amount": "1500.00",
+        "payment_currency": "RUB", "status": "paid"
+    }))
+}
+
+#[test]
+fn id_кассы_в_настройках_rollypay() {
+    let provider = RollyPay::new();
+    let field = provider
+        .settings_schema()
+        .into_iter()
+        .find(|f| f.key == "terminal_id")
+        .unwrap();
+    assert_eq!(field.label, "ID кассы (Terminal ID)");
+    assert!(!field.required);
+    assert!(!field.is_secret());
+    assert!(field.hint.contains("UUID"));
+    for good in [
+        TERMINAL.to_string(),
+        TERMINAL.to_uppercase(),
+        format!(" {TERMINAL} "),
+        "  ".into(),
+    ] {
+        assert!(provider.is_configured(&with_terminal(&good)), "{good}");
+    }
+    for bad in [
+        "abc",
+        "d290f1ee6c544b0190e6d701748f0851",
+        "{d290f1ee-6c54-4b01-90e6-d701748f0851}",
+        "d290f1ee-6c54-4b01-90e6-d701748f085g",
+        "d290f1ee-6c54-4b01-90e6-d701748f0851&status=paid",
+    ] {
+        assert!(!provider.is_configured(&with_terminal(bad)), "{bad}");
+        let Err(PaymentError::NotConfigured(reason)) =
+            provider.validate_settings(&with_terminal(bad))
+        else {
+            panic!("принят ID кассы {bad}");
+        };
+        assert!(reason.contains("UUID"), "{reason}");
+    }
+    assert_eq!(
+        scoped("/api/v1/balance", &with_terminal(TERMINAL)),
+        format!("/api/v1/balance?terminal_id={TERMINAL}")
+    );
+    assert_eq!(scoped("/api/v1/balance", &settings()), "/api/v1/balance");
+    assert_eq!(
+        scoped("/api/v1/balance", &with_terminal("abc")),
+        "/api/v1/balance"
+    );
+}
+
+#[tokio::test]
+async fn id_кассы_уходит_во_все_запросы() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/payments"))
+        .and(body_partial_json(json!({
+            "terminal_id": TERMINAL, "order_id": PAYMENT.to_string(), "amount": "1500.00"
+        })))
+        .respond_with(created(&PAYMENT.to_string(), "1500.00"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/api/v1/payments/{PAY}")))
+        .and(query_param("terminal_id", TERMINAL))
+        .respond_with(paid_object())
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/balance"))
+        .and(query_param("terminal_id", TERMINAL))
+        .and(header("X-API-Key", KEY))
+        .respond_with(balance())
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/api/v1/terminals/{TERMINAL}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": TERMINAL, "callback_url": PANEL_HOOK
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let config = with_terminal(TERMINAL);
+    let provider = RollyPay::with_api_base(server.uri());
+    create(&server, &config, Some("sbp")).await.unwrap();
+    let polled = provider.fetch_status(&config, PAY).await.unwrap().unwrap();
+    assert_eq!(polled.status, ProviderStatus::Paid);
+    let check = hooks_of_with(&server, &config).await;
+    assert_eq!(check.status, CheckStatus::Ok, "{}", check.summary);
+    assert_eq!(check.hooks[0].state, HookState::Same);
+    assert!(
+        check.details[0].contains(&format!("ID кассы {TERMINAL} подходит к API-ключу")),
+        "{:?}",
+        check.details
+    );
+    let sent = server.received_requests().await.unwrap();
+    assert_eq!(sent.len(), 4);
+    for request in sent {
+        let in_query = request
+            .url
+            .query_pairs()
+            .any(|(k, v)| k == "terminal_id" && v == TERMINAL);
+        let in_body = serde_json::from_slice::<serde_json::Value>(&request.body)
+            .is_ok_and(|b| b["terminal_id"] == TERMINAL);
+        let in_path = request.url.path() == format!("/api/v1/terminals/{TERMINAL}");
+        assert!(in_query || in_body || in_path, "{}", request.url);
+    }
+}
+
+async fn hooks_of_with(server: &MockServer, config: &ProviderConfig) -> ConnectionCheck {
+    RollyPay::with_api_base(server.uri())
+        .check_connection(
+            config,
+            &CheckContext {
+                webhook_url: Some(PANEL_HOOK.into()),
+            },
+        )
+        .await
+}
+
+#[tokio::test]
+async fn без_id_кассы_запросы_как_раньше() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/payments"))
+        .respond_with(created(&PAYMENT.to_string(), "1500.00"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/api/v1/payments/{PAY}")))
+        .and(query_param_is_missing("terminal_id"))
+        .respond_with(paid_object())
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/balance"))
+        .and(query_param_is_missing("terminal_id"))
+        .respond_with(balance())
+        .expect(1)
+        .mount(&server)
+        .await;
+    let provider = RollyPay::with_api_base(server.uri());
+    create(&server, &settings(), None).await.unwrap();
+    provider
+        .fetch_status(&settings(), PAY)
+        .await
+        .unwrap()
+        .unwrap();
+    let check = provider
+        .check_connection(&settings(), &CheckContext::default())
+        .await;
+    assert_eq!(check.status, CheckStatus::Ok, "{}", check.summary);
+    assert!(
+        check.details[0].contains(TERMINAL) && check.details[0].contains("Впишите этот ID"),
+        "{:?}",
+        check.details
+    );
+    let sent = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&sent[0].body).unwrap();
+    assert_eq!(body.get("terminal_id"), None);
+}
+
+#[tokio::test]
+async fn rollypay_просит_id_кассы() {
+    let server = MockServer::start().await;
+    Mock::given(any())
+        .respond_with(problem(400, "terminal_id is required"))
+        .mount(&server)
+        .await;
+    let provider = RollyPay::with_api_base(server.uri());
+    let check = provider
+        .check_connection(&settings(), &CheckContext::default())
+        .await;
+    assert_eq!(check.status, CheckStatus::SettingsRejected);
+    assert_eq!(
+        check.summary,
+        "RollyPay просит ID кассы: заполните поле «ID кассы (Terminal ID)»"
+    );
+    assert!(check.details[0].contains("UUID"), "{:?}", check.details);
+    let required = Err(PaymentError::Rejected(TERMINAL_REQUIRED.into()));
+    assert_eq!(
+        create(&server, &settings(), None).await.map(|_| ()),
+        required
+    );
+    assert_eq!(
+        provider.fetch_status(&settings(), PAY).await.map(|_| ()),
+        required
+    );
+    let insisted = provider
+        .check_connection(&with_terminal(TERMINAL), &CheckContext::default())
+        .await;
+    assert_eq!(insisted.status, CheckStatus::SettingsRejected);
+    assert!(
+        insisted.summary.contains(TERMINAL) && insisted.summary.contains("terminal_id is required"),
+        "{}",
+        insisted.summary
+    );
+}
+
+#[tokio::test]
+async fn id_кассы_не_подходит_к_ключу() {
+    let other = "5f1d7c3a-1111-4222-8333-944455556666";
+    for (status, text) in [
+        (403, "forbidden"),
+        (404, "not found"),
+        (400, "terminal not found"),
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/balance"))
+            .respond_with(problem(status, text))
+            .mount(&server)
+            .await;
+        let check = RollyPay::with_api_base(server.uri())
+            .check_connection(&with_terminal(other), &CheckContext::default())
+            .await;
+        assert_eq!(check.status, CheckStatus::SettingsRejected, "{status}");
+        assert!(
+            check.summary.contains(other) && check.summary.contains("не подходит к API-ключу"),
+            "{}",
+            check.summary
+        );
+    }
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/balance"))
+        .respond_with(problem(403, "forbidden"))
+        .mount(&server)
+        .await;
+    let keys = RollyPay::with_api_base(server.uri())
+        .check_connection(&settings(), &CheckContext::default())
+        .await;
+    assert_eq!(keys.status, CheckStatus::KeysRejected);
+    let foreign = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/balance"))
+        .and(query_param("terminal_id", other))
+        .respond_with(balance())
+        .mount(&foreign)
+        .await;
+    let check = RollyPay::with_api_base(foreign.uri())
+        .check_connection(&with_terminal(other), &CheckContext::default())
+        .await;
+    assert_eq!(check.status, CheckStatus::SettingsRejected);
+    assert!(
+        check.summary.contains(other) && check.summary.contains(TERMINAL),
+        "{}",
+        check.summary
     );
 }

@@ -2,7 +2,7 @@ use super::*;
 use sn_domain::payment::PaymentStatus;
 use sn_payments::providers::{Balance, RollyPay, rollypay_signature};
 use sn_store::InboxOutcome;
-use wiremock::matchers::{header, header_exists, method, path};
+use wiremock::matchers::{header, header_exists, method, path, query_param};
 use wiremock::{Mock, MockServer, Respond, ResponseTemplate};
 
 const KEY: &str = "rpk_live_e2e_9c1f";
@@ -262,5 +262,111 @@ async fn rollypay_счёт_уведомление_повтор_чужая_сум
         ]
     );
     drop(conn);
+    h.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn rollypay_id_кассы_из_настроек_уходит_в_счёт() {
+    let terminal = "d290f1ee-6c54-4b01-90e6-d701748f0851";
+    let api = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/balance"))
+        .and(query_param("terminal_id", terminal))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "terminal_id": terminal, "available_usdt": "0.00", "hold_usdt": "0.00"
+        })))
+        .mount(&api)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/api/v1/terminals/{terminal}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": terminal,
+            "callback_url": "https://panel.example.com/api/webhooks/pay/rollypay"
+        })))
+        .mount(&api)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/payments"))
+        .and(header("X-API-Key", KEY))
+        .respond_with(Echo)
+        .mount(&api)
+        .await;
+    let Some(h) = rolly_http(&api).await else {
+        return;
+    };
+    let owner = h.owner().await;
+    let (status, body) = h
+        .write(
+            Method::PUT,
+            "/api/admin/settings/core",
+            &owner,
+            json!({ "currency": "RUB" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let save = |terminal_id: &'static str| {
+        json!({"enabled": true, "config": {
+            "api_key": KEY, "signing_secret": SECRET, "terminal_id": terminal_id
+        }})
+    };
+    let (status, refused) = h
+        .write(
+            Method::PUT,
+            "/api/admin/payments/providers/rollypay",
+            &owner,
+            save("касса-1"),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+    assert_eq!(refused["error"]["code"], "settings.provider_invalid");
+    assert!(
+        refused["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("UUID")),
+        "{refused}"
+    );
+    let (status, body) = h
+        .write(
+            Method::PUT,
+            "/api/admin/payments/providers/rollypay",
+            &owner,
+            save(terminal),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, list) = h.get("/api/admin/payments/providers", &owner).await;
+    let rolly = list["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == "rollypay")
+        .unwrap();
+    assert_eq!(rolly["settings"]["terminal_id"], terminal);
+    let (status, check) = h
+        .write(
+            Method::POST,
+            "/api/admin/payments/providers/rollypay/check",
+            &owner,
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{check}");
+    assert_eq!(check["status"], "ok", "{check}");
+    assert_eq!(check["hooks"][0]["state"], "same", "{check}");
+
+    let client = h.client(5_093_118_602).await;
+    let token = h.client_token(client).await;
+    let public = top_up(&h, &token, "500").await;
+    let created: Vec<Value> = api
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.url.path() == "/api/v1/payments")
+        .map(|r| serde_json::from_slice(&r.body).unwrap())
+        .collect();
+    assert_eq!(created.len(), 1);
+    assert_eq!(created[0]["terminal_id"], terminal);
+    assert_eq!(created[0]["order_id"], public.to_string());
     h.db.cleanup().await;
 }

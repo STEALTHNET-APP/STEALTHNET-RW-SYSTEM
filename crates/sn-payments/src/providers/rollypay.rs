@@ -13,8 +13,12 @@ use uuid::Uuid;
 
 const API: &str = "https://rollypay.io";
 const API_KEY: &str = "api_key";
+const TERMINAL_ID: &str = "terminal_id";
 const SIGNING_SECRET: &str = "signing_secret";
 const TEST_MODE: &str = "test_mode";
+const TERMINAL_REQUIRED: &str =
+    "RollyPay просит ID кассы: заполните «ID кассы (Terminal ID)» в настройках RollyPay";
+const TERMINAL_WHERE: &str = "ID кассы — UUID вида d290f1ee-6c54-4b01-90e6-d701748f0851. Ищите его в кабинете RollyPay в настройках кассы, там же, где API-ключ; если не нашли, спросите у поддержки RollyPay";
 const WINDOW_SECONDS: i64 = 15 * 60;
 const DRIFT_WARN_SECONDS: i64 = 5 * 60;
 const KEY_MAX: usize = 512;
@@ -193,7 +197,15 @@ fn error_text(body: &[u8]) -> Option<String> {
         .map(str::to_string)
 }
 
+fn terminal_required(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("terminal_id") && lower.contains("required")
+}
+
 fn plain(message: &str) -> String {
+    if terminal_required(message) {
+        return TERMINAL_REQUIRED.into();
+    }
     match message.to_ascii_lowercase().as_str() {
         "terminal not found" => "RollyPay не нашла кассу этого API-ключа".into(),
         "payment cap exceeded" => "превышен лимит платежей кассы RollyPay".into(),
@@ -217,6 +229,58 @@ fn failure(reply: &util::Reply) -> PaymentError {
 
 fn key_ok(value: &str) -> bool {
     value.len() <= KEY_MAX && value.bytes().all(|b| b.is_ascii_graphic())
+}
+
+fn terminal_ok(value: &str) -> bool {
+    value.len() == 36 && Uuid::parse_str(value).is_ok()
+}
+
+fn terminal_of(config: &ProviderConfig) -> Option<&str> {
+    config.get(TERMINAL_ID).filter(|t| terminal_ok(t))
+}
+
+fn scoped(path: &str, config: &ProviderConfig) -> String {
+    match terminal_of(config) {
+        Some(terminal) => format!("{path}?terminal_id={terminal}"),
+        None => path.to_string(),
+    }
+}
+
+fn terminal_problem(reply: &util::Reply, configured: Option<&str>) -> Option<ConnectionCheck> {
+    if reply.is_success() || nonce_reused(reply) {
+        return None;
+    }
+    let message = error_text(&reply.body);
+    let said = message
+        .as_deref()
+        .map(|m| format!("«{}»", util::clip(m, 120)))
+        .unwrap_or_else(|| format!("HTTP {}", reply.status));
+    if message.as_deref().is_some_and(terminal_required) {
+        let check = match configured {
+            None => ConnectionCheck::new(
+                CheckStatus::SettingsRejected,
+                "RollyPay просит ID кассы: заполните поле «ID кассы (Terminal ID)»",
+            ),
+            Some(terminal) => ConnectionCheck::new(
+                CheckStatus::SettingsRejected,
+                format!("RollyPay не приняла ID кассы {terminal}: ответ {said}"),
+            ),
+        };
+        return Some(check.detail(TERMINAL_WHERE));
+    }
+    let terminal = configured?;
+    let unknown = message
+        .as_deref()
+        .is_some_and(|m| m.to_ascii_lowercase().contains("terminal"));
+    (matches!(reply.status, 403 | 404) || unknown).then(|| {
+        ConnectionCheck::new(
+            CheckStatus::SettingsRejected,
+            format!("ID кассы {terminal} не подходит к API-ключу: RollyPay ответила {said}"),
+        )
+        .detail(
+            "ID кассы и API-ключ должны быть от одной кассы. Проверьте ID или оставьте поле пустым, если RollyPay определяет кассу по ключу",
+        )
+    })
 }
 
 fn placeholder(address: &str) -> bool {
@@ -328,7 +392,7 @@ impl RollyPay {
             .call(
                 config,
                 reqwest::Method::GET,
-                &format!("/api/v1/payments/{id}"),
+                &scoped(&format!("/api/v1/payments/{id}"), config),
                 None,
             )
             .await?
@@ -403,6 +467,12 @@ impl PaymentProvider for RollyPay {
                 "API-ключ",
                 "Выдаётся при создании кассы RollyPay, начинается с rpk_",
             ),
+            SettingField::text(
+                TERMINAL_ID,
+                "ID кассы (Terminal ID)",
+                "UUID кассы вида d290f1ee-6c54-4b01-90e6-d701748f0851: кабинет RollyPay, настройки кассы, там же, где API-ключ, или поддержка RollyPay. Пустое поле — касса берётся по API-ключу",
+            )
+            .optional(),
             SettingField::secret(
                 SIGNING_SECRET,
                 "Ключ подписи уведомлений",
@@ -429,6 +499,12 @@ impl PaymentProvider for RollyPay {
                     "{title} RollyPay вставлен с лишними символами: нужны латинские буквы, цифры и знаки без пробелов"
                 )));
             }
+        }
+        if config.get(TERMINAL_ID).is_some_and(|t| !terminal_ok(t)) {
+            return Err(PaymentError::NotConfigured(
+                "ID кассы RollyPay — UUID вида d290f1ee-6c54-4b01-90e6-d701748f0851, без пробелов и скобок"
+                    .into(),
+            ));
         }
         Ok(())
     }
@@ -459,6 +535,9 @@ impl PaymentProvider for RollyPay {
                 Json::from(request.client.public_id.to_string()),
             ),
         ]);
+        if let Some(terminal) = terminal_of(config) {
+            body.push("terminal_id", Json::from(terminal));
+        }
         if let Some(code) = chosen {
             body.push("payment_method", Json::from(code));
         }
@@ -574,14 +653,23 @@ impl PaymentProvider for RollyPay {
         config: &ProviderConfig,
         context: &CheckContext,
     ) -> ConnectionCheck {
+        let configured = terminal_of(config);
         let answer = match self
-            .call(config, reqwest::Method::GET, "/api/v1/balance", None)
+            .call(
+                config,
+                reqwest::Method::GET,
+                &scoped("/api/v1/balance", config),
+                None,
+            )
             .await
         {
             Ok(answer) => answer,
             Err(err) => return ConnectionCheck::failed(&err),
         };
         let reply = &answer.reply;
+        if let Some(problem) = terminal_problem(reply, configured) {
+            return problem;
+        }
         if matches!(reply.status, 401 | 403) && !nonce_reused(reply) {
             return ConnectionCheck::new(CheckStatus::KeysRejected, "RollyPay не приняла API-ключ")
                 .detail(
@@ -598,11 +686,31 @@ impl PaymentProvider for RollyPay {
             }
             Err(err) => return ConnectionCheck::failed(&err),
         };
-        let mut check = ConnectionCheck::ok("API-ключ принят RollyPay");
-        let terminal = text(&balance, "terminal_id").map(|t| util::clip(t, 64));
-        if let Some(terminal) = &terminal {
-            check = check.detail(format!("Ключ относится к кассе {terminal}"));
+        let found = text(&balance, "terminal_id").map(|t| util::clip(t, 64));
+        if let (Some(configured), Some(found)) = (configured, found.as_deref())
+            && !found.eq_ignore_ascii_case(configured)
+        {
+            return ConnectionCheck::new(
+                CheckStatus::SettingsRejected,
+                format!(
+                    "ID кассы в настройках ({configured}) не совпадает с кассой API-ключа ({found})"
+                ),
+            )
+            .detail("Укажите ID кассы, к которой выдан этот API-ключ, или оставьте поле пустым");
         }
+        let mut check = ConnectionCheck::ok("API-ключ принят RollyPay");
+        match (configured, found.as_deref()) {
+            (Some(terminal), _) => {
+                check = check.detail(format!("ID кассы {terminal} подходит к API-ключу"));
+            }
+            (None, Some(found)) => {
+                check = check.detail(format!(
+                    "Ключ относится к кассе {found}. Впишите этот ID в поле «ID кассы (Terminal ID)»: RollyPay может требовать его в запросах"
+                ));
+            }
+            (None, None) => {}
+        }
+        let terminal = configured.map(str::to_string).or(found);
         if config.flag(TEST_MODE) {
             check = check.detail(
                 "Включён тестовый режим: счета создаются тестовыми, деньги не списываются. Перед приёмом настоящих оплат выключите его",
