@@ -698,6 +698,10 @@ pub trait PaymentProvider: Send + Sync + 'static {
         None
     }
 
+    fn method_ready(&self, _config: &ProviderConfig, _method: Option<&str>) -> bool {
+        true
+    }
+
     async fn cancel_renewal(
         &self,
         _config: &ProviderConfig,

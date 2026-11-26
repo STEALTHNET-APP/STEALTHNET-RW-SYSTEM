@@ -256,6 +256,9 @@ impl Lava {
         let Some(offer) = offer_id(config) else {
             return false;
         };
+        if bound_offer(config, offer) {
+            return true;
+        }
         for visibility in ["ALL", "ONLY_HIDDEN", "ONLY_VISIBLE"] {
             match self.offer_product(config, offer, visibility).await {
                 Ok(Some(found)) => return found.subscription,
@@ -690,79 +693,99 @@ impl Lava {
     async fn renewal_checks(
         &self,
         config: &ProviderConfig,
-        mut check: ConnectionCheck,
+        check: ConnectionCheck,
     ) -> ConnectionCheck {
         if !config.flag(RECURRING) {
             return check;
         }
-        let bound = plans(config);
-        let catalog = match self.subscription_catalog(config).await {
-            Ok(catalog) => catalog,
-            Err(err) => {
-                return check.detail(format!("Список подписок Lava.top не загрузился: {err}"));
-            }
-        };
-        let offers: usize = catalog
+        let catalog = self.subscription_catalog(config).await;
+        bound_checks(config, check, catalog)
+    }
+
+    async fn subscriptions_only_check(&self, config: &ProviderConfig) -> ConnectionCheck {
+        if !subscriptions_only(config) {
+            return ConnectionCheck::new(
+                CheckStatus::SettingsRejected,
+                "Не задан «ID оффера», и подписки Lava.top к срокам не привязаны",
+            )
+            .detail("Укажите оффер продукта с включённой «Ценой по запросу API» или включите «Автопродление через Lava.top» и привяжите подписку");
+        }
+        match self.subscription_catalog(config).await {
+            Err(err) if util::keys_refused(&err) => keys_refused_check(),
+            Err(err) => ConnectionCheck::failed(&err),
+            catalog => bound_checks(
+                config,
+                ConnectionCheck::ok("API-ключ принят. Разовые оплаты выключены: не задан ID оффера")
+                    .detail("Для них нужен отдельный продукт с «Ценой по запросу API». «Карта с автопродлением» у привязанных сроков работает"),
+                catalog,
+            ),
+        }
+    }
+}
+
+fn bound_checks(
+    config: &ProviderConfig,
+    mut check: ConnectionCheck,
+    catalog: PaymentResult<Vec<serde_json::Value>>,
+) -> ConnectionCheck {
+    let bound = plans(config);
+    let catalog = match catalog {
+        Ok(catalog) => catalog,
+        Err(err) => {
+            return check.detail(format!("Список подписок Lava.top не загрузился: {err}"));
+        }
+    };
+    check = check.detail(format!(
+        "Подписки Lava.top: к срокам тарифов привязано {}",
+        bound.len()
+    ));
+    for plan in &bound {
+        let price = catalog
             .iter()
-            .map(|product| {
+            .flat_map(|product| {
                 product
                     .get("offers")
                     .and_then(serde_json::Value::as_array)
-                    .map_or(0, Vec::len)
+                    .cloned()
+                    .unwrap_or_default()
             })
-            .sum();
-        check = check.detail(format!(
-            "Подписки Lava.top: найдено {offers}, к срокам тарифов привязано {}",
-            bound.len()
-        ));
-        for plan in &bound {
-            let price = catalog
-                .iter()
-                .flat_map(|product| {
-                    product
-                        .get("offers")
-                        .and_then(serde_json::Value::as_array)
-                        .cloned()
-                        .unwrap_or_default()
-                })
-                .filter(|offer| {
-                    offer.get("id").and_then(serde_json::Value::as_str) == Some(plan.offer.as_str())
-                })
-                .flat_map(|offer| {
-                    offer
-                        .get("prices")
-                        .and_then(serde_json::Value::as_array)
-                        .cloned()
-                        .unwrap_or_default()
-                })
-                .find(|price| {
-                    price.get("periodicity").and_then(serde_json::Value::as_str)
-                        == Some(plan.periodicity.as_str())
-                        && price.get("currency").and_then(serde_json::Value::as_str)
-                            == Some(plan.amount.currency.code())
-                })
-                .and_then(|price| price.get("amount").and_then(serde_json::Value::as_i64));
-            match price {
-                None => {
-                    check = check.detail(format!(
+            .filter(|offer| {
+                offer.get("id").and_then(serde_json::Value::as_str) == Some(plan.offer.as_str())
+            })
+            .flat_map(|offer| {
+                offer
+                    .get("prices")
+                    .and_then(serde_json::Value::as_array)
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .find(|price| {
+                price.get("periodicity").and_then(serde_json::Value::as_str)
+                    == Some(plan.periodicity.as_str())
+                    && price.get("currency").and_then(serde_json::Value::as_str)
+                        == Some(plan.amount.currency.code())
+            })
+            .and_then(|price| price.get("amount").and_then(serde_json::Value::as_i64));
+        match price {
+            None => {
+                check = check.detail(format!(
                         "Подписки «{}» ({}) больше нет в Lava.top: кнопки автопродления у её срока не будет",
                         plan.name, plan.every
                     ));
-                }
-                Some(minor) if minor != plan.amount.minor => {
-                    check = check.detail(format!(
+            }
+            Some(minor) if minor != plan.amount.minor => {
+                check = check.detail(format!(
                         "У подписки «{}» ({}) в Lava.top цена {}, а в привязке {}: обновите список из Lava.top и сравните с ценой срока",
                         plan.name,
                         plan.every,
                         util::amount_text(Money::new(minor, plan.amount.currency).into()),
                         util::amount_text(plan.amount.into())
                     ));
-                }
-                Some(_) => {}
             }
+            Some(_) => {}
         }
-        check
     }
+    check
 }
 
 fn next_before(next: &str) -> Option<String> {
@@ -853,7 +876,7 @@ struct FoundOffer {
     subscription: bool,
 }
 
-const SUBSCRIPTION_OFFER: &str = "в «ID оффера» в настройках Lava.top стоит оффер подписки. Для разовой оплаты нужен оффер отдельного продукта с включённой «Ценой по запросу API», а подписки для «Карты с автопродлением» привязываются в списке «Подписки Lava.top»";
+const SUBSCRIPTION_OFFER: &str = "в «ID оффера» в настройках Lava.top стоит оффер подписки. Укажите там оффер отдельного продукта с включённой «Ценой по запросу API» или очистите поле, если нужны только подписки";
 
 fn subscription_check(title: &str) -> ConnectionCheck {
     ConnectionCheck::new(
@@ -864,7 +887,22 @@ fn subscription_check(title: &str) -> ConnectionCheck {
             format!("API-ключ принят, но в «ID оффера» стоит оффер подписки «{title}»")
         },
     )
-    .detail("Для разовой оплаты («Карта», «СБП», «PayPal») нужен оффер отдельного продукта с включённой «Ценой по запросу API». Подписки для «Карты с автопродлением» привязываются в списке «Подписки Lava.top», это поле для них не нужно")
+    .detail("С ним не работают разовые оплаты («Карта», «СБП», «PayPal»). Укажите в поле оффер отдельного продукта с включённой «Ценой по запросу API» или очистите поле, если нужны только подписки: «Карта с автопродлением» у привязанных сроков работает без него")
+}
+
+fn keys_refused_check() -> ConnectionCheck {
+    ConnectionCheck::new(CheckStatus::KeysRejected, "Lava.top не приняла API-ключ")
+        .detail("Ключ создаётся в кабинете Lava.top: Интеграции → API → Настроить API key")
+}
+
+fn subscriptions_only(config: &ProviderConfig) -> bool {
+    config.flag(RECURRING) && !plans(config).is_empty()
+}
+
+fn bound_offer(config: &ProviderConfig, offer: Uuid) -> bool {
+    plans(config)
+        .iter()
+        .any(|plan| Uuid::parse_str(&plan.offer).ok() == Some(offer))
 }
 
 fn offer_id(config: &ProviderConfig) -> Option<Uuid> {
@@ -1146,8 +1184,9 @@ impl PaymentProvider for Lava {
             SettingField::text(
                 "offer_id",
                 "ID оффера",
-                "Оффер разового продукта с включённой «Цена по запросу API», не подписки",
-            ),
+                "Оффер разового продукта с включённой «Цена по запросу API», не подписки. Нужен для «Карты» и «СБП». Если продаёте только подписками Lava.top, оставьте пустым",
+            )
+            .optional(),
             SettingField::secret(
                 "webhook_key",
                 "Ключ вебхука",
@@ -1167,14 +1206,24 @@ impl PaymentProvider for Lava {
     }
 
     fn is_configured(&self, config: &ProviderConfig) -> bool {
-        config.get("api_key").is_some() && offer_id(config).is_some()
+        config.get("api_key").is_some()
+            && (offer_id(config).is_some() || subscriptions_only(config))
+    }
+
+    fn method_ready(&self, config: &ProviderConfig, method: Option<&str>) -> bool {
+        method == Some(RECURRING_METHOD) || offer_id(config).is_some()
     }
 
     fn validate_settings(&self, config: &ProviderConfig) -> PaymentResult<()> {
         util::require_fields(&self.settings_schema(), config)?;
-        if offer_id(config).is_none() {
+        if config.get("offer_id").is_some() && offer_id(config).is_none() {
             return Err(PaymentError::NotConfigured(
                 "ID оффера Lava.top — это UUID из кабинета".into(),
+            ));
+        }
+        if offer_id(config).is_none() && !subscriptions_only(config) {
+            return Err(PaymentError::NotConfigured(
+                "укажите «ID оффера» — оффер продукта с «Ценой по запросу API», или включите «Автопродление через Lava.top» и привяжите подписку".into(),
             ));
         }
         if config.get("webhook_key").is_some_and(|key| {
@@ -1489,6 +1538,9 @@ impl PaymentProvider for Lava {
         config: &ProviderConfig,
         _context: &CheckContext,
     ) -> ConnectionCheck {
+        if config.get("offer_id").is_none() {
+            return self.subscriptions_only_check(config).await;
+        }
         let check = self.offer_check(config).await;
         if check.status == CheckStatus::KeysRejected || check.status == CheckStatus::Unreachable {
             return check;
@@ -1504,12 +1556,11 @@ impl Lava {
                 "ID оффера Lava.top — это UUID из кабинета".into(),
             ));
         };
-        let refused = || {
-            ConnectionCheck::new(CheckStatus::KeysRejected, "Lava.top не приняла API-ключ")
-                .detail("Ключ создаётся в кабинете Lava.top: Интеграции → API → Настроить API key")
-        };
+        let refused = keys_refused_check;
         match self.offer_product(config, offer, "ONLY_HIDDEN").await {
-            Ok(Some(found)) if found.subscription => return subscription_check(&found.title),
+            Ok(Some(found)) if found.subscription || bound_offer(config, offer) => {
+                return subscription_check(&found.title);
+            }
             Ok(Some(found)) => {
                 return ConnectionCheck::ok(if found.title.is_empty() {
                     "API-ключ принят, оффер найден в Lava.top".to_string()
@@ -1522,7 +1573,9 @@ impl Lava {
             Err(err) => return ConnectionCheck::failed(&err),
         }
         match self.offer_product(config, offer, "ONLY_VISIBLE").await {
-            Ok(Some(found)) if found.subscription => subscription_check(&found.title),
+            Ok(Some(found)) if found.subscription || bound_offer(config, offer) => {
+                subscription_check(&found.title)
+            }
             Ok(Some(found)) => ConnectionCheck::new(
                 CheckStatus::SettingsRejected,
                 if found.title.is_empty() {
@@ -3294,7 +3347,8 @@ mod tests {
         );
         let details = check.details.join("\n");
         assert!(details.contains("Ценой по запросу API"), "{details}");
-        assert!(details.contains("Подписки Lava.top"), "{details}");
+        assert!(details.contains("очистите поле"), "{details}");
+        assert!(!details.contains("найдено"), "{details}");
         assert!(!check.summary.contains("не включена"), "{}", check.summary);
     }
 
@@ -3324,7 +3378,7 @@ mod tests {
             panic!("ожидался понятный отказ: {refused:?}");
         };
         assert!(text.contains("стоит оффер подписки"), "{text}");
-        assert!(text.contains("Подписки Lava.top"), "{text}");
+        assert!(text.contains("очистите поле"), "{text}");
 
         let plain = MockServer::start().await;
         Mock::given(method("POST"))
@@ -3346,6 +3400,141 @@ mod tests {
                 .create_invoice(&settings(), &invoice(rub(49_900), Some(EMAIL)))
                 .await,
             Err(PaymentError::Rejected("Invalid email".into()))
+        );
+    }
+
+    fn subscriptions_only_settings(plans: Value) -> ProviderConfig {
+        config(&[
+            ("api_key", json!("lava-api-key")),
+            ("webhook_key", json!(KEY)),
+            ("recurring", json!(true)),
+            ("plans", plans),
+        ])
+    }
+
+    #[test]
+    fn lava_без_оффера_работает_только_подписками() {
+        let lava = Lava::new();
+        let only = subscriptions_only_settings(json!([plan_entry(
+            SUB_OFFER, "MONTHLY", 29_900, "RUB", 3, 7
+        )]));
+        assert!(lava.validate_settings(&only).is_ok());
+        assert!(lava.is_configured(&only));
+        assert!(lava.method_ready(&only, Some(RECURRING_METHOD)));
+        assert!(!lava.method_ready(&only, Some("card")));
+        assert!(!lava.method_ready(&only, Some("sbp")));
+        assert!(!lava.method_ready(&only, None));
+        assert!(lava.method_ready(&settings(), Some("card")));
+        assert!(lava.method_ready(&settings(), None));
+        for bare in [
+            subscriptions_only_settings(json!([])),
+            config(&[
+                ("api_key", json!("lava-api-key")),
+                ("webhook_key", json!(KEY)),
+            ]),
+        ] {
+            let refused = lava.validate_settings(&bare).unwrap_err().to_string();
+            assert!(refused.contains("укажите «ID оффера»"), "{refused}");
+            assert!(!lava.is_configured(&bare));
+        }
+        let mut wrong = settings();
+        wrong.set("offer_id", json!("не-uuid"));
+        assert!(
+            lava.validate_settings(&wrong)
+                .unwrap_err()
+                .to_string()
+                .contains("UUID")
+        );
+    }
+
+    #[tokio::test]
+    async fn проверка_lava_без_оффера_спокойно_говорит_о_выключенных_разовых_оплатах() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v2/products"))
+            .and(query_param("productTypes", "SUBSCRIPTION"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "items": [subscription_product(SUB_OFFER)], "nextPage": null
+            })))
+            .mount(&server)
+            .await;
+        let only = subscriptions_only_settings(json!([plan_entry(
+            SUB_OFFER, "MONTHLY", 34_900, "RUB", 3, 7
+        )]));
+        let check = Lava::with_api_base(server.uri())
+            .check_connection(&only, &CheckContext::default())
+            .await;
+        assert_eq!(check.status, CheckStatus::Ok, "{}", check.summary);
+        assert!(
+            check
+                .summary
+                .contains("Разовые оплаты выключены: не задан ID оффера"),
+            "{}",
+            check.summary
+        );
+        let details = check.details.join("\n");
+        assert!(details.contains("Ценой по запросу API"), "{details}");
+        assert!(
+            details.contains("к срокам тарифов привязано 1"),
+            "{details}"
+        );
+
+        let closed = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v2/products"))
+            .respond_with(
+                ResponseTemplate::new(401).set_body_json(json!({"error": "Unauthorized"})),
+            )
+            .mount(&closed)
+            .await;
+        let check = Lava::with_api_base(closed.uri())
+            .check_connection(&only, &CheckContext::default())
+            .await;
+        assert_eq!(check.status, CheckStatus::KeysRejected, "{}", check.summary);
+
+        let check = Lava::with_api_base(server.uri())
+            .check_connection(
+                &subscriptions_only_settings(json!([])),
+                &CheckContext::default(),
+            )
+            .await;
+        assert_eq!(check.status, CheckStatus::SettingsRejected);
+        assert!(
+            check.summary.contains("Не задан «ID оффера»"),
+            "{}",
+            check.summary
+        );
+    }
+
+    #[tokio::test]
+    async fn оффер_привязанной_подписки_в_поле_оффера_узнаётся_по_привязкам() {
+        let server = MockServer::start().await;
+        products(
+            &server,
+            "ONLY_HIDDEN",
+            None,
+            json!({"items": [], "nextPage": null}),
+        )
+        .await;
+        products(
+            &server,
+            "ONLY_VISIBLE",
+            None,
+            json!({"items": [product("VPN Стандарт", SUB_OFFER)], "nextPage": null}),
+        )
+        .await;
+        let mut config = recurring_settings(json!([plan_entry(
+            SUB_OFFER, "MONTHLY", 34_900, "RUB", 3, 7
+        )]));
+        config.set("offer_id", json!(SUB_OFFER));
+        let check = Lava::with_api_base(server.uri())
+            .check_connection(&config, &CheckContext::default())
+            .await;
+        assert_eq!(check.status, CheckStatus::SettingsRejected);
+        assert!(
+            check.summary.contains("стоит оффер подписки"),
+            "{}",
+            check.summary
         );
     }
 
@@ -3391,7 +3580,7 @@ mod tests {
         assert_eq!(check.status, CheckStatus::Ok, "{}", check.summary);
         let details = check.details.join("\n");
         assert!(
-            details.contains("найдено 1, к срокам тарифов привязано 2"),
+            details.contains("к срокам тарифов привязано 2"),
             "{details}"
         );
         assert!(details.contains("в Lava.top цена 349"), "{details}");

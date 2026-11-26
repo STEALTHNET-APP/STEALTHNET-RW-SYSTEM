@@ -1190,6 +1190,55 @@ async fn годовая_подписка_lava_на_360_дней_даёт_дос�
 }
 
 #[tokio::test]
+async fn без_оффера_lava_предлагает_только_карту_с_автопродлением() {
+    let server = MockServer::start().await;
+    let Some(kit) = lava_kit(&server).await else {
+        return;
+    };
+    let tariff = standard(&kit.services).await;
+    {
+        let mut conn = kit.services.store().conn().await.unwrap();
+        conn.settings()
+            .set(
+                &keys::provider(providers::LAVA),
+                &json!({
+                    "enabled": true,
+                    "config": {"recurring": true, "plans": [plan(&tariff, 30, 299, "MONTHLY")]},
+                    "methods": [{"code": "card"}, {"code": "subscription"}]
+                }),
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    kit.services.reload().await.unwrap();
+    kit.services.set_remna(Some(kit.remna.clone()));
+    let client = with_email(&kit, 5_093_118_700).await;
+    let lava = |quote: &crate::checkout::QuoteView| -> Vec<Option<String>> {
+        quote
+            .methods
+            .iter()
+            .filter(|m| m.provider == providers::LAVA)
+            .map(|m| m.method.clone())
+            .collect()
+    };
+    let bound = kit
+        .services
+        .checkout()
+        .quote(client, &cart(&tariff, 30, None))
+        .await
+        .unwrap();
+    assert_eq!(lava(&bound), vec![Some(RECURRING_METHOD.to_string())]);
+    let other = kit
+        .services
+        .checkout()
+        .quote(client, &cart(&tariff, 90, None))
+        .await
+        .unwrap();
+    assert!(lava(&other).is_empty(), "{:?}", lava(&other));
+}
+
+#[tokio::test]
 async fn блокировка_клиента_отменяет_подписку_lava() {
     let server = MockServer::start().await;
     let Some(kit) = lava_kit(&server).await else {

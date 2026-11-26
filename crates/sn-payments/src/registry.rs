@@ -421,16 +421,21 @@ impl ProviderRegistry {
                         .get(id)
                         .map(|state| state.methods.as_slice())
                         .unwrap_or_default();
+                    let config = state.map_or(&empty, |state| &state.config);
                     let chosen = chosen_methods(provider.as_ref(), choices, ctx.currency);
                     if chosen.is_empty() {
-                        let config = state.map_or(&empty, |state| &state.config);
+                        if !provider.method_ready(config, None) {
+                            continue;
+                        }
                         match charge(provider.as_ref(), config, ctx) {
                             Some(amount) => (Some(amount.into()), None),
                             None => continue,
                         }
                     } else {
                         for (method, title) in chosen {
-                            if method.min_minor.is_some_and(|min| ctx.total.minor < min) {
+                            if method.min_minor.is_some_and(|min| ctx.total.minor < min)
+                                || !provider.method_ready(config, Some(method.code))
+                            {
                                 continue;
                             }
                             methods.push(CheckoutMethod {
