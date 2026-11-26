@@ -175,6 +175,8 @@ pub struct PaymentListItem {
     pub payment: Payment,
     pub client: Option<ClientPerson>,
     pub order: Option<OrderBrief>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -900,6 +902,13 @@ impl<'a> AdminOps<'a> {
             .into_iter()
             .map(|t| (t.id, t.name))
             .collect();
+        let failed: Vec<PaymentId> = list
+            .items
+            .iter()
+            .filter(|p| p.status == PaymentStatus::Failed)
+            .map(|p| p.id)
+            .collect();
+        let reasons = conn.payments().failure_reasons(&failed).await?;
         Ok(Page {
             next: list.next,
             items: list
@@ -910,6 +919,7 @@ impl<'a> AdminOps<'a> {
                     order: orders
                         .get(&payment.order_id)
                         .map(|order| order_brief(order, &tariffs)),
+                    failure_reason: reasons.get(&payment.id).cloned(),
                     payment,
                 })
                 .collect(),

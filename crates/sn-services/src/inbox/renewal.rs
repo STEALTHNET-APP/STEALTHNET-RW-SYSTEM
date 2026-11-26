@@ -136,7 +136,14 @@ impl PaymentInbox<'_> {
             charged_at,
         )
         .await?;
-        renewals::note_charge(tx, link, charged_at, self.services.now()).await?;
+        renewals::note_charge(
+            tx,
+            link,
+            link.cycle(self.services),
+            charged_at,
+            self.services.now(),
+        )
+        .await?;
         self.settle_paid(tx, payment, Some(&renewal.txid), None)
             .await
     }

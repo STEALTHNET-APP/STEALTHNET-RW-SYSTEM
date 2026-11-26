@@ -588,6 +588,27 @@ impl<'c> PaymentsRepo<'c> {
             .collect())
     }
 
+    pub async fn failure_reasons(
+        &mut self,
+        ids: &[PaymentId],
+    ) -> StoreResult<HashMap<PaymentId, String>> {
+        if ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let ids: Vec<i64> = ids.iter().map(|id| id.0).collect();
+        let rows: Vec<(i64, String)> = sqlx::query_as(
+            "SELECT id, btrim(failure_reason) FROM payments \
+             WHERE id = ANY($1) AND status = 'failed' AND NULLIF(btrim(failure_reason), '') IS NOT NULL",
+        )
+        .bind(&ids)
+        .fetch_all(&mut *self.conn)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(id, reason)| (PaymentId(id), reason))
+            .collect())
+    }
+
     pub async fn by_ids(&mut self, ids: &[PaymentId]) -> StoreResult<Vec<Payment>> {
         let ids: Vec<i64> = ids.iter().map(|id| id.0).collect();
         let rows: Vec<PaymentRow> = sqlx::query_as(&format!(

@@ -32,6 +32,9 @@ fn client_text(code: &str) -> Option<&'static str> {
         return None;
     }
     match code {
+        "payment.error" => Some(
+            "Не получилось выставить счёт. Попробуйте другой способ оплаты или повторите позже.",
+        ),
         "remnawave.not_found" => Some("Не найдено."),
         "remnawave.not_configured" | "remnawave.unavailable" | "remnawave.error" => {
             Some("Сервис VPN сейчас недоступен. Попробуйте через несколько минут.")

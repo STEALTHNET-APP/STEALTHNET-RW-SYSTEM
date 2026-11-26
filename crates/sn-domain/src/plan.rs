@@ -4,7 +4,7 @@ use crate::order::OrderKind;
 use crate::subscription::{SubscriptionKind, SubscriptionStatus};
 use crate::tariff::TariffSnapshot;
 use crate::traffic::{TrafficReset, TrafficStrategy, unused_extra};
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, Months, Utc};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -83,9 +83,31 @@ pub struct HeldDevices {
 pub const RECURRING_GRACE_HOURS: u32 = 48;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Cycle {
+    Days(u32),
+    Months(u32),
+}
+
+impl Cycle {
+    pub fn after(self, at: DateTime<Utc>) -> DateTime<Utc> {
+        match self {
+            Cycle::Days(days) => at + Duration::days(i64::from(days)),
+            Cycle::Months(months) => at
+                .checked_add_months(Months::new(months))
+                .unwrap_or_else(|| at + Duration::days(i64::from(months) * 31)),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Grace {
     pub hours: u32,
     pub carried: bool,
+    #[serde(default)]
+    pub cycle: Option<Cycle>,
+    #[serde(default)]
+    pub charged_at: Option<DateTime<Utc>>,
 }
 
 impl Grace {
@@ -93,6 +115,8 @@ impl Grace {
         Grace {
             hours: RECURRING_GRACE_HOURS,
             carried: false,
+            cycle: None,
+            charged_at: None,
         }
     }
 
@@ -100,6 +124,16 @@ impl Grace {
         Grace {
             hours: RECURRING_GRACE_HOURS,
             carried: true,
+            cycle: None,
+            charged_at: None,
+        }
+    }
+
+    pub const fn every(self, cycle: Option<Cycle>, charged_at: Option<DateTime<Utc>>) -> Self {
+        Grace {
+            cycle,
+            charged_at,
+            ..self
         }
     }
 }
@@ -206,15 +240,21 @@ pub fn graced_expire_at(
         return new_expire_at(kind, current_expire_at, paid_at, days);
     };
     let buffer = Duration::hours(i64::from(grace.hours));
-    let term = Duration::days(i64::from(days));
+    let at = grace
+        .charged_at
+        .map_or(paid_at, |charged| charged.min(paid_at));
+    let term = match grace.cycle {
+        Some(cycle) => cycle.after(at) - at,
+        None => Duration::days(i64::from(days)),
+    };
     let current = match kind {
         PlanKind::Renewal => current_expire_at,
         _ => None,
     };
     let end = match current {
-        Some(current) if grace.carried => (current - buffer).max(paid_at + buffer) + term,
-        Some(current) => current.max(paid_at) + buffer + term,
-        None => paid_at + buffer + term,
+        Some(current) if grace.carried => current.max(at + buffer) + term,
+        Some(current) => current.max(at) + buffer + term,
+        None => at + buffer + term,
     };
     whole_seconds(end)
 }
@@ -1105,7 +1145,7 @@ mod tests {
             30,
             Some(Grace::renewal()),
         );
-        assert_eq!(after_left, at(80));
+        assert_eq!(after_left, at(82));
         let bought_more = graced_expire_at(
             PlanKind::Renewal,
             Some(at(92)),
@@ -1113,7 +1153,7 @@ mod tests {
             30,
             Some(Grace::renewal()),
         );
-        assert_eq!(bought_more, at(120));
+        assert_eq!(bought_more, at(122));
         let change = graced_expire_at(
             PlanKind::Change,
             Some(at(10)),
@@ -1125,6 +1165,119 @@ mod tests {
         assert_eq!(
             graced_expire_at(PlanKind::Renewal, Some(at(10)), at(0), 30, None),
             new_expire_at(PlanKind::Renewal, Some(at(10)), at(0), 30)
+        );
+    }
+
+    fn noon(year: i32, month: u32, day: u32) -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(year, month, day, 12, 0, 0).unwrap()
+    }
+
+    fn yearly(term: u32, first: DateTime<Utc>, left: Duration, charges: &[DateTime<Utc>]) {
+        let year = Some(Cycle::Months(12));
+        let buffer = Duration::hours(i64::from(RECURRING_GRACE_HOURS));
+        let kind = if left > Duration::zero() {
+            PlanKind::Renewal
+        } else {
+            PlanKind::New
+        };
+        let mut expire = graced_expire_at(
+            kind,
+            Some(first + left),
+            first + Duration::minutes(3),
+            term,
+            Some(Grace::first().every(year, Some(first))),
+        );
+        let mut due = Cycle::Months(12).after(first);
+        assert_eq!(expire, due + buffer + left, "срок {term}, первая оплата");
+        for charge in charges {
+            assert!(
+                expire >= *charge,
+                "срок {term}: доступ кончился раньше списания {charge}"
+            );
+            expire = graced_expire_at(
+                PlanKind::Renewal,
+                Some(expire),
+                *charge + Duration::minutes(3),
+                term,
+                Some(Grace::renewal().every(year, Some(*charge))),
+            );
+            due = Cycle::Months(12).after(*charge);
+            assert_eq!(
+                expire,
+                due + buffer + left,
+                "срок {term}, списание {charge}"
+            );
+        }
+    }
+
+    #[test]
+    fn годовая_подписка_даёт_доступ_до_следующего_списания_без_перерыва_и_без_накопления() {
+        let charges = [noon(2027, 3, 10), noon(2028, 3, 10), noon(2029, 3, 10)];
+        assert_eq!(charges[1] - charges[0], Duration::days(366));
+        assert_eq!(charges[2] - charges[1], Duration::days(365));
+        yearly(360, noon(2026, 3, 10), Duration::zero(), &charges);
+        yearly(365, noon(2026, 3, 10), Duration::zero(), &charges);
+        yearly(366, noon(2026, 3, 10), Duration::zero(), &charges);
+        yearly(360, noon(2026, 3, 10), Duration::days(10), &charges);
+        let late = [
+            noon(2027, 3, 11) + Duration::hours(8),
+            noon(2028, 3, 11) + Duration::hours(8),
+        ];
+        yearly(360, noon(2026, 3, 10), Duration::zero(), &late);
+    }
+
+    #[test]
+    fn годовой_срок_365_дней_в_обычный_год_как_раньше() {
+        let paid = noon(2026, 3, 10);
+        let buffer = Duration::hours(i64::from(RECURRING_GRACE_HOURS));
+        assert_eq!(
+            graced_expire_at(
+                PlanKind::New,
+                None,
+                paid,
+                365,
+                Some(Grace::first().every(Some(Cycle::Months(12)), Some(paid)))
+            ),
+            graced_expire_at(PlanKind::New, None, paid, 365, Some(Grace::first()))
+        );
+        assert_eq!(
+            graced_expire_at(PlanKind::New, None, paid, 365, Some(Grace::first())),
+            paid + buffer + Duration::days(365)
+        );
+        let leap = noon(2027, 3, 10);
+        assert_eq!(
+            graced_expire_at(
+                PlanKind::New,
+                None,
+                leap,
+                365,
+                Some(Grace::first().every(Some(Cycle::Months(12)), Some(leap)))
+            ),
+            leap + buffer + Duration::days(366)
+        );
+    }
+
+    #[test]
+    fn цикл_по_месяцам_берёт_то_же_число_или_конец_месяца() {
+        assert_eq!(Cycle::Months(1).after(noon(2027, 1, 31)), noon(2027, 2, 28));
+        assert_eq!(Cycle::Months(1).after(noon(2028, 1, 31)), noon(2028, 2, 29));
+        assert_eq!(
+            Cycle::Months(12).after(noon(2028, 2, 29)),
+            noon(2029, 2, 28)
+        );
+        assert_eq!(Cycle::Days(30).after(noon(2027, 1, 31)), noon(2027, 3, 2));
+        let charged = noon(2027, 6, 1);
+        let late = graced_expire_at(
+            PlanKind::Renewal,
+            Some(noon(2027, 6, 3)),
+            charged + Duration::days(3),
+            30,
+            Some(Grace::renewal().every(Some(Cycle::Days(30)), Some(charged))),
+        );
+        assert_eq!(
+            late,
+            noon(2027, 7, 1) + Duration::hours(48),
+            "срок считается от списания, а не от того, когда панель о нём узнала"
         );
     }
 }

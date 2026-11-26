@@ -197,7 +197,8 @@ export function historyLine(item: HistoryItem, index: number, referrer: Person |
         return { ...base, what: 'Списание с карты ждёт ручной проверки', note: why ? `${via}: ${cut(why, 200)}` : via, sum };
       }
       if (payment.status === 'failed') {
-        return { ...base, what: 'Оплата не прошла', note: `${what}, ${via}`, sum: '' };
+        const reason = str(item.failure_reason);
+        return { ...base, what: 'Оплата не прошла', note: reason ? `${what}, ${via}. ${cut(reason, 240)}` : `${what}, ${via}`, sum: '' };
       }
       if (payment.status === 'refunded') {
         return { ...base, what, note: `${via}, деньги вернули`, sum };

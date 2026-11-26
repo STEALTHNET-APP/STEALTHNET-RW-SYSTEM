@@ -111,6 +111,7 @@ export type HistoryItem = { at: string } & (
       };
       order: OrderBrief | null;
       review?: string | null;
+      failure_reason?: string | null;
     }
   | { type: 'order'; order: OrderBrief }
   | {

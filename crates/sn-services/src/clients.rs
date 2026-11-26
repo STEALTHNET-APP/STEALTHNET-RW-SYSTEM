@@ -84,6 +84,8 @@ pub enum HistoryRecord {
         order: Option<OrderBrief>,
         #[serde(skip_serializing_if = "Option::is_none")]
         review: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        failure_reason: Option<String>,
     },
     Order {
         order: OrderBrief,
@@ -1103,6 +1105,17 @@ impl<'a> ClientOps<'a> {
             })
             .collect();
         let mut reviews = conn.payments().charge_reviews(&pending).await?;
+        let failed: Vec<PaymentId> = feed
+            .items
+            .iter()
+            .filter_map(|item| match &item.entry {
+                ClientHistoryEntry::Payment(payment) if payment.status == PaymentStatus::Failed => {
+                    Some(payment.id)
+                }
+                _ => None,
+            })
+            .collect();
+        let mut failures = conn.payments().failure_reasons(&failed).await?;
         let admins: HashMap<i64, String> = if feed.items.iter().any(|item| {
             matches!(&item.entry, ClientHistoryEntry::Audit(record) if record.actor_kind == "admin")
         }) {
@@ -1149,6 +1162,7 @@ impl<'a> ClientOps<'a> {
                             .get(&payment.order_id)
                             .map(|order| order_brief(order, &tariffs)),
                         review: reviews.remove(&payment.id),
+                        failure_reason: failures.remove(&payment.id),
                         payment: PaymentBrief {
                             id: payment.public_id,
                             number: payment.id,

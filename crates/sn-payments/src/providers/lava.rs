@@ -9,6 +9,7 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use sn_domain::money::{Amount, Currency, Money, PayCurrency, parse_units};
 use sn_domain::payment::{NoticeKind, RECURRING_METHOD, providers};
+use sn_domain::plan::Cycle;
 use sn_domain::settings::SettingField;
 use std::collections::HashSet;
 use uuid::Uuid;
@@ -32,6 +33,7 @@ struct Every {
     text: &'static str,
     min: u32,
     max: u32,
+    cycle: Cycle,
 }
 
 const EVERY: [Every; 4] = [
@@ -40,24 +42,28 @@ const EVERY: [Every; 4] = [
         text: "каждый месяц",
         min: 28,
         max: 31,
+        cycle: Cycle::Days(30),
     },
     Every {
         code: "PERIOD_90_DAYS",
         text: "раз в 90 дней",
         min: 90,
         max: 90,
+        cycle: Cycle::Days(90),
     },
     Every {
         code: "PERIOD_180_DAYS",
         text: "раз в 180 дней",
         min: 180,
         max: 180,
+        cycle: Cycle::Days(180),
     },
     Every {
         code: "PERIOD_YEAR",
         text: "раз в год",
-        min: 365,
+        min: 360,
         max: 366,
+        cycle: Cycle::Months(12),
     },
 ];
 
@@ -189,7 +195,7 @@ impl Lava {
         config: &ProviderConfig,
         offer: Uuid,
         visibility: &str,
-    ) -> PaymentResult<Option<String>> {
+    ) -> PaymentResult<Option<FoundOffer>> {
         let mut before: Option<String> = None;
         for _ in 0..PRODUCT_PAGES {
             let mut query = vec![("feedVisibility", visibility.to_string())];
@@ -203,20 +209,36 @@ impl Lava {
                 .ok_or_else(|| util::bad("Lava.top не вернула список продуктов"))?;
             for item in items {
                 let data = item.get("data").unwrap_or(item);
-                let has_offer = data
+                let found = data
                     .get("offers")
                     .and_then(Json::as_array)
                     .unwrap_or_default()
                     .iter()
-                    .filter_map(|o| o.get("id").and_then(Json::as_str))
-                    .any(|id| Uuid::parse_str(id.trim()).ok() == Some(offer));
-                if has_offer {
-                    return Ok(Some(
-                        data.get("title")
+                    .find(|o| {
+                        o.get("id")
+                            .and_then(Json::as_str)
+                            .and_then(|id| Uuid::parse_str(id.trim()).ok())
+                            == Some(offer)
+                    });
+                if let Some(found) = found {
+                    let periodic = found
+                        .get("prices")
+                        .and_then(Json::as_array)
+                        .unwrap_or_default()
+                        .iter()
+                        .filter_map(|price| price.get("periodicity").and_then(Json::as_str))
+                        .any(|periodicity| !periodicity.trim().eq_ignore_ascii_case("ONE_TIME"));
+                    return Ok(Some(FoundOffer {
+                        title: data
+                            .get("title")
                             .and_then(Json::as_str)
                             .map(|t| util::clip(t.trim(), 80))
                             .unwrap_or_default(),
-                    ));
+                        subscription: periodic
+                            || data.get("type").and_then(Json::as_str).is_some_and(|kind| {
+                                kind.trim().eq_ignore_ascii_case("SUBSCRIPTION")
+                            }),
+                    }));
                 }
             }
             before = page
@@ -228,6 +250,20 @@ impl Lava {
             }
         }
         Ok(None)
+    }
+
+    async fn subscription_offer(&self, config: &ProviderConfig) -> bool {
+        let Some(offer) = offer_id(config) else {
+            return false;
+        };
+        for visibility in ["ALL", "ONLY_HIDDEN", "ONLY_VISIBLE"] {
+            match self.offer_product(config, offer, visibility).await {
+                Ok(Some(found)) => return found.subscription,
+                Ok(None) => {}
+                Err(_) => return false,
+            }
+        }
+        false
     }
 
     async fn invoice(&self, config: &ProviderConfig, id: &str) -> PaymentResult<Json> {
@@ -812,6 +848,25 @@ fn ignored(event_key: String) -> WebhookOutcome {
     util::skipped(event_key, None, None, WebhookReply::ok())
 }
 
+struct FoundOffer {
+    title: String,
+    subscription: bool,
+}
+
+const SUBSCRIPTION_OFFER: &str = "в «ID оффера» в настройках Lava.top стоит оффер подписки. Для разовой оплаты нужен оффер отдельного продукта с включённой «Ценой по запросу API», а подписки для «Карты с автопродлением» привязываются в списке «Подписки Lava.top»";
+
+fn subscription_check(title: &str) -> ConnectionCheck {
+    ConnectionCheck::new(
+        CheckStatus::SettingsRejected,
+        if title.is_empty() {
+            "API-ключ принят, но в «ID оффера» стоит оффер подписки".to_string()
+        } else {
+            format!("API-ключ принят, но в «ID оффера» стоит оффер подписки «{title}»")
+        },
+    )
+    .detail("Для разовой оплаты («Карта», «СБП», «PayPal») нужен оффер отдельного продукта с включённой «Ценой по запросу API». Подписки для «Карты с автопродлением» привязываются в списке «Подписки Lava.top», это поле для них не нужно")
+}
+
 fn offer_id(config: &ProviderConfig) -> Option<Uuid> {
     config
         .get("offer_id")
@@ -1091,12 +1146,12 @@ impl PaymentProvider for Lava {
             SettingField::text(
                 "offer_id",
                 "ID оффера",
-                "Оффер продукта с включённой «Цена по запросу API»",
+                "Оффер разового продукта с включённой «Цена по запросу API», не подписки",
             ),
             SettingField::secret(
                 "webhook_key",
                 "Ключ вебхука",
-                "Придумайте ключ от 16 до 80 латинских букв и цифр. В Lava.top: Интеграции → API → Добавить Webhook. URL — «Адрес для уведомлений» ниже. Тип события: «Успешная оплата», «Неуспешная оплата», «Успешное продление подписки», «Неуспешное продление подписки», «Отмена подписки», «Успешный возврат», «Получен запрос на чарджбэк». Аутентификация: «API key вашего сервиса» с этим ключом или Basic: логин любой, пароль — этот ключ",
+                "Придумайте ключ от 16 до 80 латинских букв и цифр. В Lava.top: Интеграции → API → Добавить Webhook. URL — «Адрес для уведомлений» ниже. Тип события: «Успешная оплата», «Неуспешная оплата», «Успешное продление подписки», «Неуспешное продление подписки», «Отмена подписки», «Успешный возврат», «Получен запрос на чарджбэк». Аутентификация: «API key вашего сервиса» с этим ключом или Basic: логин любой, пароль — этот ключ. Если вебхуков с адресом панели в Lava.top несколько, у всех должен быть этот же ключ",
             ),
             SettingField::flag(
                 RECURRING,
@@ -1138,6 +1193,10 @@ impl PaymentProvider for Lava {
             ));
         }
         validate_plans(config)
+    }
+
+    fn renewal_cycle(&self, periodicity: &str) -> Option<Cycle> {
+        every(periodicity).map(|every| every.cycle)
     }
 
     fn renewals_enabled(&self, config: &ProviderConfig) -> bool {
@@ -1290,7 +1349,14 @@ impl PaymentProvider for Lava {
         .await?;
         let parsed = reply.json()?;
         if !reply.is_success() {
-            return Err(reply.failure(message(&parsed)));
+            let failure = reply.failure(message(&parsed));
+            if renewal.is_none()
+                && (400..500).contains(&reply.status)
+                && self.subscription_offer(config).await
+            {
+                return Err(PaymentError::Rejected(SUBSCRIPTION_OFFER.into()));
+            }
+            return Err(failure);
         }
         let id = parsed
             .get("id")
@@ -1311,6 +1377,7 @@ impl PaymentProvider for Lava {
                     "Lava.top выставила счёт на {charged}, а не на {}: цена подписки в Lava.top не совпадает с ценой срока",
                     request.amount
                 ),
+                None if self.subscription_offer(config).await => SUBSCRIPTION_OFFER.to_string(),
                 None => format!(
                     "Lava.top выставила счёт на {charged}, а не на {}: включите у продукта «Цена по запросу API»",
                     request.amount
@@ -1442,11 +1509,12 @@ impl Lava {
                 .detail("Ключ создаётся в кабинете Lava.top: Интеграции → API → Настроить API key")
         };
         match self.offer_product(config, offer, "ONLY_HIDDEN").await {
-            Ok(Some(title)) => {
-                return ConnectionCheck::ok(if title.is_empty() {
+            Ok(Some(found)) if found.subscription => return subscription_check(&found.title),
+            Ok(Some(found)) => {
+                return ConnectionCheck::ok(if found.title.is_empty() {
                     "API-ключ принят, оффер найден в Lava.top".to_string()
                 } else {
-                    format!("API-ключ принят, оффер найден: продукт «{title}»")
+                    format!("API-ключ принят, оффер найден: продукт «{}»", found.title)
                 });
             }
             Ok(None) => {}
@@ -1454,12 +1522,13 @@ impl Lava {
             Err(err) => return ConnectionCheck::failed(&err),
         }
         match self.offer_product(config, offer, "ONLY_VISIBLE").await {
-            Ok(Some(title)) => ConnectionCheck::new(
+            Ok(Some(found)) if found.subscription => subscription_check(&found.title),
+            Ok(Some(found)) => ConnectionCheck::new(
                 CheckStatus::SettingsRejected,
-                if title.is_empty() {
+                if found.title.is_empty() {
                     "API-ключ принят, но у продукта с этим оффером не включена «Цена по запросу API»".to_string()
                 } else {
-                    format!("API-ключ принят, но у продукта «{title}» не включена «Цена по запросу API»")
+                    format!("API-ключ принят, но у продукта «{}» не включена «Цена по запросу API»", found.title)
                 },
             )
             .detail("Продукты с ценой по запросу API Lava.top прячет со страницы автора, а этот продукт виден. Без неё Lava не примет сумму из панели"),
@@ -3096,7 +3165,15 @@ mod tests {
             (plans[0].min_days, plans[0].max_days, plans[0].every),
             (28, 31, "каждый месяц")
         );
-        assert_eq!((plans[1].min_days, plans[1].max_days), (365, 366));
+        assert_eq!((plans[1].min_days, plans[1].max_days), (360, 366));
+        assert_eq!(lava.renewal_cycle("PERIOD_YEAR"), Some(Cycle::Months(12)));
+        assert_eq!(lava.renewal_cycle("monthly"), Some(Cycle::Days(30)));
+        assert_eq!(lava.renewal_cycle("PERIOD_90_DAYS"), Some(Cycle::Days(90)));
+        assert_eq!(
+            lava.renewal_cycle("PERIOD_180_DAYS"),
+            Some(Cycle::Days(180))
+        );
+        assert_eq!(lava.renewal_cycle("ONE_TIME"), None);
         assert_eq!(plans[0].product.as_deref(), Some(SUB_PRODUCT));
         for bad in [
             json!([
@@ -3176,6 +3253,100 @@ mod tests {
             Some(PaymentRef::ProviderTxid(renewal.into()))
         );
         assert_eq!(named.status, ProviderStatus::Refunded);
+    }
+
+    fn subscription_product(offer: &str) -> Value {
+        json!({"type": "PRODUCT", "data": {
+            "id": SUB_PRODUCT, "title": "VPN Стандарт", "type": "SUBSCRIPTION",
+            "offers": [{"id": offer, "name": "Базовый", "prices": [
+                {"amount": 349, "currency": "RUB", "periodicity": "MONTHLY"}
+            ]}]
+        }})
+    }
+
+    #[tokio::test]
+    async fn проверка_подключения_lava_узнаёт_оффер_подписки_в_поле_оффера() {
+        let server = MockServer::start().await;
+        products(
+            &server,
+            "ONLY_HIDDEN",
+            None,
+            json!({"items": [], "nextPage": null}),
+        )
+        .await;
+        products(
+            &server,
+            "ONLY_VISIBLE",
+            None,
+            json!({"items": [subscription_product(OFFER)], "nextPage": null}),
+        )
+        .await;
+        let check = Lava::with_api_base(server.uri())
+            .check_connection(&settings(), &CheckContext::default())
+            .await;
+        assert_eq!(check.status, CheckStatus::SettingsRejected);
+        assert!(
+            check
+                .summary
+                .contains("стоит оффер подписки «VPN Стандарт»"),
+            "{}",
+            check.summary
+        );
+        let details = check.details.join("\n");
+        assert!(details.contains("Ценой по запросу API"), "{details}");
+        assert!(details.contains("Подписки Lava.top"), "{details}");
+        assert!(!check.summary.contains("не включена"), "{}", check.summary);
+    }
+
+    #[tokio::test]
+    async fn отказ_в_разовом_счёте_lava_из_за_оффера_подписки_объясняется() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v3/invoice"))
+            .respond_with(
+                ResponseTemplate::new(400)
+                    .set_body_json(json!({"error": "Offer price is not dynamic"})),
+            )
+            .mount(&server)
+            .await;
+        products(
+            &server,
+            "ALL",
+            None,
+            json!({"items": [subscription_product(OFFER)], "nextPage": null}),
+        )
+        .await;
+        let refused = Lava::with_api_base(server.uri())
+            .create_invoice(&settings(), &invoice(rub(49_900), Some(EMAIL)))
+            .await
+            .unwrap_err();
+        let PaymentError::Rejected(text) = &refused else {
+            panic!("ожидался понятный отказ: {refused:?}");
+        };
+        assert!(text.contains("стоит оффер подписки"), "{text}");
+        assert!(text.contains("Подписки Lava.top"), "{text}");
+
+        let plain = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v3/invoice"))
+            .respond_with(
+                ResponseTemplate::new(400).set_body_json(json!({"error": "Invalid email"})),
+            )
+            .mount(&plain)
+            .await;
+        products(
+            &plain,
+            "ALL",
+            None,
+            json!({"items": [product("Оплата VPN", OFFER)], "nextPage": null}),
+        )
+        .await;
+        assert_eq!(
+            Lava::with_api_base(plain.uri())
+                .create_invoice(&settings(), &invoice(rub(49_900), Some(EMAIL)))
+                .await,
+            Err(PaymentError::Rejected("Invalid email".into()))
+        );
     }
 
     #[tokio::test]

@@ -154,7 +154,7 @@ pub fn by_code(code: &str) -> Option<&'static str> {
         "order.delivery_running" => "This order is already being delivered. Please wait.",
         "payment.email_required" => "This payment method needs an email. Choose another one.",
         "payment.error" => {
-            "The payment system didn't respond. Try another method or try again later."
+            "Couldn't create the invoice. Try another payment method or try again later."
         }
         "promo.disabled" => "Promo codes aren't accepted right now.",
         "remnawave.not_configured" | "remnawave.unavailable" | "remnawave.error" => {

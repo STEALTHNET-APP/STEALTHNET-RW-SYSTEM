@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use sn_domain::ids::{ClientId, PaymentId};
 use sn_domain::money::{Amount, Currency, Money};
 use sn_domain::payment::NoticeKind;
+use sn_domain::plan::Cycle;
 use sn_domain::settings::{SettingField, missing_required};
 use std::net::IpAddr;
 use uuid::Uuid;
@@ -691,6 +692,10 @@ pub trait PaymentProvider: Send + Sync + 'static {
 
     fn renewal_plans(&self, _config: &ProviderConfig) -> Vec<RenewalPlan> {
         Vec::new()
+    }
+
+    fn renewal_cycle(&self, _periodicity: &str) -> Option<Cycle> {
+        None
     }
 
     async fn cancel_renewal(

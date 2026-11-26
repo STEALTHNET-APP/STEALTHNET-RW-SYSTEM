@@ -1017,6 +1017,179 @@ async fn возврат_в_lava_сразу_сверяет_подписку() {
 }
 
 #[tokio::test]
+async fn годовая_подписка_lava_на_360_дней_даёт_доступ_до_следующего_списания() {
+    let server = MockServer::start().await;
+    let Some(kit) = lava_kit(&server).await else {
+        return;
+    };
+    let tariff = standard(&kit.services).await;
+    let tariff = {
+        let mut conn = kit.services.store().conn().await.unwrap();
+        sqlx::query(
+            "UPDATE tariff_periods SET days = 360, price_usd_minor = 4320 WHERE tariff_id = $1 AND days = 90",
+        )
+        .bind(tariff.id.0)
+        .execute(conn.conn())
+        .await
+        .unwrap();
+        conn.tariffs().get(tariff.id).await.unwrap()
+    };
+    configure(&kit, true, json!([plan(&tariff, 360, 4320, "PERIOD_YEAR")])).await;
+    {
+        let registry = kit.services.payments();
+        let lava = registry.get(providers::LAVA).unwrap();
+        let config = registry.config(providers::LAVA);
+        let mut conn = kit.services.store().conn().await.unwrap();
+        check_plans(&mut conn, lava.as_ref(), &config)
+            .await
+            .unwrap();
+    }
+    let client = with_email(&kit, 5_093_118_360).await;
+    Mock::given(method("POST"))
+        .and(path("/api/v3/invoice"))
+        .and(body_partial_json(
+            json!({"offerId": SUB_OFFER, "periodicity": "PERIOD_YEAR", "email": EMAIL}),
+        ))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "id": PARENT, "status": "in-progress", "amountTotal": {"currency": "USD", "amount": 43.2},
+            "paymentUrl": "https://app.lava.top/payment/c5a0cacc"
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/api/v1/invoices/{PARENT}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": PARENT, "type": "RECURRING", "status": "COMPLETED",
+            "receipt": {"amount": 43.2, "currency": "USD", "fee": 3.1}
+        })))
+        .mount(&server)
+        .await;
+    let quote = kit
+        .services
+        .checkout()
+        .quote(client, &cart(&tariff, 360, None))
+        .await
+        .unwrap();
+    let offered = quote
+        .methods
+        .iter()
+        .find(|m| m.method.as_deref() == Some(RECURRING_METHOD))
+        .expect("у срока на 360 дней есть кнопка годовой подписки Lava.top");
+    assert_eq!(offered.hint, "$43.20 сейчас и раз в год, пока не отключите");
+    let result = kit
+        .services
+        .checkout()
+        .start(
+            client,
+            &CheckoutRequest {
+                cart: cart(&tariff, 360, None),
+                provider: providers::LAVA.into(),
+                method: Some(RECURRING_METHOD.into()),
+                channel: Channel::Cabinet,
+                return_url: None,
+            },
+        )
+        .await
+        .unwrap();
+    let CheckoutResult::Redirect { order_id, .. } = result else {
+        panic!("ожидался счёт Lava.top: {result:?}");
+    };
+    assert_eq!(
+        deliver(
+            &kit,
+            json!({
+                "eventType": "payment.success", "product": {"id": SUB_PRODUCT, "title": "VPN Стандарт"},
+                "buyer": {"email": EMAIL}, "contractId": PARENT, "amount": 43.2, "currency": "USD",
+                "timestamp": Utc::now().to_rfc3339(), "status": "subscription-active"
+            })
+        )
+        .await,
+        200
+    );
+    let order = order_by_public_id(&kit.services, order_id).await;
+    let outcome = kit.services.fulfillment().run(order.id).await.unwrap();
+    assert!(
+        matches!(outcome, FulfillmentOutcome::Done { .. }),
+        "{outcome:?}"
+    );
+    let order = self::order(&kit.services, order.id).await;
+    let subscription = self::subscription(&kit.services, &order).await;
+    let paid_at = order.paid_at.unwrap();
+    let year = Cycle::Months(12);
+    let first = remna_user(&kit, &subscription).await.expire_at;
+    assert_eq!(
+        first,
+        sn_domain::plan::graced_expire_at(
+            sn_domain::plan::PlanKind::New,
+            None,
+            paid_at,
+            360,
+            Some(Grace::first().every(Some(year), Some(paid_at)))
+        )
+    );
+    assert!(
+        first >= year.after(paid_at) + Duration::hours(48) - Duration::seconds(1),
+        "доступ до следующего списания Lava.top и ещё двое суток, а не 360 дней: {first}"
+    );
+    let link = link_of(&kit).await;
+    assert_eq!(link.status(), LinkStatus::Active);
+    assert_eq!(link.days, 360);
+    let next = link.next_charge_at.unwrap();
+    assert!(
+        (next - year.after(paid_at)).num_seconds().abs() <= 1,
+        "{next}"
+    );
+
+    {
+        let mut conn = kit.services.store().conn().await.unwrap();
+        sqlx::query(
+            "UPDATE provider_subscription_charges SET charged_at = charged_at - interval '1 year' \
+             WHERE provider_subscription_id = $1",
+        )
+        .bind(link.id)
+        .execute(conn.conn())
+        .await
+        .unwrap();
+    }
+    let renewal = renewal_id(360);
+    mount_renewal(&server, &renewal, 0, 43.2).await;
+    let mut event = renewal_event(&renewal);
+    event["amount"] = json!(43.2);
+    assert_eq!(deliver(&kit, event).await, 200);
+    let renewed = run_renewal_order(&kit, &renewal).await;
+    let charged_at: DateTime<Utc> = {
+        let mut conn = kit.services.store().conn().await.unwrap();
+        sqlx::query_scalar(
+            "SELECT charged_at FROM provider_subscription_charges WHERE order_id = $1",
+        )
+        .bind(renewed.id.0)
+        .fetch_one(conn.conn())
+        .await
+        .unwrap()
+    };
+    let now_sub = self::subscription(&kit.services, &renewed).await;
+    let second = remna_user(&kit, &now_sub).await.expire_at;
+    assert_eq!(
+        second,
+        sn_domain::plan::graced_expire_at(
+            sn_domain::plan::PlanKind::Renewal,
+            Some(first),
+            renewed.paid_at.unwrap(),
+            360,
+            Some(Grace::renewal().every(Some(year), Some(charged_at)))
+        )
+    );
+    let at = charged_at.min(renewed.paid_at.unwrap());
+    assert_eq!(
+        (second - first).num_days(),
+        (year.after(at) - at).num_days(),
+        "списание добавляет год Lava.top, а оставшееся не сгорает"
+    );
+    let next = link_of(&kit).await.next_charge_at.unwrap();
+    assert!((next - year.after(at)).num_seconds().abs() <= 1, "{next}");
+}
+
+#[tokio::test]
 async fn блокировка_клиента_отменяет_подписку_lava() {
     let server = MockServer::start().await;
     let Some(kit) = lava_kit(&server).await else {

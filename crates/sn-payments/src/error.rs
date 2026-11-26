@@ -25,6 +25,17 @@ pub enum PaymentError {
 }
 
 impl PaymentError {
+    pub fn invoice_failure(&self) -> String {
+        let cause = match self {
+            PaymentError::BadPayload(text) | PaymentError::Rejected(text) => text.clone(),
+            PaymentError::Http { status } => {
+                format!("платёжная система ответила ошибкой HTTP {status}")
+            }
+            other => other.to_string(),
+        };
+        format!("Счёт не выставлен: {cause}")
+    }
+
     pub const fn is_retryable(&self) -> bool {
         matches!(
             self,

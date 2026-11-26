@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import { api, ApiError } from '../../lib/api';
-import { dateLong, money, periodLabel } from '../../lib/format';
+import { dateLong, money, plural } from '../../lib/format';
 import type { Currency } from '../../lib/types';
 import type { Tariff, View } from '../tariffs/model';
 
@@ -52,6 +52,16 @@ export function lavaPlans(settings: Record<string, unknown>): LavaPlan[] {
 
 function capital(text: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+function daysText(days: number): string {
+  return `${days} ${plural(days, 'день', 'дня', 'дней')}`;
+}
+
+function needText(price: CatalogPrice): string {
+  return price.min_days === price.max_days
+    ? daysText(price.min_days)
+    : `${price.min_days}–${price.max_days} ${plural(price.max_days, 'день', 'дня', 'дней')}`;
 }
 
 function priceOf(tariff: Tariff | undefined, period: number, currency: Currency): number | null {
@@ -113,7 +123,7 @@ export function LavaSetup({ value, onChange, busy, connected, currency }: Props)
     (tariffs ?? []).flatMap((t) =>
       t.periods
         .filter((p) => p.active && p.days >= price.min_days && p.days <= price.max_days)
-        .map((p) => ({ value: `${t.id}:${p.id}`, label: `${t.name} · ${periodLabel(p.days) ?? `${p.days} дн.`}` })),
+        .map((p) => ({ value: `${t.id}:${p.id}`, label: `${t.name} · ${daysText(p.days)}` })),
     );
   const same = (plan: LavaPlan, offer: string, price: CatalogPrice) => plan.offer === offer && plan.periodicity === price.periodicity && plan.currency === price.currency;
   const bind = (product: CatalogProduct, offer: CatalogOffer, price: CatalogPrice, choice: string) => {
@@ -152,7 +162,7 @@ export function LavaSetup({ value, onChange, busy, connected, currency }: Props)
   const label = (plan: LavaPlan) => {
     const t = byId.get(plan.tariff);
     const p = t?.periods.find((x) => x.id === plan.tariff_period);
-    return t && p ? `${t.name} · ${periodLabel(p.days) ?? `${p.days} дн.`}` : 'срок удалён';
+    return t && p ? `${t.name} · ${daysText(p.days)}` : 'срок удалён';
   };
 
   return (
@@ -169,28 +179,32 @@ export function LavaSetup({ value, onChange, busy, connected, currency }: Props)
         ? rows.map(({ product, offer, price }) => {
             const plan = value.find((p) => same(p, offer.id, price));
             const name = offer.name && offer.name !== product.name ? `${product.name} · ${offer.name}` : product.name;
+            const choices = options(price);
             return (
-              <div key={`${offer.id}:${price.periodicity}`} className="pay-mrow">
-                <span className="pay-mname">{name || 'Подписка'}</span>
-                <span className="pay-mhint muted">
-                  {capital(EVERY[price.periodicity] ?? price.every)} · {money({ minor: price.amount, currency: price.currency })}
-                  {status(plan, price.amount)}
-                </span>
-                <select
-                  className="field pay-mtitle"
-                  value={plan ? `${plan.tariff}:${plan.tariff_period}` : ''}
-                  onChange={(e) => bind(product, offer, price, e.target.value)}
-                  disabled={busy || tariffs === null}
-                  aria-label={`Какой срок продлевает «${name}», ${EVERY[price.periodicity] ?? price.every}`}
-                >
-                  <option value="">Не привязана</option>
-                  {options(price).map((o) => (
-                    <option key={o.value} value={o.value}>
-                      {o.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              <Fragment key={`${offer.id}:${price.periodicity}`}>
+                <div className="pay-mrow">
+                  <span className="pay-mname">{name || 'Подписка'}</span>
+                  <span className="pay-mhint muted">
+                    {capital(EVERY[price.periodicity] ?? price.every)} · {money({ minor: price.amount, currency: price.currency })}
+                    {status(plan, price.amount)}
+                  </span>
+                  <select
+                    className="field pay-mtitle"
+                    value={plan ? `${plan.tariff}:${plan.tariff_period}` : ''}
+                    onChange={(e) => bind(product, offer, price, e.target.value)}
+                    disabled={busy || tariffs === null}
+                    aria-label={`Какой срок продлевает «${name}», ${EVERY[price.periodicity] ?? price.every}`}
+                  >
+                    <option value="">Не привязана</option>
+                    {choices.map((o) => (
+                      <option key={o.value} value={o.value}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                {tariffs !== null && choices.length === 0 ? <span className="cap">Нужен срок {needText(price)}</span> : null}
+              </Fragment>
             );
           })
         : value

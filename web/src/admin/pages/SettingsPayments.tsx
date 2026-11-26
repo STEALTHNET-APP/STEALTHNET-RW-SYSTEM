@@ -174,7 +174,7 @@ function inboxLines(inbox: InboxTrace | null | undefined, title: string): Array<
   const forged = inbox.rejected_at !== null && (inbox.verified_at === null || Date.parse(inbox.rejected_at) > Date.parse(inbox.verified_at));
   if (forged && inbox.rejected_at) {
     lines.push({
-      text: `Уведомление ${ago(inbox.rejected_at)} не прошло проверку подписи. Если его прислала ${title}, ключ для уведомлений в панели не совпадает с ключом в кабинете`,
+      text: `Уведомление ${ago(inbox.rejected_at)} не прошло проверку подписи. Если его прислала ${title}, ключ для уведомлений в панели не совпадает с ключом в кабинете. Если на адрес панели настроено несколько вебхуков, ключ у всех должен быть один`,
       warn: true,
     });
   }

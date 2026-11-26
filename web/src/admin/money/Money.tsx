@@ -213,6 +213,7 @@ function Payments() {
                   </button>
                 ) : null}
               </span>
+              {p.status === 'failed' && p.failure_reason ? <span className="mo-reason muted">{p.failure_reason}</span> : null}
             </div>
           );
         })}

@@ -1787,7 +1787,7 @@ impl<'a> PaymentInbox<'a> {
             self.save_method(tx, &paid, method).await?;
         }
         let order = tx.orders().lock(paid.order_id).await?;
-        crate::renewals::activate(tx, &paid, &order, self.services.now()).await?;
+        crate::renewals::activate(self.services, tx, &paid, &order, self.services.now()).await?;
         let resumes =
             order.status == OrderStatus::Review && !paid_elsewhere(tx, order.id, paid.id).await?;
         let order =

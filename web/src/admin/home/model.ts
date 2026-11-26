@@ -93,6 +93,7 @@ export type PaymentItem = {
   created_at: string;
   client: Person | null;
   order: OrderBrief | null;
+  failure_reason?: string | null;
 };
 
 export type BillingNode = {

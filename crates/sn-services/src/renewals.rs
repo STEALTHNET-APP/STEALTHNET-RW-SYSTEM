@@ -11,7 +11,7 @@ use sn_domain::lang;
 use sn_domain::money::{Amount, Currency, Money};
 use sn_domain::order::{Order, PurchaseIntent};
 use sn_domain::payment::{NoticeKind, Payment, RECURRING_METHOD};
-use sn_domain::plan::Grace;
+use sn_domain::plan::{Cycle, Grace};
 use sn_domain::pricing::Quote;
 use sn_domain::subscription::{AutoRenewState, Subscription};
 use sn_domain::tariff::Tariff;
@@ -149,9 +149,17 @@ impl Link {
             .map(|currency| Money::new(self.amount_minor, currency))
     }
 
-    fn days(&self) -> i64 {
-        i64::from(self.days.max(1))
+    pub(crate) fn cycle(&self, services: &Services) -> Cycle {
+        cycle_of(services, &self.provider, &self.periodicity, self.days)
     }
+}
+
+pub(crate) fn cycle_of(services: &Services, provider: &str, periodicity: &str, days: i32) -> Cycle {
+    services
+        .payments()
+        .get(provider)
+        .and_then(|p| p.renewal_cycle(periodicity))
+        .unwrap_or_else(|| Cycle::Days(u32::try_from(days.max(1)).unwrap_or(30)))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -320,10 +328,11 @@ pub(crate) fn next_check(next_charge: DateTime<Utc>, now: DateTime<Utc>) -> Date
 pub(crate) async fn note_charge(
     tx: &mut Tx,
     link: &Link,
+    cycle: Cycle,
     charged_at: DateTime<Utc>,
     now: DateTime<Utc>,
 ) -> ServiceResult<()> {
-    let next = charged_at + Duration::days(link.days());
+    let next = cycle.after(charged_at.min(now));
     sqlx::query(
         "UPDATE provider_subscriptions SET next_charge_at = $2, check_at = $3, updated_at = now() \
          WHERE id = $1",
@@ -602,6 +611,7 @@ pub(crate) async fn note_invoice(
 }
 
 pub(crate) async fn activate(
+    services: &Services,
     tx: &mut Tx,
     paid: &Payment,
     order: &Order,
@@ -626,7 +636,7 @@ pub(crate) async fn activate(
         Some(id) => live_link(tx, SubscriptionId(id)).await?.is_some(),
         None => false,
     };
-    let next = paid_at + Duration::days(link.days());
+    let next = link.cycle(services).after(paid_at.min(now));
     sqlx::query(
         "UPDATE provider_subscriptions SET status = $2, subscription_id = $3, next_charge_at = $4, \
          check_at = $5, cancel_source = $6, cancel_requested_at = $7, updated_at = now() WHERE id = $1",
@@ -711,20 +721,33 @@ async fn mark_autorenew(tx: &mut Tx, id: SubscriptionId, enabled: bool) -> Servi
     Ok(())
 }
 
-pub(crate) async fn grace_for(db: &mut impl Db, order: OrderId) -> ServiceResult<Option<Grace>> {
-    let first: Option<bool> = sqlx::query_scalar(
-        "SELECT first FROM provider_subscription_charges WHERE order_id = $1 LIMIT 1",
+pub(crate) async fn grace_for(
+    services: &Services,
+    db: &mut impl Db,
+    order: OrderId,
+) -> ServiceResult<Option<Grace>> {
+    let found: Option<(bool, DateTime<Utc>, String, String, i32)> = sqlx::query_as(
+        "SELECT c.first, c.charged_at, ps.provider, ps.periodicity, ps.days \
+         FROM provider_subscription_charges c \
+         JOIN provider_subscriptions ps ON ps.id = c.provider_subscription_id \
+         WHERE c.order_id = $1 LIMIT 1",
     )
     .bind(order.0)
     .fetch_optional(db.conn())
     .await?;
-    Ok(first.map(|first| {
-        if first {
-            Grace::first()
-        } else {
-            Grace::renewal()
-        }
-    }))
+    Ok(
+        found.map(|(first, charged_at, provider, periodicity, days)| {
+            let grace = if first {
+                Grace::first()
+            } else {
+                Grace::renewal()
+            };
+            grace.every(
+                Some(cycle_of(services, &provider, &periodicity, days)),
+                Some(charged_at),
+            )
+        }),
+    )
 }
 
 pub(crate) async fn after_fulfilled(
@@ -1294,7 +1317,7 @@ impl<'a> Renewals<'a> {
                         until
                     }
                     (_, _, Some(next)) => next,
-                    _ => now + Duration::days(current.days()),
+                    _ => current.cycle(self.services).after(now),
                 };
                 sqlx::query(
                     "UPDATE provider_subscriptions SET checked_at = $2, check_at = $3, \

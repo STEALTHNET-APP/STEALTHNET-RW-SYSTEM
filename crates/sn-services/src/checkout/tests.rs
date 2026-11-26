@@ -100,6 +100,41 @@ async fn ошибка_кассы_отменяет_платёж_и_заказ() {
     let payments = conn.payments().for_order(orders.items[0].id).await.unwrap();
     assert_eq!(payments[0].status, PaymentStatus::Failed);
     drop(conn);
+    let listed = kit
+        .services
+        .admin()
+        .payments_view(
+            &crate::admin::PaymentFilter {
+                client_id: Some(client_id),
+                ..Default::default()
+            },
+            sn_domain::paging::PageRequest::new(None, None),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        listed.items[0].failure_reason.as_deref(),
+        Some("Счёт не выставлен: касса недоступна"),
+        "оператор видит, почему платёж не прошёл"
+    );
+    let history = kit
+        .services
+        .clients()
+        .history(
+            client_id,
+            sn_domain::paging::PageRequest::new(None, None),
+            true,
+        )
+        .await
+        .unwrap();
+    assert!(
+        history.items.iter().any(|item| matches!(
+            &item.record,
+            crate::clients::HistoryRecord::Payment { failure_reason: Some(reason), .. }
+                if reason == "Счёт не выставлен: касса недоступна"
+        )),
+        "причина видна и в карточке клиента"
+    );
     kit.db.cleanup().await;
 }
 

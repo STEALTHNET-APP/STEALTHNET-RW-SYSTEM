@@ -2008,7 +2008,7 @@ impl<'a> Checkout<'a> {
             }
             Err(err) => {
                 tracing::warn!(payment = %payment.id, provider = provider.id(), error = %err, "счёт не выставлен");
-                let reason = err.to_string();
+                let reason = err.invoice_failure();
                 let mut tx = self.services.store().begin().await?;
                 match tx
                     .payments()

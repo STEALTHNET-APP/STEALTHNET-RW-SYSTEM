@@ -2007,7 +2007,8 @@ impl<'a> Fulfillment<'a> {
                 .extra_traffic(context.subscription.id)
                 .await?
                 .map_or(0, |extra| extra.bytes);
-            let grace = crate::renewals::grace_for(&mut conn, context.order.id).await?;
+            let grace =
+                crate::renewals::grace_for(self.services, &mut conn, context.order.id).await?;
             (extra, grace)
         };
         let computed = plan(&PlanInput {
