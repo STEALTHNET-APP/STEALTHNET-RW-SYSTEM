@@ -446,6 +446,10 @@
   gap: 16px;
 }
 
+.ld-grid.cards.few {
+  grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 400px));
+}
+
 .ld-item {
   display: flex;
   flex-direction: column;
@@ -563,6 +567,10 @@
   border-radius: 18px;
   background: var(--surface);
   border: 1px solid var(--card-line);
+}
+
+.ld-card > a:last-child {
+  margin-top: auto;
 }
 
 .ld-card-name {

@@ -482,6 +482,36 @@ pub fn months_for_days(days: u32) -> u32 {
     ((days as u64 * 12 + 182) / 365).max(1) as u32
 }
 
+pub const SHORT_PERIOD_DAYS: u32 = 28;
+const MONTH_DAYS: i128 = 30;
+
+pub fn shorter_than_month(days: u32) -> bool {
+    days < SHORT_PERIOD_DAYS
+}
+
+pub fn month_price(price: Money, days: u32, months: u32) -> Option<Money> {
+    if !shorter_than_month(days) {
+        return price.divide_round(months).ok();
+    }
+    let step = price.currency.rounding_step() as i128;
+    let units = div_round_half_up(price.minor as i128 * MONTH_DAYS, days.max(1) as i128 * step);
+    i64::try_from(units * step)
+        .ok()
+        .map(|minor| Money::new(minor, price.currency))
+}
+
+fn month_stars(stars: Stars, days: u32, months: u32) -> Option<Stars> {
+    if !shorter_than_month(days) {
+        return stars.divide_round(months).ok();
+    }
+    i64::try_from(div_round_half_up(
+        stars.0 as i128 * MONTH_DAYS,
+        days.max(1) as i128,
+    ))
+    .ok()
+    .map(Stars)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PeriodOffer {
     pub period_id: PeriodId,
@@ -556,8 +586,8 @@ pub fn period_offers(
                         full_stars: p.stars,
                         until: String::new(),
                     });
-            let per_month = price.divide_round(months).ok()?;
-            let stars_per_month = stars.and_then(|s| s.divide_round(months).ok());
+            let per_month = month_price(price, p.days, months)?;
+            let stars_per_month = stars.and_then(|s| month_stars(s, p.days, months));
             Some(PeriodOffer {
                 period_id: p.id,
                 days: p.days,
@@ -701,6 +731,24 @@ mod tests {
         assert_eq!(unblock[1].stars_savings_percent, Some(14));
         assert_eq!(unblock[2].stars_savings_percent, Some(29));
         assert_eq!(offers[1].stars_per_month, Some(Stars(117)));
+    }
+
+    #[test]
+    fn цена_в_месяц_у_срока_короче_месяца_считается_на_тридцать_дней() {
+        let mut tariff = standard();
+        tariff.periods = vec![period(21, 7, 100, 225, 50), period(22, 30, 300, 540, 150)];
+        let rub = period_offers(&tariff, Currency::Rub, None);
+        assert_eq!(rub[0].days, 7);
+        assert_eq!(rub[0].price, Money::new(22_500, Currency::Rub));
+        assert_eq!(rub[0].per_month, Money::new(96_400, Currency::Rub));
+        assert_eq!(rub[0].stars_per_month, Some(Stars(214)));
+        assert_eq!(rub[0].savings_percent, None);
+        assert_eq!(rub[1].per_month, Money::new(54_000, Currency::Rub));
+        let usd = period_offers(&tariff, Currency::Usd, None);
+        assert_eq!(usd[0].per_month, Money::new(429, Currency::Usd));
+        assert!(shorter_than_month(7));
+        assert!(!shorter_than_month(28));
+        assert!(!shorter_than_month(30));
     }
 
     #[test]

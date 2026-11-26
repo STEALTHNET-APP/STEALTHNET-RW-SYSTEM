@@ -10,7 +10,7 @@ import { BackHead, MINI_SUB_KEY, useMini } from './MiniApp';
 import { openExternal, webApp } from './telegram';
 import { methodKey } from '../lib/methods';
 import { promoCut, promoOf, promoQuoteNote, promoTitle } from '../lib/promo';
-import { categoryOffers, categoryPick, firstPick, offerById, offerCategories, renewsCurrent, tariffPick, targetPick, type OfferPick } from '../lib/offers';
+import { categoryOffers, categoryPick, firstPick, offerById, offerCategories, renewsCurrent, SHORT_PERIOD_DAYS, tariffPick, targetPick, type OfferPick } from '../lib/offers';
 import { ReceiptEmail, useReceiptEmail } from '../lib/receiptEmail';
 
 function failText(err: unknown, fallback: string): string {
@@ -336,8 +336,17 @@ export function MiniPlans() {
                     </span>
                   </span>
                   <span className="mn-term-sub">
-                    {starsMode && p.stars_per_month ? t('{price} в месяц', { price: stars(p.stars_per_month) }) : t('{price} в месяц', { price: money(p.per_month) })}
-                    {p.promotion ? <span className="mn-save"> · {promoCut(p.promotion.percent)}</span> : null}
+                    {p.days < SHORT_PERIOD_DAYS
+                      ? null
+                      : starsMode && p.stars_per_month
+                        ? t('{price} в месяц', { price: stars(p.stars_per_month) })
+                        : t('{price} в месяц', { price: money(p.per_month) })}
+                    {p.promotion ? (
+                      <span className="mn-save">
+                        {p.days < SHORT_PERIOD_DAYS ? '' : ' · '}
+                        {promoCut(p.promotion.percent)}
+                      </span>
+                    ) : null}
                     {save && !p.promotion ? <span className="mn-save"> · {t('выгоднее на {percent}%', { percent: save })}</span> : null}
                   </span>
                 </span>

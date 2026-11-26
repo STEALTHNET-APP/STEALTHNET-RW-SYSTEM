@@ -18,7 +18,7 @@ import { SiteHeader } from './SiteHeader';
 import { botLink, storedReferral } from '../lib/referral';
 import { reportVisit, storedUtm } from '../lib/utm';
 import { startParam } from '../lib/utmTags';
-import { categoryOffers, categoryPick, offerById, offerCategories, tariffPick, type OfferPick } from '../lib/offers';
+import { categoryOffers, categoryPick, offerById, offerCategories, SHORT_PERIOD_DAYS, tariffPick, type OfferPick } from '../lib/offers';
 import {
   appsNote,
   CTA_BUTTONS,
@@ -501,8 +501,13 @@ function LandingPage({ mode }: { mode: Mode }) {
                         {money(p.price)}
                       </span>
                       <span className="ld-term-sub">
-                        {t('{price} в месяц', { price: money(p.per_month) })}
-                        {p.promotion ? <span className="ld-save"> · {promoCut(p.promotion.percent)}</span> : null}
+                        {p.days >= SHORT_PERIOD_DAYS ? t('{price} в месяц', { price: money(p.per_month) }) : null}
+                        {p.promotion ? (
+                          <span className="ld-save">
+                            {p.days >= SHORT_PERIOD_DAYS ? ' · ' : ''}
+                            {promoCut(p.promotion.percent)}
+                          </span>
+                        ) : null}
                         {p.savings_percent && !p.promotion ? <span className="ld-save"> · {t('выгоднее на {n}%', { n: p.savings_percent })}</span> : null}
                       </span>
                     </button>
@@ -515,7 +520,7 @@ function LandingPage({ mode }: { mode: Mode }) {
                 ) : null}
               </>
             ) : (
-              <div className="ld-grid cards">
+              <div className={offer.periods.length > 2 ? 'ld-grid cards' : 'ld-grid cards few'}>
                 {offer.periods.map((p, i) => (
                   <div key={p.period_id} className="ld-card">
                     <span className="ld-card-name">{termName(p.months, p.days)}</span>
@@ -525,10 +530,12 @@ function LandingPage({ mode }: { mode: Mode }) {
                       </span>
                     ) : null}
                     <span className="ld-card-price">{money(p.price)}</span>
-                    <span className="ld-muted">
-                      {t('{price} в месяц', { price: money(p.per_month) })}
-                      {p.savings_percent && !p.promotion ? <span className="ld-save"> · {t('выгоднее на {n}%', { n: p.savings_percent })}</span> : null}
-                    </span>
+                    {p.days >= SHORT_PERIOD_DAYS ? (
+                      <span className="ld-muted">
+                        {t('{price} в месяц', { price: money(p.per_month) })}
+                        {p.savings_percent && !p.promotion ? <span className="ld-save"> · {t('выгоднее на {n}%', { n: p.savings_percent })}</span> : null}
+                      </span>
+                    ) : null}
                     <Link
                       to={`/cabinet/pay?tariff=${offer.tariff.id}&period=${p.period_id}`}
                       className={i === 1 ? 'ld-btn mid' : 'ld-btn2 mid'}

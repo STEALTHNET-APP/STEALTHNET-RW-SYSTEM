@@ -1,5 +1,7 @@
 type Period = { period_id: number; months: number; days: number };
 
+export const SHORT_PERIOD_DAYS = 28;
+
 export type OfferLike = {
   category: { id: number; sort: number };
   tariff: { id: number; devices: { included: number; extra: { max: number } | null } };

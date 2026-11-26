@@ -128,10 +128,12 @@ async fn catalog(turn: &mut Turn<'_>) -> Result<Screen, BotError> {
                         (
                             "full_per_month",
                             Text(&text::money(
-                                promotion
-                                    .full_price
-                                    .divide_round(period.months)
-                                    .unwrap_or(promotion.full_price),
+                                sn_domain::tariff::month_price(
+                                    promotion.full_price,
+                                    period.days,
+                                    period.months,
+                                )
+                                .unwrap_or(promotion.full_price),
                             )),
                         ),
                         ("percent", Text(&promotion.percent.to_string())),
