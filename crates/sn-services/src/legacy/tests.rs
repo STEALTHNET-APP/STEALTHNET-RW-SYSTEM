@@ -2517,6 +2517,22 @@ fn invoices_dump(second: bool) -> Vec<u8> {
                 None,
             ],
             &[
+                Some("p7"),
+                Some("k1"),
+                Some("lava-old-ord-7"),
+                Some("300"),
+                Some("rub"),
+                Some("PENDING"),
+                Some("lavatop"),
+                Some("lava-old-7"),
+                Some("t1"),
+                Some("o1"),
+                Some("s1"),
+                Some(r#"{"redirectTargetUrl":"https://app.lava.top/payment/old-7"}"#),
+                Some("2026-08-01 11:00:00"),
+                None,
+            ],
+            &[
                 Some("p5"),
                 Some("k1"),
                 Some("ord-p5"),
@@ -2580,8 +2596,27 @@ async fn счёт_старой_панели_оплачивается_по_ста
             .map(|s| s.count),
         Some(4)
     );
+    assert_eq!(
+        preview
+            .skipped
+            .iter()
+            .find(|s| s.code == "lava_contracts_kept")
+            .map(|s| s.count),
+        Some(1),
+        "счёт Lava.top старше 30 дней остаётся договором"
+    );
     let s = &env.services;
-    assert_eq!(scalar(s, "SELECT count(*) FROM legacy_invoices").await, 5);
+    assert_eq!(scalar(s, "SELECT count(*) FROM legacy_invoices").await, 6);
+    assert_eq!(
+        scalar(
+            s,
+            "SELECT count(*) FROM legacy_invoices WHERE old_id = 'p7' AND recurring \
+             AND external_id = 'lava-old-7' AND pay_url IS NULL"
+        )
+        .await,
+        1,
+        "старую ссылку на оплату не предлагаем"
+    );
     assert_eq!(
         scalar(
             s,
@@ -2685,7 +2720,7 @@ async fn счёт_старой_панели_оплачивается_по_ста
             "SELECT count(*) FROM legacy_invoices WHERE recurring AND payment_id IS NULL"
         )
         .await,
-        2,
+        3,
         "договоры не расходуются"
     );
     let lava = |contract: &str, parent: Option<&str>| {
@@ -2757,6 +2792,22 @@ async fn счёт_старой_панели_оплачивается_по_ста
         3
     );
 
+    let (old_contract, request) = lava("charge-p7-1", Some("lava-old-7"));
+    crate::legacy::invoices::settle(s, "lava", &old_contract, &request)
+        .await
+        .unwrap()
+        .expect("списание по договору Lava.top старше 30 дней");
+    assert_eq!(
+        scalar(
+            s,
+            "SELECT count(*) FROM orders o JOIN legacy_invoices l ON l.order_id = o.id \
+                   WHERE l.old_id = 'p7' AND o.kind = 'renewal' \
+                   AND o.subscription_id = (SELECT id FROM subscriptions WHERE remna_user_id = 601)"
+        )
+        .await,
+        1
+    );
+
     let forged = crypto_paid("p5", "200.00", 7005);
     legacy_hook(&env, &forged, "00").await;
     assert_eq!(scalar(s, balance).await, 15_000);
@@ -2774,6 +2825,15 @@ async fn счёт_старой_панели_оплачивается_по_ста
         .await,
         0,
         "счёт, оплаченный в старой панели, больше не ждёт оплаты"
+    );
+    assert_eq!(
+        scalar(
+            s,
+            "SELECT count(*) FROM legacy_invoices WHERE old_id = 'p7' AND recurring"
+        )
+        .await,
+        1,
+        "повторный перенос не удаляет старый договор Lava.top"
     );
     let late = crypto_paid("p5", "200.00", 7006);
     legacy_hook(&env, &late, &sign(&late)).await;

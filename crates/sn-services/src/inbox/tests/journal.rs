@@ -1180,7 +1180,7 @@ async fn приём_уведомления_не_обрабатывает_стр�
         let mut conn = kit.services.store().conn().await.unwrap();
         assert!(
             conn.webhooks()
-                .claim_retry(id, admin, fresh)
+                .claim_retry(id, admin, fresh, "")
                 .await
                 .unwrap()
                 .is_some()

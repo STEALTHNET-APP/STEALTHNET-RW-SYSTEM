@@ -9,6 +9,8 @@ use sn_domain::subscription::Subscription;
 use sn_domain::tariff::Tariff;
 use sn_payments::RenewalEvent;
 
+pub(crate) const UNKNOWN_RENEWAL: &str = "продление подписки, которой нет в панели";
+
 fn renewal_order(
     link: &Link,
     subscription: &Subscription,
@@ -186,7 +188,7 @@ impl PaymentInbox<'_> {
                 .await?;
             tx.commit().await?;
             return Ok(AcceptResult::Ignored {
-                reason: "продление подписки, которой нет в панели".into(),
+                reason: UNKNOWN_RENEWAL.into(),
             });
         };
         if let Some(existing) = tx

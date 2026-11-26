@@ -1280,3 +1280,168 @@ fn проверка_после_списания_не_чаще_раза_в_сут
     assert!(!quick_repeat(None, now));
     assert_eq!(mask_email("alex@example.com"), "a***@example.com");
 }
+
+async fn journal_id(kit: &Kit, event_key: &str) -> i64 {
+    let mut conn = kit.services.store().conn().await.unwrap();
+    sqlx::query_scalar::<_, i64>(
+        "SELECT id FROM webhook_inbox WHERE source = 'lava' AND parsed->>'event_key' = $1",
+    )
+    .bind(event_key)
+    .fetch_one(conn.conn())
+    .await
+    .unwrap()
+}
+
+async fn legacy_contract(
+    kit: &Kit,
+    client: ClientId,
+    tariff: &Tariff,
+    subscription: &Subscription,
+) -> i64 {
+    let period = tariff.periods.iter().find(|p| p.days == 30).unwrap();
+    let intent = serde_json::to_value(PurchaseIntent::Subscription {
+        tariff_id: tariff.id,
+        period_id: period.id,
+        extra_devices: 0,
+        target: Some(subscription.id),
+    })
+    .unwrap();
+    let mut conn = kit.services.store().conn().await.unwrap();
+    sqlx::query_scalar::<_, i64>(
+        "INSERT INTO legacy_invoices (source, old_id, provider, old_provider, external_id, order_ref, \
+         client_id, intent, label, amount_minor, currency, created_at, recurring) \
+         VALUES ('stealthnet', 'pay-old-1', 'lava', 'lavatop', $1, 'ord-old-1', $2, $3, \
+         'Тариф «Стандарт»: подписка Lava.top с ежемесячным списанием', 299, 'USD', \
+         now() - interval '90 days', true) RETURNING id",
+    )
+    .bind(PARENT)
+    .bind(client.0)
+    .bind(intent)
+    .fetch_one(conn.conn())
+    .await
+    .unwrap()
+}
+
+async fn notice_of(kit: &Kit, txid: &str) -> (i64, Option<String>, Option<i64>) {
+    let mut conn = kit.services.store().conn().await.unwrap();
+    sqlx::query_as(
+        "SELECT id, resolution, resolved_by FROM payment_notices \
+         WHERE provider = 'lava' AND event_key = $1 AND kind = 'manual_credit'",
+    )
+    .bind(format!("renewal:{txid}"))
+    .fetch_one(conn.conn())
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn списание_по_договору_старой_панели_проводится_повтором_из_журнала() {
+    let server = MockServer::start().await;
+    let Some(kit) = lava_kit(&server).await else {
+        return;
+    };
+    let tariff = standard(&kit.services).await;
+    configure(&kit, true, json!([plan(&tariff, 30, 299, "MONTHLY")])).await;
+    let client = with_email(&kit, 5_093_118_501).await;
+    let subscription = provision(&kit, client, &tariff, 30).await;
+    let admin = kit
+        .services
+        .auth()
+        .upsert_owner("owner@example.com", "очень-надёжный-пароль")
+        .await
+        .unwrap()
+        .0;
+    let inbox = kit.services.inbox();
+
+    let first = renewal_id(11);
+    let second = renewal_id(12);
+    for charge in [&first, &second] {
+        mount_renewal(&server, charge, 0, 2.99).await;
+        assert_eq!(deliver(&kit, renewal_event(charge)).await, 200);
+    }
+    let first_id = journal_id(&kit, &format!("renewal:{first}")).await;
+    let second_id = journal_id(&kit, &format!("renewal:{second}")).await;
+    let waiting = inbox.journal_card(first_id).await.unwrap();
+    assert_eq!(waiting.item.outcome, sn_store::InboxOutcome::Ignored);
+    assert!(waiting.item.retry.available);
+    assert!(
+        waiting
+            .advice
+            .as_deref()
+            .is_some_and(|text| text.contains("Обработать ещё раз")),
+        "{:?}",
+        waiting.advice
+    );
+    assert_eq!(
+        count(
+            &kit,
+            "SELECT count(*) FROM payment_notices WHERE kind = 'manual_credit' AND resolved_at IS NULL"
+        )
+        .await,
+        2
+    );
+
+    let contract = legacy_contract(&kit, client, &tariff, &subscription).await;
+    let (by_hand, _, _) = notice_of(&kit, &second).await;
+    kit.services
+        .decisions()
+        .close_credit(by_hand, admin, "зачислили вручную")
+        .await
+        .unwrap();
+    let refused = inbox.retry_webhook(second_id, admin).await.unwrap_err();
+    assert_eq!(refused.code(), crate::inbox::RETRY_NOTICE_CLOSED);
+    assert!(
+        refused.to_string().contains("зачислили вручную"),
+        "{refused}"
+    );
+    assert_eq!(
+        inbox.journal_card(second_id).await.unwrap().item.outcome,
+        sn_store::InboxOutcome::Ignored
+    );
+
+    let before = remna_user(&kit, &subscription).await.expire_at;
+    let card = inbox.retry_webhook(first_id, admin).await.unwrap();
+    assert_eq!(card.item.outcome, sn_store::InboxOutcome::Accepted);
+    assert!(card.item.legacy_invoice);
+    assert!(!card.item.retry.available);
+    let renewed = run_renewal_order(&kit, &first).await;
+    assert_eq!(renewed.kind, sn_domain::order::OrderKind::Renewal);
+    assert_eq!(renewed.subscription_id, Some(subscription.id));
+    assert!(remna_user(&kit, &subscription).await.expire_at > before);
+    assert_eq!(
+        count(
+            &kit,
+            &format!("SELECT count(*) FROM webhook_inbox WHERE id = {first_id} AND legacy_invoice_id = {contract}")
+        )
+        .await,
+        1
+    );
+    let (_, resolution, resolved_by) = notice_of(&kit, &first).await;
+    assert_eq!(resolution.as_deref(), Some(crate::inbox::LEGACY_CREDITED));
+    assert_eq!(resolved_by, Some(admin.0));
+    assert!(inbox.retry_webhook(first_id, admin).await.is_err());
+    let txid_count = |txid: &str| {
+        format!(
+            "SELECT count(*) FROM payments WHERE provider = 'lava' AND provider_txid = '{txid}'"
+        )
+    };
+    assert_eq!(count(&kit, &txid_count(&first)).await, 1);
+    assert_eq!(count(&kit, &txid_count(&second)).await, 0);
+
+    let third = renewal_id(13);
+    mount_renewal(&server, &third, 30, 2.99).await;
+    assert_eq!(deliver(&kit, renewal_event(&third)).await, 200);
+    assert_eq!(count(&kit, &txid_count(&third)).await, 1);
+    let (_, resolution, resolved_by) = notice_of(&kit, &third).await;
+    assert_eq!(resolution.as_deref(), Some(crate::inbox::LEGACY_CREDITED));
+    assert_eq!(resolved_by, None);
+    assert_eq!(
+        count(
+            &kit,
+            "SELECT count(*) FROM payment_notices WHERE kind = 'manual_credit' AND resolved_at IS NULL"
+        )
+        .await,
+        0,
+        "списания по договору старой панели не просят зачислять вручную"
+    );
+}

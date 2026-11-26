@@ -29,6 +29,12 @@ pub struct PaymentNotice {
     pub created_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct ClosedCredit {
+    pub resolved_at: DateTime<Utc>,
+    pub resolution: Option<String>,
+}
+
 #[derive(sqlx::FromRow)]
 struct NoticeRow {
     id: i64,
@@ -160,6 +166,45 @@ impl<'c> PaymentNoticesRepo<'c> {
         .fetch_optional(&mut *self.conn)
         .await?;
         Ok(closed.is_some())
+    }
+
+    pub async fn close_credit_event(
+        &mut self,
+        provider: &str,
+        event_key: &str,
+        admin: Option<AdminId>,
+        note: &str,
+        at: DateTime<Utc>,
+    ) -> StoreResult<bool> {
+        let closed: Option<i64> = sqlx::query_scalar(
+            "UPDATE payment_notices SET resolved_at = $3, resolved_by = $4, resolution = $5 \
+             WHERE provider = $1 AND event_key = $2 AND kind = 'manual_credit' \
+             AND resolved_at IS NULL RETURNING id",
+        )
+        .bind(provider)
+        .bind(event_key)
+        .bind(at)
+        .bind(admin.map(|a| a.0))
+        .bind(note)
+        .fetch_optional(&mut *self.conn)
+        .await?;
+        Ok(closed.is_some())
+    }
+
+    pub async fn closed_credit(
+        &mut self,
+        provider: &str,
+        event_key: &str,
+    ) -> StoreResult<Option<ClosedCredit>> {
+        Ok(sqlx::query_as(
+            "SELECT resolved_at, resolution FROM payment_notices \
+             WHERE provider = $1 AND event_key = $2 AND kind = 'manual_credit' \
+             AND resolved_at IS NOT NULL",
+        )
+        .bind(provider)
+        .bind(event_key)
+        .fetch_optional(&mut *self.conn)
+        .await?)
     }
 
     pub async fn for_payment(&mut self, payment_id: PaymentId) -> StoreResult<Vec<PaymentNotice>> {

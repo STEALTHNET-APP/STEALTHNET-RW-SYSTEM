@@ -1,8 +1,10 @@
 use super::masking::{MaskedBody, body_event, mask_body};
+use super::renewal::UNKNOWN_RENEWAL;
 use super::{PaymentInbox, REJECTED_WEBHOOK_RETENTION_DAYS, WEBHOOK_RETENTION_DAYS, amount_text};
 use crate::error::{ServiceError, ServiceResult};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
+use sn_domain::client::Locale;
 use sn_domain::format;
 use sn_domain::ids::{AdminId, ClientId, PaymentId};
 use sn_domain::money::{Amount, Currency};
@@ -10,10 +12,11 @@ use sn_domain::paging::{Page, PageRequest};
 use sn_domain::payment::{NoticeKind, Payment, PaymentStatus};
 use sn_payments::{
     OutcomeSignal, PaymentError, PaymentRef, ProviderKind, ProviderStatus, WebhookOutcome,
+    WebhookRequest,
 };
 use sn_store::{
-    ActorKind, AuditEntry, ClientPerson, Db, InboxAttention, InboxOutcome, JournalEntry,
-    JournalFilter, JournalRow, TrailKind, TrailStep,
+    ActorKind, AuditEntry, ClientPerson, ClosedCredit, Db, InboxAttention, InboxOutcome,
+    JournalEntry, JournalFilter, JournalRow, TrailKind, TrailStep,
 };
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
@@ -22,6 +25,7 @@ pub const RETRY_STALE_MINUTES: i64 = 10;
 pub const ATTENTION_HOURS: i64 = 24;
 pub const RETRY_REVERSED: &str = "webhook.retry_reversed";
 pub const RETRY_UNCONFIRMED: &str = "webhook.retry_unconfirmed";
+pub const RETRY_NOTICE_CLOSED: &str = "webhook.retry_notice_closed";
 const WEBHOOK_RETRIED_AUDIT: &str = "payment.webhook_retried";
 const WEBHOOK_RETRY_STARTED_AUDIT: &str = "payment.webhook_retry_started";
 const RETRY_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
@@ -48,6 +52,27 @@ fn reversed(refund: bool) -> ServiceError {
              прошёл. Сверьте платёж в её кабинете. Если деньги всё же пришли, отметьте счёт \
              оплаченным вручную."
         },
+    )
+}
+
+fn notice_closed(closed: &ClosedCredit) -> ServiceError {
+    let date = format::date_in(closed.resolved_at.date_naive(), Locale::Ru);
+    let closed_text = match closed
+        .resolution
+        .as_deref()
+        .map(str::trim)
+        .filter(|note| !note.is_empty())
+    {
+        Some(note) => format!("закрыто {date} с пометкой «{note}»"),
+        None => format!("закрыто {date}"),
+    };
+    ServiceError::rejected(
+        RETRY_NOTICE_CLOSED,
+        format!(
+            "Повторить нельзя: оповещение о ручном зачислении этого списания {closed_text}. \
+             Если деньги уже зачислены, повтор зачислит их второй раз. Если не зачислены, \
+             зачислите их вручную."
+        ),
     )
 }
 
@@ -436,8 +461,12 @@ fn verdict(
     }
 }
 
+fn waits_for_contract(row: &JournalRow) -> bool {
+    row.outcome == InboxOutcome::Ignored && row.error.as_deref() == Some(UNKNOWN_RENEWAL)
+}
+
 fn retry_state(row: &JournalRow, now: DateTime<Utc>) -> RetryState {
-    let failed = row.outcome == InboxOutcome::Error || stale(row, now);
+    let failed = row.outcome == InboxOutcome::Error || stale(row, now) || waits_for_contract(row);
     if !failed {
         return RetryState {
             available: false,
@@ -655,6 +684,13 @@ impl PaymentInbox<'_> {
 
     async fn retry_guard(&self, row: &JournalRow, outcome: &WebhookOutcome) -> ServiceResult<()> {
         let mut conn = self.services.store().conn().await?;
+        if let Some(closed) = conn
+            .payment_notices()
+            .closed_credit(&row.source, &outcome.event_key)
+            .await?
+        {
+            return Err(notice_closed(&closed));
+        }
         let payment = match &outcome.payment {
             Some(reference) => super::lookup(&mut conn, &row.source, reference).await?,
             None => None,
@@ -707,6 +743,51 @@ impl PaymentInbox<'_> {
         else {
             return Ok(());
         };
+        if let Some(PaymentRef::Renewal(renewal)) = &outcome.payment {
+            let config = self.services.payments().config(provider.id());
+            let confirmed = tokio::time::timeout(
+                RETRY_CHECK_TIMEOUT,
+                provider.confirm_renewal(&config, &renewal.series, &renewal.txid),
+            )
+            .await;
+            return match confirmed {
+                Ok(Ok(Some(fresh)))
+                    if matches!(
+                        fresh.status,
+                        ProviderStatus::Paid | ProviderStatus::Overpaid { .. }
+                    ) =>
+                {
+                    Ok(())
+                }
+                Ok(Ok(_)) => Err(ServiceError::rejected(
+                    RETRY_UNCONFIRMED,
+                    format!(
+                        "Повторить нельзя: {} не подтверждает это списание как оплаченное \
+                         продление. Сверьте платёж в её кабинете.",
+                        provider.title()
+                    ),
+                )),
+                Ok(Err(
+                    PaymentError::NotImplemented(_)
+                    | PaymentError::Unsupported(_)
+                    | PaymentError::NotConfigured(_),
+                )) => Ok(()),
+                Ok(Err(err)) => Err(ServiceError::rejected(
+                    RETRY_UNCONFIRMED,
+                    format!(
+                        "Не удалось спросить у {} статус списания: {err}. Попробуйте позже.",
+                        provider.title()
+                    ),
+                )),
+                Err(_) => Err(ServiceError::rejected(
+                    RETRY_UNCONFIRMED,
+                    format!(
+                        "{} не ответила на запрос статуса списания. Попробуйте позже.",
+                        provider.title()
+                    ),
+                )),
+            };
+        }
         let external = payment
             .filter(|_| provider.status_by_order())
             .map(|p| p.public_id.to_string())
@@ -798,7 +879,12 @@ impl PaymentInbox<'_> {
             let mut tx = self.services.store().begin().await?;
             let claim = tx
                 .webhooks()
-                .claim_retry(id, admin, now - Duration::minutes(RETRY_STALE_MINUTES))
+                .claim_retry(
+                    id,
+                    admin,
+                    now - Duration::minutes(RETRY_STALE_MINUTES),
+                    UNKNOWN_RENEWAL,
+                )
                 .await?;
             if let Some(claim) = &claim {
                 tx.audit()
@@ -823,6 +909,7 @@ impl PaymentInbox<'_> {
             let entry = self.retry_entry(id).await?;
             return Err(unavailable(&entry.row, now));
         };
+        let mut legacy_invoice = None;
         let settled = match serde_json::from_value::<WebhookOutcome>(claim.parsed) {
             Ok(mut outcome) => {
                 if outcome
@@ -834,6 +921,16 @@ impl PaymentInbox<'_> {
                 }
                 let result = self.apply_outcome(&claim.source, &outcome).await;
                 let mut settled = super::Settled::from(result);
+                let request = WebhookRequest {
+                    headers: Vec::new(),
+                    body: claim.body.unwrap_or_default().into(),
+                    remote_ip: None,
+                    route_suffix: None,
+                    query: None,
+                };
+                legacy_invoice = self
+                    .settle_legacy(&claim.source, &outcome, &request, &mut settled, Some(admin))
+                    .await;
                 if settled.payment_id.is_none() {
                     settled.payment_id = self.linked_payment(&claim.source, &outcome).await;
                 }
@@ -869,11 +966,14 @@ impl PaymentInbox<'_> {
                         "outcome": settled.outcome.as_str(),
                         "payment_id": settled.payment_id,
                         "error": settled.error,
+                        "legacy_invoice": legacy_invoice,
                     }),
                     ip: None,
                 })
                 .await?;
         }
+        self.mark_legacy(&claim.source, &claim.dedupe_key, false, legacy_invoice)
+            .await;
         tracing::info!(webhook = id, admin = %admin, outcome = settled.outcome.as_str(), "уведомление платёжки обработано повторно");
         self.journal_card(id).await
     }
@@ -943,6 +1043,12 @@ fn advice(row: &JournalRow, now: DateTime<Utc>) -> Option<String> {
         }
         InboxOutcome::Duplicate => {
             "Это событие уже было учтено раньше, повторно ничего не зачислено."
+        }
+        InboxOutcome::Ignored if waits_for_contract(row) => {
+            "Платёжка списала деньги за продление подписки, которой нет в панели, поэтому ничего \
+             не зачислено. Если договор этой подписки добавили позже, например повторным переносом \
+             из старой панели, нажмите «Обработать ещё раз»: списание проведётся по нему. Иначе \
+             зачислите деньги вручную."
         }
         InboxOutcome::Accepted | InboxOutcome::Ignored => return None,
     };

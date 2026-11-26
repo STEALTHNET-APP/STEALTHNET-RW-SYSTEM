@@ -666,11 +666,16 @@ fn payments(dump: &Dump, legacy: &mut Legacy, option_days: &HashMap<String, u32>
         unpaid,
         "неоплаченных и отменённых счетов: в истории они не нужны.",
     );
-    let fresh = legacy
+    let open: Vec<&LInvoice> = legacy
         .invoices
         .iter()
         .filter(|i| !i.old_id.starts_with("contract:"))
+        .collect();
+    let kept = open
+        .iter()
+        .filter(|i| i.recurring && invoice_stale(legacy, i.created_at))
         .count() as u64;
+    let fresh = open.len() as u64 - kept;
     if fresh > 0 {
         legacy.skip(
             "invoices_waiting",
@@ -678,6 +683,11 @@ fn payments(dump: &Dump, legacy: &mut Legacy, option_days: &HashMap<String, u32>
             format!("неоплаченных счетов последних {INVOICE_DAYS} дней не попадут в историю, но новая панель их запомнит: если клиент оплатит такой счёт после переключения, купленное выдастся само."),
         );
     }
+    legacy.skip(
+        "lava_contracts_kept",
+        kept,
+        format!("счетов Lava.top старше {INVOICE_DAYS} дней без отметки об оплате: старая панель могла не заметить оплату, а Lava.top продолжает списывать деньги по договору. Новая панель запомнит эти договоры и проведёт такие списания сама."),
+    );
     legacy.skip(
         "payments_free",
         free,
@@ -688,6 +698,11 @@ fn payments(dump: &Dump, legacy: &mut Legacy, option_days: &HashMap<String, u32>
         unknown_currency,
         "оплат в незнакомой валюте: их нет в истории.",
     );
+}
+
+fn invoice_stale(legacy: &Legacy, created_at: chrono::DateTime<chrono::Utc>) -> bool {
+    legacy.dumped_at.unwrap_or_else(chrono::Utc::now) - created_at
+        > chrono::Duration::days(INVOICE_DAYS)
 }
 
 fn pending_invoice(
@@ -704,12 +719,12 @@ fn pending_invoice(
         return None;
     }
     let created_at = row.time("created_at")?;
-    let now = legacy.dumped_at.unwrap_or_else(chrono::Utc::now);
-    if now - created_at > chrono::Duration::days(INVOICE_DAYS) {
-        return None;
-    }
     let raw_provider = row.string("provider")?;
     let provider = old_provider(&raw_provider).filter(|p| *p != "stars")?;
+    let stale = invoice_stale(legacy, created_at);
+    if stale && provider != "lava" {
+        return None;
+    }
     let meta = row.json("metadata").unwrap_or(serde_json::Value::Null);
     let stars = meta
         .pointer("/stars/total")
@@ -763,7 +778,7 @@ fn pending_invoice(
         currency,
         stars,
         purpose,
-        pay_url: text("redirectTargetUrl").filter(|u| u.starts_with("https://")),
+        pay_url: text("redirectTargetUrl").filter(|u| !stale && u.starts_with("https://")),
         recurring: provider == "lava",
         created_at,
     })

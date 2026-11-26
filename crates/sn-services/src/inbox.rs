@@ -48,8 +48,9 @@ pub use blocked_refund::{
 pub use bonus::RefundBonus;
 pub use journal::{
     ATTENTION_HOURS, BodyView, Fact, JournalCard, JournalItem, JournalPage, JournalPaymentView,
-    JournalQuery, OutcomeGroup, ProviderOption, RETRY_REVERSED, RETRY_STALE_MINUTES,
-    RETRY_UNCONFIRMED, Retention, RetryState, StepView, Tone, WebhookAttention, event_label, exact,
+    JournalQuery, OutcomeGroup, ProviderOption, RETRY_NOTICE_CLOSED, RETRY_REVERSED,
+    RETRY_STALE_MINUTES, RETRY_UNCONFIRMED, Retention, RetryState, StepView, Tone,
+    WebhookAttention, event_label, exact,
 };
 pub use masking::{MaskedBody, mask_body};
 pub use refund_action::{
@@ -78,6 +79,7 @@ pub const TOPUP_TEMPLATE: &str = "topup_done";
 pub const OUTSIDE_REFUND_PREFIX: &str = "outside:";
 const HOLD_REASON: &str = "платёжная система задержала оплату для проверки";
 const NOTICE_TEXT_LIMIT: usize = 1000;
+pub const LEGACY_CREDITED: &str = "Зачислено автоматически по счёту старой панели";
 
 const PURGE_BATCH: i64 = 500;
 const PURGE_ROUNDS: usize = 40;
@@ -838,40 +840,9 @@ impl<'a> PaymentInbox<'a> {
             tracing::warn!(error = %err, "старые записи вебхуков не удалены");
         }
         let mut settled = Settled::from(self.apply_outcome(provider.id(), &parsed).await);
-        let mut legacy_invoice = None;
-        if matches!(
-            settled.outcome,
-            InboxOutcome::PaymentNotFound | InboxOutcome::Ignored
-        ) {
-            match crate::legacy::invoices::settle(
-                self.services,
-                provider.id(),
-                &parsed,
-                &hook.request,
-            )
-            .await
-            {
-                Ok(Some(found)) => {
-                    let again = WebhookOutcome {
-                        payment: Some(PaymentRef::Payment(found.payment)),
-                        ..parsed.clone()
-                    };
-                    settled = Settled::from(self.apply_outcome(provider.id(), &again).await);
-                    settled.payment_id = settled.payment_id.or(Some(found.payment));
-                    legacy_invoice = Some(found.invoice);
-                }
-                Ok(None) => {}
-                Err(err) => {
-                    tracing::error!(provider = provider.id(), error = %err, "счёт старой панели не проведён");
-                    settled = Settled {
-                        outcome: InboxOutcome::Error,
-                        payment_id: None,
-                        error: Some(format!("счёт старой панели не проведён: {err}")),
-                        failed: true,
-                    };
-                }
-            }
-        }
+        let legacy_invoice = self
+            .settle_legacy(provider.id(), &parsed, &hook.request, &mut settled, None)
+            .await;
         if settled.payment_id.is_none() && settled.outcome != InboxOutcome::PaymentNotFound {
             settled.payment_id = self.linked_payment(provider.id(), &parsed).await;
         }
@@ -896,6 +867,71 @@ impl<'a> PaymentInbox<'a> {
         self.mark_legacy(provider.id(), &record_key, legacy_path, legacy_invoice)
             .await;
         Ok(response)
+    }
+
+    async fn settle_legacy(
+        &self,
+        provider: &str,
+        parsed: &WebhookOutcome,
+        request: &WebhookRequest,
+        settled: &mut Settled,
+        admin: Option<AdminId>,
+    ) -> Option<i64> {
+        if !matches!(
+            settled.outcome,
+            InboxOutcome::PaymentNotFound | InboxOutcome::Ignored
+        ) {
+            return None;
+        }
+        match crate::legacy::invoices::settle(self.services, provider, parsed, request).await {
+            Ok(Some(found)) => {
+                let again = WebhookOutcome {
+                    payment: Some(PaymentRef::Payment(found.payment)),
+                    ..parsed.clone()
+                };
+                *settled = Settled::from(self.apply_outcome(provider, &again).await);
+                settled.payment_id = settled.payment_id.or(Some(found.payment));
+                if matches!(
+                    settled.outcome,
+                    InboxOutcome::Accepted | InboxOutcome::Duplicate
+                ) {
+                    self.close_legacy_credit(provider, &parsed.event_key, admin)
+                        .await;
+                }
+                Some(found.invoice)
+            }
+            Ok(None) => None,
+            Err(err) => {
+                tracing::error!(provider, error = %err, "счёт старой панели не проведён");
+                *settled = Settled {
+                    outcome: InboxOutcome::Error,
+                    payment_id: None,
+                    error: Some(format!("счёт старой панели не проведён: {err}")),
+                    failed: true,
+                };
+                None
+            }
+        }
+    }
+
+    async fn close_legacy_credit(&self, provider: &str, event_key: &str, admin: Option<AdminId>) {
+        let closed = match self.services.store().conn().await {
+            Ok(mut conn) => conn
+                .payment_notices()
+                .close_credit_event(
+                    provider,
+                    event_key,
+                    admin,
+                    LEGACY_CREDITED,
+                    self.services.now(),
+                )
+                .await
+                .map_err(ServiceError::from),
+            Err(err) => Err(err.into()),
+        };
+        if let Err(err) = closed {
+            tracing::error!(provider, event = event_key, error = %err, "оповещение о ручном зачислении не закрыто, хотя списание проведено по счёту старой панели");
+        }
     }
 
     async fn linked_payment(&self, provider: &str, outcome: &WebhookOutcome) -> Option<PaymentId> {

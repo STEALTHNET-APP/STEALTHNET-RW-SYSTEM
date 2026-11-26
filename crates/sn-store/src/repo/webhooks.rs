@@ -151,7 +151,9 @@ struct InboxEntryRow {
 #[derive(Debug, Clone, PartialEq)]
 pub struct RetryClaim {
     pub source: String,
+    pub dedupe_key: String,
     pub parsed: serde_json::Value,
+    pub body: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -435,20 +437,31 @@ impl<'c> WebhooksRepo<'c> {
         id: i64,
         admin: AdminId,
         stale_before: DateTime<Utc>,
+        ignored: &str,
     ) -> StoreResult<Option<RetryClaim>> {
-        let row: Option<(String, Option<serde_json::Value>)> = sqlx::query_as(&format!(
+        type Claimed = (String, String, Option<serde_json::Value>, Option<Vec<u8>>);
+        let row: Option<Claimed> = sqlx::query_as(&format!(
             "UPDATE webhook_inbox SET outcome = 'received', claimed_at = now(), \
              trail = {TRAIL} || jsonb_build_array(jsonb_build_object('at', now(), 'step', 'retry', 'admin_id', $2::bigint)) \
              WHERE id = $1 AND parsed IS NOT NULL AND (outcome = 'error' OR \
+             (outcome = 'ignored' AND error = $4) OR \
              (outcome = 'received' AND COALESCE(claimed_at, received_at) < $3)) \
-             RETURNING source, parsed"
+             RETURNING source, dedupe_key, parsed, body"
         ))
         .bind(id)
         .bind(admin.0)
         .bind(stale_before)
+        .bind(ignored)
         .fetch_optional(&mut *self.conn)
         .await?;
-        Ok(row.and_then(|(source, parsed)| parsed.map(|parsed| RetryClaim { source, parsed })))
+        Ok(row.and_then(|(source, dedupe_key, parsed, body)| {
+            parsed.map(|parsed| RetryClaim {
+                source,
+                dedupe_key,
+                parsed,
+                body,
+            })
+        }))
     }
 
     pub async fn claim(&mut self, id: i64, stale_before: DateTime<Utc>) -> StoreResult<bool> {
@@ -660,6 +673,8 @@ mod tests {
     use crate::testing::test_store;
     use chrono::Duration;
 
+    const WAITS: &str = "ждёт договора";
+
     fn hook(key: &str, body: Option<&[u8]>) -> NewInboundWebhook {
         NewInboundWebhook {
             source: "cryptopay".into(),
@@ -779,7 +794,7 @@ mod tests {
             .unwrap();
         assert!(
             conn.webhooks()
-                .claim_retry(second.id, AdminId(1), Utc::now())
+                .claim_retry(second.id, AdminId(1), Utc::now(), WAITS)
                 .await
                 .unwrap()
                 .is_none()
@@ -793,14 +808,21 @@ mod tests {
             .unwrap();
         let claim = conn
             .webhooks()
-            .claim_retry(third.id, AdminId(1), Utc::now())
+            .claim_retry(third.id, AdminId(1), Utc::now(), WAITS)
             .await
             .unwrap()
             .unwrap();
         assert_eq!(claim.source, "cryptopay");
+        assert_eq!(claim.dedupe_key, "paid:3");
+        assert_eq!(claim.body.as_deref(), Some(&b"{}"[..]));
         assert!(
             conn.webhooks()
-                .claim_retry(third.id, AdminId(1), Utc::now() - Duration::minutes(10))
+                .claim_retry(
+                    third.id,
+                    AdminId(1),
+                    Utc::now() - Duration::minutes(10),
+                    WAITS
+                )
                 .await
                 .unwrap()
                 .is_none()
@@ -840,6 +862,28 @@ mod tests {
                 ),
             ]
         );
+        for (key, reason, claimed) in [("paid:4", WAITS, true), ("paid:5", "не наше", false)]
+        {
+            let mut hook = hook(key, Some(b"{\"contractId\":\"c-4\"}"));
+            hook.parsed = Some(serde_json::json!({ "status": { "type": "paid" } }));
+            let record = conn.webhooks().record(&hook).await.unwrap();
+            conn.webhooks()
+                .finish(record.id, InboxOutcome::Ignored, None, Some(reason), None)
+                .await
+                .unwrap();
+            let claim = conn
+                .webhooks()
+                .claim_retry(record.id, AdminId(1), Utc::now(), WAITS)
+                .await
+                .unwrap();
+            assert_eq!(claim.is_some(), claimed, "{key}");
+            if let Some(claim) = claim {
+                assert_eq!(
+                    claim.body.as_deref(),
+                    Some(&b"{\"contractId\":\"c-4\"}"[..])
+                );
+            }
+        }
         drop(conn);
         db.cleanup().await;
     }
