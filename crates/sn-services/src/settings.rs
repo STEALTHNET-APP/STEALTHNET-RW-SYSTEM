@@ -2306,6 +2306,9 @@ impl<'a> SettingsOps<'a> {
         {
             merged.set(STARS_TOKEN_FIELD, Value::String(token));
         }
+        if update.config.contains_key("plans") && provider.renewals_enabled(&merged) {
+            crate::renewals::check_plans(&mut tx, provider.as_ref(), &merged).await?;
+        }
         let enabled = stored
             .enabled
             .unwrap_or_else(|| provider.enabled_by_default());

@@ -242,6 +242,31 @@ pub const ACTIONS: &[ActionLabel] = &[
         Area::Subscriptions,
     ),
     a(
+        "subscription.renewal_started",
+        "Оформлено автопродление через платёжную систему",
+        Area::Subscriptions,
+    ),
+    a(
+        "subscription.renewal_cancel_requested",
+        "Отправлена отмена автопродления в платёжную систему",
+        Area::Subscriptions,
+    ),
+    a(
+        "subscription.renewal_cancelled",
+        "Автопродление через платёжную систему отменено",
+        Area::Subscriptions,
+    ),
+    a(
+        "subscription.renewal_failed",
+        "Платёжная система не смогла списать за продление",
+        Area::Subscriptions,
+    ),
+    a(
+        "subscription.renewal_charge_found",
+        "Сверка нашла продление без уведомления",
+        Area::Subscriptions,
+    ),
+    a(
         "subscription.disconnect_all_devices",
         "Отключены все устройства",
         Area::Subscriptions,

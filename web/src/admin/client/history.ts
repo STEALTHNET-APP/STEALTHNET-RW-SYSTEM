@@ -276,6 +276,33 @@ export function historyLine(item: HistoryItem, index: number, referrer: Person |
           const n = num(details.days);
           return { ...base, what: n ? `Добавлено ${days(n)}` : 'Добавлены дни', note: actor, sum: '' };
         }
+        case 'subscription.renewal_started':
+        case 'subscription.renewal_cancel_requested':
+        case 'subscription.renewal_cancelled':
+        case 'subscription.renewal_failed':
+        case 'subscription.renewal_charge_found': {
+          const provider = str(details.provider) === 'lava' ? 'Lava.top' : (str(details.provider) ?? 'платёжную систему');
+          const source = str(details.source);
+          const sources: Record<string, string> = {
+            client: 'отменил клиент',
+            operator: 'отменил оператор',
+            provider: `отменено в ${provider}`,
+            refund: 'отменено возвратом',
+            tariff: 'отменено при смене тарифа',
+            block: 'отменено при блокировке клиента',
+            chargeback: 'отменено после чарджбэка',
+            gone: 'подписки в панели уже нет',
+          };
+          const what: Record<string, string> = {
+            'subscription.renewal_started': `Оформлено автопродление через ${provider}`,
+            'subscription.renewal_cancel_requested': `Отправлена отмена автопродления в ${provider}`,
+            'subscription.renewal_cancelled': `Автопродление через ${provider} отменено`,
+            'subscription.renewal_failed': `${provider} не смогла списать за продление, автопродление закрыто`,
+            'subscription.renewal_charge_found': `Сверка с ${provider} нашла продление без уведомления`,
+          };
+          const note = source && sources[source] ? sources[source] : actor;
+          return { ...base, what: what[item.action] ?? item.action, note, sum: '' };
+        }
         case 'subscription.add_days_undone': {
           const n = num(details.days);
           return { ...base, what: n ? `Отменено добавление ${days(n)}` : 'Отменено добавление дней', note: actor, sum: '' };

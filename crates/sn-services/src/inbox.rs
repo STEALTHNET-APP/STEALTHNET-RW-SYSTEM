@@ -19,8 +19,8 @@ use sn_modules::ModuleError;
 use sn_payments::providers::{StarsPayment, StarsPreCheckout};
 use sn_payments::{
     Buyer, OutcomeSignal, PaymentError, PaymentProvider, PaymentRef, PrecheckVerdict, ProviderKind,
-    ProviderNotice, ProviderStatus, RefundRequest, SavedMethod, WebhookOutcome, WebhookReply,
-    WebhookRequest,
+    ProviderNotice, ProviderStatus, RefundRequest, RenewalRef, SavedMethod, WebhookOutcome,
+    WebhookReply, WebhookRequest,
 };
 use sn_store::{
     ActorKind, AuditEntry, Db, InboxOutcome, NewInboundWebhook, NewPaymentNotice,
@@ -37,6 +37,7 @@ mod journal;
 mod masking;
 mod refund_action;
 mod refund_requests;
+mod renewal;
 #[cfg(test)]
 mod tests;
 
@@ -540,7 +541,9 @@ async fn find_payment(
     let id = match reference {
         PaymentRef::Payment(id) => *id,
         PaymentRef::PublicId(public_id) => tx.payments().by_public_id(*public_id).await?.id,
-        PaymentRef::ProviderTxid(txid) | PaymentRef::Buyer(Buyer { txid, .. }) => {
+        PaymentRef::ProviderTxid(txid)
+        | PaymentRef::Buyer(Buyer { txid, .. })
+        | PaymentRef::Renewal(RenewalRef { txid, .. }) => {
             tx.payments()
                 .by_provider_txid(provider, txid)
                 .await?
@@ -559,7 +562,9 @@ async fn lookup(
     let found = match reference {
         PaymentRef::Payment(id) => db.payments().get(*id).await.map(Some),
         PaymentRef::PublicId(public_id) => db.payments().by_public_id(*public_id).await.map(Some),
-        PaymentRef::ProviderTxid(txid) | PaymentRef::Buyer(Buyer { txid, .. }) => {
+        PaymentRef::ProviderTxid(txid)
+        | PaymentRef::Buyer(Buyer { txid, .. })
+        | PaymentRef::Renewal(RenewalRef { txid, .. }) => {
             db.payments().by_provider_txid(provider, txid).await
         }
     };
@@ -1032,6 +1037,9 @@ impl<'a> PaymentInbox<'a> {
         {
             self.note_event(provider, outcome, notice).await?;
         }
+        if let Some(event) = outcome.renewal_event() {
+            return self.accept_renewal_event(provider, event).await;
+        }
         let Some(reference) = &outcome.payment else {
             return Ok(AcceptResult::Ignored {
                 reason: "событие без нашего платежа".into(),
@@ -1041,6 +1049,14 @@ impl<'a> PaymentInbox<'a> {
             && outcome.status == ProviderStatus::Paid
         {
             return self.accept_buyer(provider, buyer, outcome).await;
+        }
+        if let PaymentRef::Renewal(renewal) = reference {
+            if outcome.status == ProviderStatus::Paid {
+                return self.accept_renewal(provider, renewal, outcome).await;
+            }
+            return Ok(AcceptResult::Ignored {
+                reason: "продление ещё не оплачено".into(),
+            });
         }
         match outcome.status {
             ProviderStatus::Pending
@@ -1081,11 +1097,18 @@ impl<'a> PaymentInbox<'a> {
                     .await
             }
             ProviderStatus::Refunded => {
-                self.accept_refund(provider, reference, outcome, None).await
+                let result = self
+                    .accept_refund(provider, reference, outcome, None)
+                    .await?;
+                self.renewal_after_refund(&result).await;
+                Ok(result)
             }
             ProviderStatus::PartiallyRefunded { refunded } => {
-                self.accept_refund(provider, reference, outcome, Some(refunded))
-                    .await
+                let result = self
+                    .accept_refund(provider, reference, outcome, Some(refunded))
+                    .await?;
+                self.renewal_after_refund(&result).await;
+                Ok(result)
             }
             ProviderStatus::RefundDeclined => {
                 self.decline_refund(provider, reference, outcome).await
@@ -1164,6 +1187,16 @@ impl<'a> PaymentInbox<'a> {
                 payment = ?payment.as_ref().map(|p| p.id),
                 "платёжная система сообщила о событии, которое нужно проверить вручную"
             );
+        }
+        if notice.kind == NoticeKind::Chargeback
+            && let Some(payment) = &payment
+            && let Err(err) = self
+                .services
+                .renewals()
+                .cancel_for_payment(payment.id, crate::renewals::CancelSource::Chargeback)
+                .await
+        {
+            tracing::warn!(payment = %payment.id, error = %err, "автопродление после чарджбэка не отменено, повторит сверка");
         }
         if notice.kind == NoticeKind::Chargeback
             && let Some(payment) = &payment
@@ -1754,6 +1787,7 @@ impl<'a> PaymentInbox<'a> {
             self.save_method(tx, &paid, method).await?;
         }
         let order = tx.orders().lock(paid.order_id).await?;
+        crate::renewals::activate(tx, &paid, &order, self.services.now()).await?;
         let resumes =
             order.status == OrderStatus::Review && !paid_elsewhere(tx, order.id, paid.id).await?;
         let order =

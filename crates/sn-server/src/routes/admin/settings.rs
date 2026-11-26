@@ -56,6 +56,7 @@ pub fn routes() -> Router<AppState> {
         )
         .route("/payments/providers/{id}/check", post(check_provider))
         .route("/payments/providers/{id}/catalog", get(provider_catalog))
+        .route("/payments/providers/{id}/renewals", get(provider_renewals))
         .route("/modules", get(modules))
         .route("/modules/{id}", patch(toggle_module))
         .route(
@@ -445,6 +446,15 @@ async fn provider_catalog(
     Ok(Json(
         state.services.settings_ops().provider_catalog(&id).await?,
     ))
+}
+
+async fn provider_renewals(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<sn_services::renewals::RenewalStats>> {
+    admin.require(Permission::Settings)?;
+    Ok(Json(state.services.renewals().stats(&id).await?))
 }
 
 async fn check_provider(

@@ -28,7 +28,8 @@ export type Tariff = {
 export type Category = { id: number; name: string; sort: number; visible: boolean; subscription_limit?: number | null };
 export type Channels = { bot: boolean; cabinet: boolean; miniapp: boolean };
 export type Stats = { tariff_id: number; sales_30d: number; channels: Channels };
-export type View = { currency: Currency; categories: Category[]; tariffs: Tariff[]; stats: Stats[] };
+export type BoundTerm = { provider: string; title: string; tariff_id: number; period_id: number; amount: { minor: number; currency: Currency }; every: string };
+export type View = { currency: Currency; categories: Category[]; tariffs: Tariff[]; stats: Stats[]; renewals?: BoundTerm[] };
 export type Squad = { uuid: string; name: string; nodes: number | null };
 export type Applied = { users: number; failed: number; squads: boolean; traffic: boolean; devices: boolean } | null;
 

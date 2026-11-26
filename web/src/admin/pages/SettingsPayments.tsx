@@ -10,6 +10,7 @@ import { useSession } from '../session';
 import { Switch } from '../ui';
 import '../form.css';
 import { needText, SettingsLayout } from './SettingsLayout';
+import { LavaSetup, lavaPlans, type LavaPlan } from './LavaSetup';
 import { TributeSetup, tributeValue, type TributeValue } from './TributeSetup';
 
 type Channels = { cabinet: boolean; bot: boolean; miniapp: boolean };
@@ -731,6 +732,14 @@ export function SettingsPayments() {
               </span>
             </div>
           ) : null}
+          {visible.some((p) => p.id === 'lava') ? (
+            <div className="pay-renew">
+              <span className="cap">
+                Через Lava.top клиент может включить автопродление картой у сроков с подпиской Lava.top: это настраивается в строке Lava.top, кнопка «Настроить». Такие
+                подписки продлевает Lava.top, с баланса за них не списывается.
+              </span>
+            </div>
+          ) : null}
         </section>
       </div>
 
@@ -810,6 +819,9 @@ function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved, onChec
   const [tribute, setTribute] = useState<TributeValue>({ products: [], plans: [] });
   const [savedTribute, setSavedTribute] = useState(JSON.stringify({ products: [], plans: [] }));
   const withTribute = provider.id === 'tribute';
+  const [lava, setLava] = useState<LavaPlan[]>([]);
+  const [savedLava, setSavedLava] = useState('[]');
+  const withLava = provider.id === 'lava';
   const withBonus = provider.kind === 'external';
   const percent = bonusPercent(bonus);
   const minLimit = bonusLimit(bonus.min);
@@ -831,6 +843,9 @@ function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved, onChec
         const loadedTribute = tributeValue(d.provider.settings);
         setTribute(loadedTribute);
         setSavedTribute(JSON.stringify(loadedTribute));
+        const loadedLava = lavaPlans(d.provider.settings);
+        setLava(loadedLava);
+        setSavedLava(JSON.stringify(loadedLava));
         const loaded = settle(methodRows(d.provider.methods));
         setRows(loaded);
         setSavedRows(JSON.stringify(chosenMethods(loaded)));
@@ -893,9 +908,11 @@ function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved, onChec
 
   const keysPending = schema !== null && (Object.keys(changedConfig(schema, config, values)).length > 0 || secrets.clear.length > 0);
   const tributePending = withTribute && JSON.stringify(tribute) !== savedTribute;
+  const lavaPending = withLava && JSON.stringify(lava) !== savedLava;
   const pending =
     keysPending ||
     tributePending ||
+    lavaPending ||
     bonusPending ||
     JSON.stringify(chosenMethods(rows)) !== savedRows ||
     JSON.stringify([labelTitle.trim(), labelHint.trim()]) !== savedLabel;
@@ -948,7 +965,11 @@ function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved, onChec
         method: 'PUT',
         body: {
           currency,
-          config: { ...changedConfig(schema, config, values), ...(tributePending ? { products: tribute.products, plans: tribute.plans } : {}) },
+          config: {
+            ...changedConfig(schema, config, values),
+            ...(tributePending ? { products: tribute.products, plans: tribute.plans } : {}),
+            ...(lavaPending ? { plans: lava } : {}),
+          },
           clear: secrets.clear,
           ...(JSON.stringify(methods) !== savedRows ? { methods } : {}),
           ...(bonusPending
@@ -967,6 +988,7 @@ function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved, onChec
       });
       onSaved(result.provider);
       setSavedTribute(JSON.stringify(tribute));
+      setSavedLava(JSON.stringify(lava));
       if (!keysChanged || !checkable || !result.provider.configured) {
         onClose();
         return;
@@ -1010,6 +1032,7 @@ function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved, onChec
         />
       ) : null}
       {schema && withTribute ? <TributeSetup value={tribute} onChange={setTribute} busy={busy} connected={connected} currency={currency} /> : null}
+      {schema && withLava ? <LavaSetup value={lava} onChange={setLava} busy={busy} connected={connected} currency={currency} /> : null}
       {rows.length ? (
         <div className="sf-field" style={{ maxWidth: 'none' }} role="group" aria-labelledby={`pay-m-${provider.id}`}>
           <span className="sf-label" id={`pay-m-${provider.id}`}>

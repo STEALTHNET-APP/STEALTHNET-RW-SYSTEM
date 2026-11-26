@@ -5,9 +5,12 @@ use crate::util;
 use async_trait::async_trait;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use sn_domain::money::{Amount, Currency, PayCurrency};
-use sn_domain::payment::{NoticeKind, providers};
+use chrono::{DateTime, Utc};
+use serde::Deserialize;
+use sn_domain::money::{Amount, Currency, Money, PayCurrency, parse_units};
+use sn_domain::payment::{NoticeKind, RECURRING_METHOD, providers};
 use sn_domain::settings::SettingField;
+use std::collections::HashSet;
 use uuid::Uuid;
 
 const API: &str = "https://gate.lava.top";
@@ -17,6 +20,52 @@ const WEBHOOK_KEY_MAX: usize = 80;
 const SALE_PAGES: u32 = 5;
 const PRODUCT_PAGES: u32 = 10;
 const PAGE_SIZE: usize = 20;
+const RECURRING: &str = "recurring";
+const PLANS: &str = "plans";
+const MAX_PLANS: usize = 60;
+const RENEWAL: &str = "SUBSCRIPTION_RENEWAL";
+const RENEWAL_HINT: &str = "Только у сроков с подпиской Lava.top";
+
+#[derive(Debug, Clone, Copy)]
+struct Every {
+    code: &'static str,
+    text: &'static str,
+    min: u32,
+    max: u32,
+}
+
+const EVERY: [Every; 4] = [
+    Every {
+        code: "MONTHLY",
+        text: "каждый месяц",
+        min: 28,
+        max: 31,
+    },
+    Every {
+        code: "PERIOD_90_DAYS",
+        text: "раз в 90 дней",
+        min: 90,
+        max: 90,
+    },
+    Every {
+        code: "PERIOD_180_DAYS",
+        text: "раз в 180 дней",
+        min: 180,
+        max: 180,
+    },
+    Every {
+        code: "PERIOD_YEAR",
+        text: "раз в год",
+        min: 365,
+        max: 366,
+    },
+];
+
+fn every(code: &str) -> Option<&'static Every> {
+    EVERY
+        .iter()
+        .find(|e| e.code.eq_ignore_ascii_case(code.trim()))
+}
 
 #[derive(Debug, Clone, Copy)]
 struct Route {
@@ -25,7 +74,7 @@ struct Route {
     method: Option<&'static str>,
 }
 
-const RUB_ROUTES: [Route; 2] = [
+const RUB_ROUTES: [Route; 3] = [
     Route {
         pay: PayMethod::new("card", "Карта", "Карты российских банков"),
         provider: Some("SMART_GLOCAL"),
@@ -36,9 +85,14 @@ const RUB_ROUTES: [Route; 2] = [
         provider: Some("PAY2ME"),
         method: Some("SBP"),
     },
+    Route {
+        pay: PayMethod::new(RECURRING_METHOD, "Карта с автопродлением", RENEWAL_HINT),
+        provider: Some("SMART_GLOCAL"),
+        method: Some("CARD"),
+    },
 ];
 
-const USD_ROUTES: [Route; 2] = [
+const USD_ROUTES: [Route; 3] = [
     Route {
         pay: PayMethod::new("card", "Карта", "Visa и Mastercard любых стран"),
         provider: None,
@@ -47,6 +101,11 @@ const USD_ROUTES: [Route; 2] = [
     Route {
         pay: PayMethod::new("paypal", "PayPal", "Со счёта PayPal"),
         provider: Some("PAYPAL"),
+        method: None,
+    },
+    Route {
+        pay: PayMethod::new(RECURRING_METHOD, "Карта с автопродлением", RENEWAL_HINT),
+        provider: None,
         method: None,
     },
 ];
@@ -348,7 +407,19 @@ impl Lava {
             .sales(config, email, currency, product)
             .await?
             .unwrap_or_default();
-        let Some(sale) = pick(&sales, amount, share) else {
+        let named = data
+            .get("parent_invoice_id")
+            .and_then(Json::as_str)
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .and_then(|parent| {
+                sales.iter().find(|sale| {
+                    sale.id.eq_ignore_ascii_case(parent)
+                        && sale.amount.currency == amount.currency
+                        && sale.amount.minor >= amount.minor
+                })
+            });
+        let Some(sale) = named.or_else(|| pick(&sales, amount, share)) else {
             tracing::warn!(
                 event = %event_key,
                 found = sales.len(),
@@ -387,6 +458,274 @@ impl Lava {
             ),
             _ => outcome,
         })
+    }
+
+    async fn subscription_catalog(
+        &self,
+        config: &ProviderConfig,
+    ) -> PaymentResult<Vec<serde_json::Value>> {
+        let mut found = Vec::new();
+        let mut before: Option<String> = None;
+        for _ in 0..PRODUCT_PAGES {
+            let mut query = vec![
+                ("feedVisibility", "ALL".to_string()),
+                ("productTypes", "SUBSCRIPTION".to_string()),
+                ("showAllSubscriptionPeriods", "true".to_string()),
+            ];
+            if let Some(before) = &before {
+                query.push(("beforeCreatedAt", before.clone()));
+            }
+            let page = self.get(config, "/api/v2/products", &query).await?;
+            let items = page
+                .get("items")
+                .and_then(Json::as_array)
+                .ok_or_else(|| util::bad("Lava.top не вернула список продуктов"))?;
+            for item in items {
+                let data = item.get("data").unwrap_or(item);
+                if data
+                    .get("type")
+                    .and_then(Json::as_str)
+                    .is_some_and(|kind| !kind.eq_ignore_ascii_case("SUBSCRIPTION"))
+                {
+                    continue;
+                }
+                let Some(product) = text_of(data, "id").and_then(|id| Uuid::parse_str(id).ok())
+                else {
+                    continue;
+                };
+                let offers: Vec<serde_json::Value> = data
+                    .get("offers")
+                    .and_then(Json::as_array)
+                    .unwrap_or_default()
+                    .iter()
+                    .filter_map(catalog_offer)
+                    .collect();
+                if offers.is_empty() {
+                    continue;
+                }
+                found.push(serde_json::json!({
+                    "product": product.to_string(),
+                    "name": util::clip(text_of(data, "title").unwrap_or_default(), 120),
+                    "offers": offers,
+                }));
+            }
+            before = page
+                .get("nextPage")
+                .and_then(Json::as_str)
+                .and_then(next_before);
+            if before.is_none() || items.is_empty() {
+                break;
+            }
+        }
+        Ok(found)
+    }
+
+    async fn subscription(
+        &self,
+        config: &ProviderConfig,
+        series: &str,
+    ) -> PaymentResult<Option<RenewalState>> {
+        let id = util::safe_id(series)?;
+        let reply = util::send(self.request(
+            config,
+            reqwest::Method::GET,
+            &format!("/api/v1/subscriptions/{id}"),
+        )?)
+        .await?;
+        if reply.status == 404 {
+            return Ok(None);
+        }
+        let parsed = reply.json()?;
+        if !reply.is_success() {
+            return Err(reply.failure(message(&parsed)));
+        }
+        let charges = parsed
+            .get("recurrentPayments")
+            .and_then(Json::as_array)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|charge| {
+                let id = text_of(charge, "id").filter(|id| util::safe_id(id).is_ok())?;
+                Some(RenewalCharge {
+                    id: id.to_string(),
+                    at: time_of(charge, "datetime"),
+                    paid: charge
+                        .get("status")
+                        .and_then(Json::as_str)
+                        .is_some_and(|s| s.trim().eq_ignore_ascii_case("COMPLETED")),
+                })
+            })
+            .collect();
+        Ok(Some(RenewalState {
+            status: renewal_status(parsed.get("subscriptionStatus").and_then(Json::as_str)),
+            paid_until: time_of(&parsed, "expiredAt"),
+            cancelled_at: time_of(&parsed, "cancelledAt"),
+            charges,
+        }))
+    }
+
+    async fn renewal(
+        &self,
+        config: &ProviderConfig,
+        series: &str,
+        contract: &str,
+    ) -> PaymentResult<Option<WebhookOutcome>> {
+        let id = util::safe_id(contract)?;
+        let series = util::safe_id(series)?;
+        let invoice = self
+            .get(config, &format!("/api/v2/invoices/{id}"), &[])
+            .await?;
+        if invoice
+            .get("id")
+            .and_then(Json::as_str)
+            .is_some_and(|got| !got.trim().eq_ignore_ascii_case(id))
+        {
+            return Err(util::bad("Lava.top вернула другой счёт"));
+        }
+        if invoice
+            .get("type")
+            .and_then(Json::as_str)
+            .is_some_and(|kind| !kind.trim().eq_ignore_ascii_case(RENEWAL))
+        {
+            return Ok(None);
+        }
+        if invoice
+            .at(&["parentInvoice", "id"])
+            .and_then(Json::as_str)
+            .is_some_and(|parent| !parent.trim().eq_ignore_ascii_case(series))
+        {
+            return Ok(None);
+        }
+        let (_, status) = invoice_status(&invoice)?;
+        match status {
+            ProviderStatus::Paid => {}
+            ProviderStatus::Pending => {
+                return Err(PaymentError::Transport(
+                    "Lava.top ещё не отметила продление оплаченным, ждём повторного уведомления"
+                        .into(),
+                ));
+            }
+            _ => return Ok(None),
+        }
+        let amount = invoice_total(&invoice)
+            .ok_or_else(|| util::bad("нет суммы продления"))
+            .and_then(total_amount)?;
+        Ok(Some(WebhookOutcome {
+            event_key: format!("renewal:{id}"),
+            payment: Some(PaymentRef::Renewal(RenewalRef {
+                series: series.to_string(),
+                txid: id.to_string(),
+                charged_at: time_of(&invoice, "datetime"),
+            })),
+            provider_txid: Some(id.to_string()),
+            status: ProviderStatus::Paid,
+            amount: Some(amount),
+            saved_method: None,
+            reply: WebhookReply::ok(),
+            signal: None,
+        }))
+    }
+
+    async fn renewal_failed(
+        &self,
+        config: &ProviderConfig,
+        body: &Json,
+        contract: &str,
+    ) -> PaymentResult<WebhookOutcome> {
+        let key = format!("renewal_failed:{contract}");
+        let Some(series) = text_of(body, "parentContractId") else {
+            return Ok(ignored(key));
+        };
+        match self.subscription(config, series).await? {
+            Some(state) if state.status != RenewalStatus::Active => {}
+            _ => return Ok(ignored(key)),
+        }
+        let reason = text_of(body, "errorMessage").map(|r| util::clip(r, 200));
+        Ok(renewal_signal(
+            key,
+            RenewalEvent::Failed {
+                series: series.to_string(),
+                reason,
+            },
+            ProviderStatus::Failed,
+        ))
+    }
+
+    async fn renewal_checks(
+        &self,
+        config: &ProviderConfig,
+        mut check: ConnectionCheck,
+    ) -> ConnectionCheck {
+        if !config.flag(RECURRING) {
+            return check;
+        }
+        let bound = plans(config);
+        let catalog = match self.subscription_catalog(config).await {
+            Ok(catalog) => catalog,
+            Err(err) => {
+                return check.detail(format!("Список подписок Lava.top не загрузился: {err}"));
+            }
+        };
+        let offers: usize = catalog
+            .iter()
+            .map(|product| {
+                product
+                    .get("offers")
+                    .and_then(serde_json::Value::as_array)
+                    .map_or(0, Vec::len)
+            })
+            .sum();
+        check = check.detail(format!(
+            "Подписки Lava.top: найдено {offers}, к срокам тарифов привязано {}",
+            bound.len()
+        ));
+        for plan in &bound {
+            let price = catalog
+                .iter()
+                .flat_map(|product| {
+                    product
+                        .get("offers")
+                        .and_then(serde_json::Value::as_array)
+                        .cloned()
+                        .unwrap_or_default()
+                })
+                .filter(|offer| {
+                    offer.get("id").and_then(serde_json::Value::as_str) == Some(plan.offer.as_str())
+                })
+                .flat_map(|offer| {
+                    offer
+                        .get("prices")
+                        .and_then(serde_json::Value::as_array)
+                        .cloned()
+                        .unwrap_or_default()
+                })
+                .find(|price| {
+                    price.get("periodicity").and_then(serde_json::Value::as_str)
+                        == Some(plan.periodicity.as_str())
+                        && price.get("currency").and_then(serde_json::Value::as_str)
+                            == Some(plan.amount.currency.code())
+                })
+                .and_then(|price| price.get("amount").and_then(serde_json::Value::as_i64));
+            match price {
+                None => {
+                    check = check.detail(format!(
+                        "Подписки «{}» ({}) больше нет в Lava.top: кнопки автопродления у её срока не будет",
+                        plan.name, plan.every
+                    ));
+                }
+                Some(minor) if minor != plan.amount.minor => {
+                    check = check.detail(format!(
+                        "У подписки «{}» ({}) в Lava.top цена {}, а в привязке {}: обновите список из Lava.top и сравните с ценой срока",
+                        plan.name,
+                        plan.every,
+                        util::amount_text(Money::new(minor, plan.amount.currency).into()),
+                        util::amount_text(plan.amount.into())
+                    ));
+                }
+                Some(_) => {}
+            }
+        }
+        check
     }
 }
 
@@ -477,6 +816,184 @@ fn offer_id(config: &ProviderConfig) -> Option<Uuid> {
     config
         .get("offer_id")
         .and_then(|offer| Uuid::parse_str(offer).ok())
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct PlanEntry {
+    #[serde(default)]
+    product: Option<String>,
+    offer: String,
+    periodicity: String,
+    #[serde(default)]
+    name: String,
+    amount: i64,
+    currency: String,
+    tariff: i64,
+    tariff_period: i64,
+}
+
+fn plan_currency(code: &str) -> Option<Currency> {
+    match code.trim().to_ascii_uppercase().as_str() {
+        "RUB" => Some(Currency::Rub),
+        "USD" => Some(Currency::Usd),
+        _ => None,
+    }
+}
+
+fn renewal_plan(entry: PlanEntry) -> Option<RenewalPlan> {
+    let offer = Uuid::parse_str(entry.offer.trim()).ok()?;
+    let every = every(&entry.periodicity)?;
+    let currency = plan_currency(&entry.currency)?;
+    if entry.amount <= 0 || entry.tariff <= 0 || entry.tariff_period <= 0 {
+        return None;
+    }
+    let product = entry
+        .product
+        .as_deref()
+        .map(str::trim)
+        .and_then(|p| Uuid::parse_str(p).ok())
+        .map(|p| p.to_string());
+    Some(RenewalPlan {
+        binding: PlanBinding {
+            tariff_id: entry.tariff,
+            period_id: entry.tariff_period,
+        },
+        amount: Money::new(entry.amount, currency),
+        offer: offer.to_string(),
+        product,
+        periodicity: every.code.to_string(),
+        name: util::clip(entry.name.trim(), 120),
+        every: every.text,
+        min_days: every.min,
+        max_days: every.max,
+    })
+}
+
+fn plans(config: &ProviderConfig) -> Vec<RenewalPlan> {
+    match config.0.get(PLANS) {
+        Some(serde_json::Value::Array(items)) => items
+            .iter()
+            .filter_map(|item| serde_json::from_value::<PlanEntry>(item.clone()).ok())
+            .filter_map(renewal_plan)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn validate_plans(config: &ProviderConfig) -> PaymentResult<()> {
+    let items = match config.0.get(PLANS) {
+        None | Some(serde_json::Value::Null) => return Ok(()),
+        Some(serde_json::Value::Array(items)) if items.len() <= MAX_PLANS => items,
+        Some(serde_json::Value::Array(_)) => {
+            return Err(PaymentError::NotConfigured(format!(
+                "привязок подписок Lava.top больше {MAX_PLANS}"
+            )));
+        }
+        Some(_) => {
+            return Err(PaymentError::NotConfigured(
+                "поле plans должно быть списком".into(),
+            ));
+        }
+    };
+    let mut offers = HashSet::new();
+    let mut terms = HashSet::new();
+    for item in items {
+        let plan = serde_json::from_value::<PlanEntry>(item.clone())
+            .ok()
+            .and_then(renewal_plan)
+            .ok_or_else(|| {
+                PaymentError::NotConfigured(
+                    "подписка Lava.top записана неполностью: обновите список из Lava.top".into(),
+                )
+            })?;
+        let currency = plan.amount.currency;
+        if !offers.insert((plan.offer.clone(), plan.periodicity.clone(), currency)) {
+            return Err(PaymentError::NotConfigured(format!(
+                "подписка Lava.top «{}» ({}) привязана дважды",
+                plan.name, plan.every
+            )));
+        }
+        if !terms.insert((plan.binding.tariff_id, plan.binding.period_id, currency)) {
+            return Err(PaymentError::NotConfigured(
+                "к одному сроку тарифа привязаны две подписки Lava.top в одной валюте".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn parse_time(text: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(text.trim())
+        .ok()
+        .map(|t| t.with_timezone(&Utc))
+}
+
+fn time_of(json: &Json, key: &str) -> Option<DateTime<Utc>> {
+    json.get(key).and_then(Json::as_str).and_then(parse_time)
+}
+
+fn text_of<'a>(json: &'a Json, key: &str) -> Option<&'a str> {
+    json.get(key)
+        .and_then(Json::as_str)
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+}
+
+fn catalog_offer(offer: &Json) -> Option<serde_json::Value> {
+    let id = text_of(offer, "id").and_then(|id| Uuid::parse_str(id).ok())?;
+    let prices: Vec<serde_json::Value> = offer
+        .get("prices")
+        .and_then(Json::as_array)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|price| {
+            let every = every(price.get("periodicity").and_then(Json::as_str)?)?;
+            let currency = plan_currency(price.get("currency").and_then(Json::as_str)?)?;
+            let amount = parse_units(
+                price.get("amount").and_then(Json::scalar_text)?,
+                PayCurrency::from(currency),
+            )?;
+            (amount > 0).then(|| {
+                serde_json::json!({
+                    "periodicity": every.code,
+                    "every": every.text,
+                    "min_days": every.min,
+                    "max_days": every.max,
+                    "amount": amount,
+                    "currency": currency.code(),
+                })
+            })
+        })
+        .collect();
+    (!prices.is_empty()).then(|| {
+        serde_json::json!({
+            "id": id.to_string(),
+            "name": util::clip(text_of(offer, "name").unwrap_or_default(), 120),
+            "prices": prices,
+        })
+    })
+}
+
+fn renewal_status(raw: Option<&str>) -> RenewalStatus {
+    match raw.map(|s| s.trim().to_ascii_uppercase()).as_deref() {
+        Some("ACTIVE") => RenewalStatus::Active,
+        Some("CANCELLED") => RenewalStatus::Cancelled,
+        Some("FAILED") => RenewalStatus::Failed,
+        _ => RenewalStatus::Unknown,
+    }
+}
+
+fn renewal_signal(key: String, event: RenewalEvent, status: ProviderStatus) -> WebhookOutcome {
+    WebhookOutcome {
+        event_key: key,
+        payment: None,
+        provider_txid: None,
+        status,
+        amount: None,
+        saved_method: None,
+        reply: WebhookReply::ok(),
+        signal: Some(OutcomeSignal::Renewal { event }),
+    }
 }
 
 fn sale(item: &Json, email: &str, currency: Currency, product: Option<&str>) -> Option<Sale> {
@@ -579,7 +1096,17 @@ impl PaymentProvider for Lava {
             SettingField::secret(
                 "webhook_key",
                 "Ключ вебхука",
-                "Придумайте ключ от 16 до 80 латинских букв и цифр. В Lava.top: Интеграции → API → Добавить Webhook. URL — «Адрес для уведомлений» ниже. Тип события: «Успешная оплата», «Неуспешная оплата», «Успешный возврат», «Получен запрос на чарджбэк». Аутентификация: «API key вашего сервиса» с этим ключом или Basic: логин любой, пароль — этот ключ",
+                "Придумайте ключ от 16 до 80 латинских букв и цифр. В Lava.top: Интеграции → API → Добавить Webhook. URL — «Адрес для уведомлений» ниже. Тип события: «Успешная оплата», «Неуспешная оплата», «Успешное продление подписки», «Неуспешное продление подписки», «Отмена подписки», «Успешный возврат», «Получен запрос на чарджбэк». Аутентификация: «API key вашего сервиса» с этим ключом или Basic: логин любой, пароль — этот ключ",
+            ),
+            SettingField::flag(
+                RECURRING,
+                "Автопродление через Lava.top",
+                "Клиент выбирает «Карта с автопродлением», когда оплачивает срок с подпиской Lava.top. Дальше Lava.top сама списывает деньги раз в срок, а панель продлевает подписку по её уведомлению. Если выключить, кнопка пропадёт, а уже оформленные подписки продолжат продлеваться, пока их не отменят",
+            ),
+            SettingField::list(
+                PLANS,
+                "Подписки Lava.top",
+                "Подписка Lava.top с периодичностью и срок тарифа, который она продлевает",
             ),
         ]
     }
@@ -610,7 +1137,69 @@ impl PaymentProvider for Lava {
                 "ключ вебхука слишком короткий: придумайте ключ хотя бы из 16 латинских букв и цифр".into(),
             ));
         }
-        Ok(())
+        validate_plans(config)
+    }
+
+    fn renewals_enabled(&self, config: &ProviderConfig) -> bool {
+        config.flag(RECURRING)
+    }
+
+    fn renewal_plans(&self, config: &ProviderConfig) -> Vec<RenewalPlan> {
+        plans(config)
+    }
+
+    async fn catalog(&self, config: &ProviderConfig) -> PaymentResult<Option<serde_json::Value>> {
+        let subscriptions = self.subscription_catalog(config).await?;
+        Ok(Some(serde_json::json!({ "subscriptions": subscriptions })))
+    }
+
+    async fn cancel_renewal(
+        &self,
+        config: &ProviderConfig,
+        series: &str,
+        email: &str,
+    ) -> PaymentResult<RenewalCancel> {
+        let id = util::safe_id(series)?;
+        let reply = util::send(
+            self.request(config, reqwest::Method::DELETE, "/api/v1/subscriptions")?
+                .query(&[("contractId", id), ("email", email.trim())]),
+        )
+        .await?;
+        if reply.is_success() {
+            return Ok(RenewalCancel::Cancelled);
+        }
+        if reply.status == 404 {
+            return match self.subscription(config, id).await? {
+                None => Ok(RenewalCancel::Missing),
+                Some(state) if state.status != RenewalStatus::Active => {
+                    Ok(RenewalCancel::Cancelled)
+                }
+                Some(_) => Err(PaymentError::Rejected(
+                    "Lava.top не нашла подписку с этой почтой покупателя".into(),
+                )),
+            };
+        }
+        let parsed = reply.json().ok();
+        Err(reply.failure(parsed.as_ref().and_then(message)))
+    }
+
+    async fn fetch_renewal(
+        &self,
+        config: &ProviderConfig,
+        series: &str,
+    ) -> PaymentResult<RenewalState> {
+        self.subscription(config, series)
+            .await?
+            .ok_or_else(|| PaymentError::Rejected("такой подписки в Lava.top нет".into()))
+    }
+
+    async fn confirm_renewal(
+        &self,
+        config: &ProviderConfig,
+        series: &str,
+        txid: &str,
+    ) -> PaymentResult<Option<WebhookOutcome>> {
+        self.renewal(config, series, txid).await
     }
 
     fn enabled_by_default(&self) -> bool {
@@ -642,15 +1231,45 @@ impl PaymentProvider for Lava {
             ),
             None => None,
         };
-        let offer = config.require("offer_id")?;
+        let renewal = if request.method.as_deref() == Some(RECURRING_METHOD) {
+            let refused =
+                || PaymentError::Rejected("у этого срока нет автопродления через Lava.top".into());
+            let binding = request.plan.ok_or_else(refused)?;
+            if !config.flag(RECURRING) {
+                return Err(refused());
+            }
+            let plan = plans(config)
+                .into_iter()
+                .find(|plan| plan.binding == binding && plan.amount.currency == currency)
+                .ok_or_else(refused)?;
+            if Amount::from(plan.amount) != request.amount {
+                return Err(PaymentError::Rejected(format!(
+                    "подписка Lava.top стоит {}, а срок в панели {}: цены должны совпадать",
+                    util::amount_text(plan.amount.into()),
+                    util::amount_text(request.amount)
+                )));
+            }
+            Some(plan)
+        } else {
+            None
+        };
         let email = util::client_email(request).ok_or(PaymentError::EmailRequired)?;
-        let mut body = Json::object([
-            ("email", Json::from(email)),
-            ("offerId", Json::from(offer)),
-            ("currency", Json::from(currency.code())),
-            ("amount", Json::number(request.amount.units())),
-            ("buyerLanguage", Json::from(language)),
-        ]);
+        let mut body = match &renewal {
+            Some(plan) => Json::object([
+                ("email", Json::from(email)),
+                ("offerId", Json::from(plan.offer.as_str())),
+                ("currency", Json::from(currency.code())),
+                ("periodicity", Json::from(plan.periodicity.as_str())),
+                ("buyerLanguage", Json::from(language)),
+            ]),
+            None => Json::object([
+                ("email", Json::from(email)),
+                ("offerId", Json::from(config.require("offer_id")?)),
+                ("currency", Json::from(currency.code())),
+                ("amount", Json::number(request.amount.units())),
+                ("buyerLanguage", Json::from(language)),
+            ]),
+        };
         if let Some(provider) = route.and_then(|r| r.provider) {
             body.push("paymentProvider", Json::from(provider));
         }
@@ -687,19 +1306,38 @@ impl PaymentProvider for Lava {
             && let Ok(charged) = total_amount(total)
             && !same_price(charged, request.amount, whole_units(total))
         {
-            return Err(PaymentError::Rejected(format!(
-                "Lava.top выставила счёт на {charged}, а не на {}: включите у продукта «Цена по запросу API»",
-                request.amount
-            )));
+            return Err(PaymentError::Rejected(match renewal {
+                Some(_) => format!(
+                    "Lava.top выставила счёт на {charged}, а не на {}: цена подписки в Lava.top не совпадает с ценой срока",
+                    request.amount
+                ),
+                None => format!(
+                    "Lava.top выставила счёт на {charged}, а не на {}: включите у продукта «Цена по запросу API»",
+                    request.amount
+                ),
+            }));
+        }
+        let mut payload = serde_json::json!({
+            "id": id,
+            "status": parsed.get("status").and_then(Json::as_str),
+        });
+        if let Some(plan) = renewal {
+            payload["recurring"] = serde_json::json!({
+                "offer": plan.offer,
+                "product": plan.product,
+                "periodicity": plan.periodicity,
+                "every": plan.every,
+                "name": plan.name,
+                "email": email,
+                "amount": plan.amount.minor,
+                "currency": plan.amount.currency.code(),
+            });
         }
         Ok(Invoice {
             pay_url: pay_url.to_string(),
             external_id: Some(id.to_string()),
             expires_at: None,
-            payload: serde_json::json!({
-                "id": id,
-                "status": parsed.get("status").and_then(Json::as_str),
-            }),
+            payload,
         })
     }
 
@@ -725,6 +1363,28 @@ impl PaymentProvider for Lava {
             ("payment.success" | "payment.failed", Some(contract)) => {
                 self.checked_payment(config, &body, event, contract).await
             }
+            ("subscription.recurring.payment.success", Some(contract)) => {
+                let key = format!("renewal:{contract}");
+                match text_of(&body, "parentContractId") {
+                    Some(series) => Ok(self
+                        .renewal(config, series, contract)
+                        .await?
+                        .unwrap_or_else(|| ignored(key))),
+                    None => Ok(ignored(key)),
+                }
+            }
+            ("subscription.recurring.payment.failed", Some(contract)) => {
+                self.renewal_failed(config, &body, contract).await
+            }
+            ("subscription.cancelled", Some(contract)) => Ok(renewal_signal(
+                format!("cancelled:{contract}"),
+                RenewalEvent::Cancelled {
+                    contract: contract.to_string(),
+                    at: time_of(&body, "cancelledAt"),
+                    until: time_of(&body, "willExpireAt"),
+                },
+                ProviderStatus::Canceled,
+            )),
             (_, contract) => Ok(ignored(format!("{event}:{}", contract.unwrap_or("-")))),
         }
     }
@@ -762,6 +1422,16 @@ impl PaymentProvider for Lava {
         config: &ProviderConfig,
         _context: &CheckContext,
     ) -> ConnectionCheck {
+        let check = self.offer_check(config).await;
+        if check.status == CheckStatus::KeysRejected || check.status == CheckStatus::Unreachable {
+            return check;
+        }
+        self.renewal_checks(config, check).await
+    }
+}
+
+impl Lava {
+    async fn offer_check(&self, config: &ProviderConfig) -> ConnectionCheck {
         let Some(offer) = offer_id(config) else {
             return ConnectionCheck::failed(&PaymentError::NotConfigured(
                 "ID оффера Lava.top — это UUID из кабинета".into(),
@@ -1073,10 +1743,21 @@ mod tests {
                 .map(|m| (m.code, m.title))
                 .collect::<Vec<_>>()
         };
-        assert_eq!(list(Currency::Rub), [("card", "Карта"), ("sbp", "СБП")]);
+        assert_eq!(
+            list(Currency::Rub),
+            [
+                ("card", "Карта"),
+                ("sbp", "СБП"),
+                ("subscription", "Карта с автопродлением")
+            ]
+        );
         assert_eq!(
             list(Currency::Usd),
-            [("card", "Карта"), ("paypal", "PayPal")]
+            [
+                ("card", "Карта"),
+                ("paypal", "PayPal"),
+                ("subscription", "Карта с автопродлением")
+            ]
         );
         assert!(lava.method(Currency::Usd, "sbp").is_none());
         assert!(lava.method(Currency::Rub, "paypal").is_none());
@@ -1371,7 +2052,7 @@ mod tests {
         let lava = Lava::with_api_base(server.uri());
         let mut bodies = vec![
             event("subscription.recurring.payment.success", json!(6.99), "USD"),
-            event("subscription.cancelled", json!(6.99), "USD"),
+            event("donate.success", json!(6.99), "USD"),
             serde_json::to_vec(&json!({"eventType": "payment.success", "amount": 6.99})).unwrap(),
             serde_json::to_vec(&json!({"eventType": "payout.created"})).unwrap(),
             serde_json::to_vec(&json!({"hello": "world"})).unwrap(),
@@ -1808,5 +2489,745 @@ mod tests {
         ] {
             assert!(field.hint.contains(needle), "{needle}");
         }
+    }
+
+    const SUB_OFFER: &str = "9b2c3d4e-5f60-4a7b-8c9d-0e1f2a3b4c5d";
+    const SUB_PRODUCT: &str = "72d53efb-3696-469f-b856-f0d815748dd6";
+    const PARENT: &str = "c5a0cacc-3453-44b0-9532-aa492f1ba191";
+    const RENEWED: &str = "d41db415-ad71-4f2a-8d8c-27eefee91e66";
+
+    fn plan_entry(
+        offer: &str,
+        periodicity: &str,
+        amount: i64,
+        currency: &str,
+        tariff: i64,
+        period: i64,
+    ) -> Value {
+        json!({
+            "product": SUB_PRODUCT, "offer": offer, "periodicity": periodicity, "name": "VPN Стандарт",
+            "amount": amount, "currency": currency, "tariff": tariff, "tariff_period": period
+        })
+    }
+
+    fn recurring_settings(plans: Value) -> ProviderConfig {
+        let mut config = settings();
+        config.set("recurring", json!(true));
+        config.set("plans", plans);
+        config
+    }
+
+    fn renewal_request(amount: Amount) -> InvoiceRequest {
+        InvoiceRequest {
+            method: Some("subscription".into()),
+            plan: Some(PlanBinding {
+                tariff_id: 3,
+                period_id: 7,
+            }),
+            ..invoice(amount, Some(EMAIL))
+        }
+    }
+
+    async fn renewal_created(
+        config: &ProviderConfig,
+        answer: Value,
+        request: &InvoiceRequest,
+    ) -> (PaymentResult<Invoice>, Vec<Value>) {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v3/invoice"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(answer))
+            .mount(&server)
+            .await;
+        let result = Lava::with_api_base(server.uri())
+            .create_invoice(config, request)
+            .await;
+        let sent = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| serde_json::from_slice(&r.body).unwrap())
+            .collect();
+        (result, sent)
+    }
+
+    #[tokio::test]
+    async fn автопродление_lava_выставляет_счёт_по_подписке() {
+        let config = recurring_settings(json!([plan_entry(
+            SUB_OFFER, "MONTHLY", 29_900, "RUB", 3, 7
+        )]));
+        let (result, sent) = renewal_created(
+            &config,
+            answer(json!(299), "RUB"),
+            &renewal_request(rub(29_900)),
+        )
+        .await;
+        let invoice = result.unwrap();
+        assert_eq!(invoice.external_id.as_deref(), Some(CONTRACT));
+        let body = &sent[0];
+        assert_eq!(body["offerId"], SUB_OFFER);
+        assert_eq!(body["periodicity"], "MONTHLY");
+        assert_eq!(body["currency"], "RUB");
+        assert_eq!(body["email"], EMAIL);
+        assert_eq!(body["paymentProvider"], "SMART_GLOCAL");
+        assert_eq!(body["paymentMethod"], "CARD");
+        assert!(body.get("amount").is_none(), "у подписки цена своя: {body}");
+        let recurring = &invoice.payload["recurring"];
+        assert_eq!(recurring["offer"], SUB_OFFER);
+        assert_eq!(recurring["product"], SUB_PRODUCT);
+        assert_eq!(recurring["periodicity"], "MONTHLY");
+        assert_eq!(recurring["email"], EMAIL);
+        assert_eq!(recurring["amount"], 29_900);
+        assert_eq!(recurring["currency"], "RUB");
+
+        let dollars = recurring_settings(json!([plan_entry(
+            SUB_OFFER,
+            "PERIOD_YEAR",
+            4_990,
+            "USD",
+            3,
+            7
+        )]));
+        let (result, sent) = renewal_created(
+            &dollars,
+            answer(json!(49.9), "USD"),
+            &renewal_request(usd(4_990)),
+        )
+        .await;
+        assert!(result.is_ok(), "{result:?}");
+        assert!(sent[0].get("paymentProvider").is_none());
+        assert_eq!(sent[0]["periodicity"], "PERIOD_YEAR");
+
+        let (other_price, _) = renewal_created(
+            &config,
+            answer(json!(349), "RUB"),
+            &renewal_request(rub(29_900)),
+        )
+        .await;
+        let err = other_price.unwrap_err().to_string();
+        assert!(err.contains("не совпадает с ценой срока"), "{err}");
+
+        for (config, request) in [
+            (config.clone(), renewal_request(rub(34_900))),
+            (
+                config.clone(),
+                InvoiceRequest {
+                    plan: None,
+                    ..renewal_request(rub(29_900))
+                },
+            ),
+            (
+                config.clone(),
+                InvoiceRequest {
+                    plan: Some(PlanBinding {
+                        tariff_id: 3,
+                        period_id: 8,
+                    }),
+                    ..renewal_request(rub(29_900))
+                },
+            ),
+            (config.clone(), renewal_request(usd(29_900))),
+            (settings(), renewal_request(rub(29_900))),
+        ] {
+            let (result, sent) =
+                renewal_created(&config, answer(json!(299), "RUB"), &request).await;
+            assert!(result.is_err(), "{request:?}");
+            assert!(
+                sent.is_empty(),
+                "без привязки запрос в Lava.top не уходит: {request:?}"
+            );
+        }
+    }
+
+    fn renewal_hook(kind: &str, contract: &str, parent: Option<&str>) -> WebhookRequest {
+        let mut body = json!({
+            "eventType": kind,
+            "product": {"id": SUB_PRODUCT, "title": "VPN Стандарт"},
+            "buyer": {"email": EMAIL},
+            "contractId": contract,
+            "amount": 299,
+            "currency": "RUB",
+            "timestamp": "2026-12-26T08:44:49.123932Z",
+            "status": if kind.ends_with("failed") { "subscription-failed" } else { "subscription-active" },
+            "errorMessage": if kind.ends_with("failed") { "Not sufficient funds" } else { "" }
+        });
+        if let Some(parent) = parent {
+            body["parentContractId"] = json!(parent);
+        }
+        keyed(serde_json::to_vec(&body).unwrap())
+    }
+
+    async fn with_renewal_invoice(body: Value) -> (MockServer, Lava) {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(format!("/api/v2/invoices/{RENEWED}")))
+            .and(header("X-Api-Key", "lava-api-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+        let lava = Lava::with_api_base(server.uri());
+        (server, lava)
+    }
+
+    fn renewal_invoice(kind: &str, status: &str, parent: &str) -> Value {
+        json!({
+            "id": RENEWED,
+            "type": kind,
+            "datetime": "2026-12-26T08:44:49.123932Z",
+            "status": status,
+            "receipt": {"amount": 299, "currency": "RUB", "fee": 23.92},
+            "buyer": {"email": EMAIL},
+            "product": {"name": "VPN Стандарт", "offer": "Месяц"},
+            "parentInvoice": {"id": parent},
+            "subscriptionStatus": "ACTIVE"
+        })
+    }
+
+    #[tokio::test]
+    async fn продление_lava_засчитывается_только_после_проверки_контракта() {
+        let config = settings();
+        let (_server, lava) =
+            with_renewal_invoice(renewal_invoice("SUBSCRIPTION_RENEWAL", "COMPLETED", PARENT))
+                .await;
+        let outcome = lava
+            .parse_webhook(
+                &config,
+                &renewal_hook(
+                    "subscription.recurring.payment.success",
+                    RENEWED,
+                    Some(PARENT),
+                ),
+            )
+            .await
+            .unwrap();
+        assert_eq!(outcome.status, ProviderStatus::Paid);
+        assert_eq!(outcome.event_key, format!("renewal:{RENEWED}"));
+        assert_eq!(outcome.amount, Some(rub(29_900)));
+        assert_eq!(outcome.provider_txid.as_deref(), Some(RENEWED));
+        let Some(PaymentRef::Renewal(found)) = &outcome.payment else {
+            panic!("ожидалась ссылка на продление: {outcome:?}");
+        };
+        assert_eq!(found.series, PARENT);
+        assert_eq!(found.txid, RENEWED);
+        assert_eq!(
+            found.charged_at.map(|at| at.to_rfc3339()),
+            Some("2026-12-26T08:44:49.123932+00:00".to_string())
+        );
+        let again = lava
+            .confirm_renewal(&config, PARENT, RENEWED)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(again.payment, outcome.payment);
+
+        for invoice in [
+            renewal_invoice(
+                "SUBSCRIPTION_RENEWAL",
+                "COMPLETED",
+                "11111111-1111-4111-8111-111111111111",
+            ),
+            renewal_invoice("INVOICE", "COMPLETED", PARENT),
+            renewal_invoice("SUBSCRIPTION_RENEWAL", "FAILED", PARENT),
+        ] {
+            let (_server, lava) = with_renewal_invoice(invoice.clone()).await;
+            let outcome = lava
+                .parse_webhook(
+                    &config,
+                    &renewal_hook(
+                        "subscription.recurring.payment.success",
+                        RENEWED,
+                        Some(PARENT),
+                    ),
+                )
+                .await
+                .unwrap();
+            assert_eq!(outcome.payment, None, "{invoice}");
+            assert_eq!(outcome.status, ProviderStatus::Pending, "{invoice}");
+        }
+        let (_server, lava) = with_renewal_invoice(renewal_invoice(
+            "SUBSCRIPTION_RENEWAL",
+            "IN_PROGRESS",
+            PARENT,
+        ))
+        .await;
+        let pending = lava
+            .parse_webhook(
+                &config,
+                &renewal_hook(
+                    "subscription.recurring.payment.success",
+                    RENEWED,
+                    Some(PARENT),
+                ),
+            )
+            .await;
+        assert!(
+            matches!(pending, Err(PaymentError::Transport(_))),
+            "{pending:?}"
+        );
+
+        let (server, lava) =
+            with_renewal_invoice(renewal_invoice("SUBSCRIPTION_RENEWAL", "COMPLETED", PARENT))
+                .await;
+        let orphan = lava
+            .parse_webhook(
+                &config,
+                &renewal_hook("subscription.recurring.payment.success", RENEWED, None),
+            )
+            .await
+            .unwrap();
+        assert_eq!(orphan.payment, None);
+        assert!(server.received_requests().await.unwrap().is_empty());
+        let forged = lava
+            .parse_webhook(
+                &config,
+                &hook(
+                    &[("X-Api-Key", "wrong")],
+                    renewal_hook(
+                        "subscription.recurring.payment.success",
+                        RENEWED,
+                        Some(PARENT),
+                    )
+                    .body,
+                ),
+            )
+            .await;
+        assert!(matches!(forged, Err(PaymentError::BadSignature)));
+    }
+
+    async fn with_subscription(status: &str) -> (MockServer, Lava) {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(format!("/api/v1/subscriptions/{PARENT}")))
+            .and(header("X-Api-Key", "lava-api-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": PARENT,
+                "datetime": "2026-11-26T08:44:32Z",
+                "status": "COMPLETED",
+                "receipt": {"amount": 299, "currency": "RUB", "fee": 23.92},
+                "buyer": {"email": EMAIL, "cardMask": "**** **** **** 1234"},
+                "product": {"name": "VPN Стандарт", "offer": "Месяц"},
+                "periodicity": "MONTHLY",
+                "subscriptionStatus": status,
+                "expiredAt": "2027-01-26T08:44:32Z",
+                "cancelledAt": if status == "ACTIVE" { Value::Null } else { json!("2026-12-27T08:44:32Z") },
+                "terminatedAt": null,
+                "recurrentPayments": [
+                    {"id": RENEWED, "datetime": "2026-12-26T08:44:49Z", "status": "COMPLETED", "amount": 299, "currency": "RUB", "fee": 23.92},
+                    {"id": "04f152b7-63ec-46ff-958e-8a6f5869acd6", "datetime": "2027-01-26T08:44:49Z", "status": "FAILED", "amount": 299, "currency": "RUB", "fee": 0},
+                    {"id": "../../etc", "status": "COMPLETED"}
+                ]
+            })))
+            .mount(&server)
+            .await;
+        let lava = Lava::with_api_base(server.uri());
+        (server, lava)
+    }
+
+    #[tokio::test]
+    async fn неудачное_продление_lava_закрывает_подписку_только_после_отмены_в_lava() {
+        let config = settings();
+        let (_server, lava) = with_subscription("FAILED").await;
+        let failed = lava
+            .parse_webhook(
+                &config,
+                &renewal_hook(
+                    "subscription.recurring.payment.failed",
+                    "04f152b7-63ec-46ff-958e-8a6f5869acd6",
+                    Some(PARENT),
+                ),
+            )
+            .await
+            .unwrap();
+        assert_eq!(failed.payment, None);
+        assert_eq!(
+            failed.renewal_event(),
+            Some(&RenewalEvent::Failed {
+                series: PARENT.into(),
+                reason: Some("Not sufficient funds".into())
+            })
+        );
+        let (_server, lava) = with_subscription("ACTIVE").await;
+        let still = lava
+            .parse_webhook(
+                &config,
+                &renewal_hook(
+                    "subscription.recurring.payment.failed",
+                    "04f152b7-63ec-46ff-958e-8a6f5869acd6",
+                    Some(PARENT),
+                ),
+            )
+            .await
+            .unwrap();
+        assert_eq!(still.renewal_event(), None);
+        assert_eq!(still.payment, None);
+    }
+
+    #[tokio::test]
+    async fn отмена_подписки_lava_по_уведомлению() {
+        let body = serde_json::to_vec(&json!({
+            "eventType": "subscription.cancelled",
+            "contractId": RENEWED,
+            "product": {"id": SUB_PRODUCT, "title": "VPN Стандарт"},
+            "buyer": {"email": EMAIL},
+            "cancelledAt": "2026-12-27T08:44:49.123932Z",
+            "willExpireAt": "2027-01-26T08:44:49.123932Z"
+        }))
+        .unwrap();
+        let outcome = Lava::with_api_base(closed_api())
+            .parse_webhook(&settings(), &keyed(body))
+            .await
+            .unwrap();
+        assert_eq!(outcome.event_key, format!("cancelled:{RENEWED}"));
+        let Some(RenewalEvent::Cancelled {
+            contract,
+            at,
+            until,
+        }) = outcome.renewal_event()
+        else {
+            panic!("ожидалась отмена: {outcome:?}");
+        };
+        assert_eq!(contract, RENEWED);
+        assert_eq!(
+            at.map(|t| t.date_naive().to_string()),
+            Some("2026-12-27".into())
+        );
+        assert_eq!(
+            until.map(|t| t.date_naive().to_string()),
+            Some("2027-01-26".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn сверка_читает_подписку_lava() {
+        let (_server, lava) = with_subscription("ACTIVE").await;
+        let state = lava.fetch_renewal(&settings(), PARENT).await.unwrap();
+        assert_eq!(state.status, RenewalStatus::Active);
+        assert_eq!(
+            state.paid_until.map(|t| t.date_naive().to_string()),
+            Some("2027-01-26".into())
+        );
+        assert_eq!(state.cancelled_at, None);
+        assert_eq!(
+            state
+                .charges
+                .iter()
+                .map(|c| (c.id.as_str(), c.paid))
+                .collect::<Vec<_>>(),
+            [
+                (RENEWED, true),
+                ("04f152b7-63ec-46ff-958e-8a6f5869acd6", false)
+            ]
+        );
+        let (_server, cancelled) = with_subscription("CANCELLED").await;
+        let state = cancelled.fetch_renewal(&settings(), PARENT).await.unwrap();
+        assert_eq!(state.status, RenewalStatus::Cancelled);
+        assert!(state.cancelled_at.is_some());
+        let empty = MockServer::start().await;
+        let missing = Lava::with_api_base(empty.uri())
+            .fetch_renewal(&settings(), PARENT)
+            .await;
+        assert!(missing.is_err());
+    }
+
+    #[tokio::test]
+    async fn отмена_автопродления_через_api_lava() {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/api/v1/subscriptions"))
+            .and(header("X-Api-Key", "lava-api-key"))
+            .and(query_param("contractId", PARENT))
+            .and(query_param("email", EMAIL))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&server)
+            .await;
+        let lava = Lava::with_api_base(server.uri());
+        assert_eq!(
+            lava.cancel_renewal(&settings(), PARENT, EMAIL)
+                .await
+                .unwrap(),
+            RenewalCancel::Cancelled
+        );
+
+        let gone = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/api/v1/subscriptions"))
+            .respond_with(
+                ResponseTemplate::new(404)
+                    .set_body_json(json!({"error": "Subscription not found", "details": {}})),
+            )
+            .mount(&gone)
+            .await;
+        assert_eq!(
+            Lava::with_api_base(gone.uri())
+                .cancel_renewal(&settings(), PARENT, EMAIL)
+                .await
+                .unwrap(),
+            RenewalCancel::Missing
+        );
+
+        for (status, expected) in [("CANCELLED", true), ("FAILED", true), ("ACTIVE", false)] {
+            let (server, lava) = with_subscription(status).await;
+            Mock::given(method("DELETE"))
+                .and(path("/api/v1/subscriptions"))
+                .respond_with(
+                    ResponseTemplate::new(404)
+                        .set_body_json(json!({"error": "Subscription not found"})),
+                )
+                .mount(&server)
+                .await;
+            let result = lava.cancel_renewal(&settings(), PARENT, EMAIL).await;
+            assert_eq!(result.is_ok(), expected, "{status}: {result:?}");
+        }
+
+        let foreign = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/api/v1/subscriptions"))
+            .respond_with(
+                ResponseTemplate::new(403)
+                    .set_body_json(json!({"error": "You can cancel only yours subscriptions"})),
+            )
+            .mount(&foreign)
+            .await;
+        let refused = Lava::with_api_base(foreign.uri())
+            .cancel_renewal(&settings(), PARENT, EMAIL)
+            .await
+            .unwrap_err();
+        assert!(refused.to_string().contains("only yours"), "{refused}");
+        let down = failing_api(502).await;
+        let broken = Lava::with_api_base(down.uri())
+            .cancel_renewal(&settings(), PARENT, EMAIL)
+            .await
+            .unwrap_err();
+        assert!(broken.is_retryable(), "{broken:?}");
+        assert!(
+            lava.cancel_renewal(&settings(), "../x", EMAIL)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn каталог_подписок_lava() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v2/products"))
+            .and(query_param("productTypes", "SUBSCRIPTION"))
+            .and(query_param("showAllSubscriptionPeriods", "true"))
+            .and(query_param("feedVisibility", "ALL"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "items": [
+                    {"type": "PRODUCT", "data": {
+                        "id": SUB_PRODUCT, "title": "VPN Стандарт", "type": "SUBSCRIPTION",
+                        "offers": [
+                            {"id": SUB_OFFER, "name": "Базовый", "prices": [
+                                {"amount": 299, "currency": "RUB", "periodicity": "MONTHLY"},
+                                {"amount": 799.5, "currency": "RUB", "periodicity": "PERIOD_90_DAYS"},
+                                {"amount": 4.99, "currency": "USD", "periodicity": "MONTHLY"},
+                                {"amount": 5, "currency": "EUR", "periodicity": "MONTHLY"},
+                                {"amount": 100, "currency": "RUB", "periodicity": "ONE_TIME"}
+                            ]},
+                            {"id": "не-uuid", "prices": [{"amount": 1, "currency": "RUB", "periodicity": "MONTHLY"}]}
+                        ]
+                    }},
+                    product("Разовый продукт", OFFER)
+                ],
+                "nextPage": null
+            })))
+            .mount(&server)
+            .await;
+        let catalog = Lava::with_api_base(server.uri())
+            .catalog(&settings())
+            .await
+            .unwrap()
+            .unwrap();
+        let subscriptions = catalog["subscriptions"].as_array().unwrap();
+        assert_eq!(subscriptions.len(), 1, "{catalog}");
+        assert_eq!(subscriptions[0]["product"], SUB_PRODUCT);
+        assert_eq!(subscriptions[0]["name"], "VPN Стандарт");
+        let offers = subscriptions[0]["offers"].as_array().unwrap();
+        assert_eq!(offers.len(), 1);
+        let prices: Vec<(String, i64, String)> = offers[0]["prices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| {
+                (
+                    p["periodicity"].as_str().unwrap().into(),
+                    p["amount"].as_i64().unwrap(),
+                    p["currency"].as_str().unwrap().into(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            prices,
+            [
+                ("MONTHLY".to_string(), 29_900, "RUB".to_string()),
+                ("PERIOD_90_DAYS".to_string(), 79_950, "RUB".to_string()),
+                ("MONTHLY".to_string(), 499, "USD".to_string())
+            ]
+        );
+        assert_eq!(offers[0]["prices"][0]["every"], "каждый месяц");
+        assert_eq!(offers[0]["prices"][0]["min_days"], 28);
+    }
+
+    #[test]
+    fn привязки_подписок_lava_проверяются() {
+        let lava = Lava::new();
+        let good = recurring_settings(json!([
+            plan_entry(SUB_OFFER, "MONTHLY", 29_900, "RUB", 3, 7),
+            plan_entry(SUB_OFFER, "PERIOD_YEAR", 299_000, "RUB", 3, 9),
+            plan_entry(SUB_OFFER, "MONTHLY", 499, "USD", 3, 7)
+        ]));
+        assert!(lava.validate_settings(&good).is_ok());
+        assert!(lava.renewals_enabled(&good));
+        assert!(!lava.renewals_enabled(&settings()));
+        let plans = lava.renewal_plans(&good);
+        assert_eq!(plans.len(), 3);
+        assert_eq!(
+            plans[0].binding,
+            PlanBinding {
+                tariff_id: 3,
+                period_id: 7
+            }
+        );
+        assert_eq!(plans[0].amount, Money::new(29_900, Currency::Rub));
+        assert_eq!(
+            (plans[0].min_days, plans[0].max_days, plans[0].every),
+            (28, 31, "каждый месяц")
+        );
+        assert_eq!((plans[1].min_days, plans[1].max_days), (365, 366));
+        assert_eq!(plans[0].product.as_deref(), Some(SUB_PRODUCT));
+        for bad in [
+            json!([
+                plan_entry(SUB_OFFER, "MONTHLY", 29_900, "RUB", 3, 7),
+                plan_entry(SUB_OFFER, "MONTHLY", 29_900, "RUB", 3, 8)
+            ]),
+            json!([
+                plan_entry(SUB_OFFER, "MONTHLY", 29_900, "RUB", 3, 7),
+                plan_entry(
+                    "11111111-1111-4111-8111-111111111111",
+                    "MONTHLY",
+                    29_900,
+                    "RUB",
+                    3,
+                    7
+                )
+            ]),
+            json!([plan_entry(SUB_OFFER, "WEEKLY", 29_900, "RUB", 3, 7)]),
+            json!([plan_entry("оффер", "MONTHLY", 29_900, "RUB", 3, 7)]),
+            json!([plan_entry(SUB_OFFER, "MONTHLY", 0, "RUB", 3, 7)]),
+            json!([plan_entry(SUB_OFFER, "MONTHLY", 500, "EUR", 3, 7)]),
+            json!([plan_entry(SUB_OFFER, "MONTHLY", 29_900, "RUB", 0, 7)]),
+            json!({"offer": SUB_OFFER}),
+            json!(
+                (0..61)
+                    .map(|n| plan_entry(SUB_OFFER, "MONTHLY", 100 + n, "RUB", 3, n + 1))
+                    .collect::<Vec<_>>()
+            ),
+        ] {
+            assert!(
+                lava.validate_settings(&recurring_settings(bad.clone()))
+                    .is_err(),
+                "{bad}"
+            );
+        }
+        let schema = lava.settings_schema();
+        let flag = schema.iter().find(|f| f.key == "recurring").unwrap();
+        assert!(!flag.required && matches!(flag.kind, sn_domain::settings::FieldKind::Flag));
+        let list = schema.iter().find(|f| f.key == "plans").unwrap();
+        assert!(!list.required);
+        let hook = schema.iter().find(|f| f.key == "webhook_key").unwrap();
+        for needle in [
+            "Успешное продление подписки",
+            "Неуспешное продление подписки",
+            "Отмена подписки",
+        ] {
+            assert!(hook.hint.contains(needle), "{needle}");
+        }
+    }
+
+    #[tokio::test]
+    async fn возврат_lava_находит_оплату_по_номеру_контракта() {
+        let first = "11111111-2222-4333-8444-555555555555";
+        let renewal = "66666666-7777-4888-8999-aaaaaaaaaaaa";
+        let (_server, lava) = with_sales(vec![
+            sold(first, "client@example.com", json!(4.99), "STEALTHNET"),
+            sold(renewal, "client@example.com", json!(4.99), "STEALTHNET"),
+        ])
+        .await;
+        let mut body: Value =
+            serde_json::from_slice(&refund("full", "r-77", json!(4.99), "USD")).unwrap();
+        let ambiguous = lava
+            .parse_webhook(&settings(), &keyed(serde_json::to_vec(&body).unwrap()))
+            .await
+            .unwrap();
+        assert_eq!(
+            ambiguous.payment, None,
+            "без номера две одинаковые оплаты неразличимы"
+        );
+        body["data"]["parent_invoice_id"] = json!(renewal);
+        let named = lava
+            .parse_webhook(&settings(), &keyed(serde_json::to_vec(&body).unwrap()))
+            .await
+            .unwrap();
+        assert_eq!(
+            named.payment,
+            Some(PaymentRef::ProviderTxid(renewal.into()))
+        );
+        assert_eq!(named.status, ProviderStatus::Refunded);
+    }
+
+    #[tokio::test]
+    async fn проверка_подключения_lava_говорит_о_подписках() {
+        let server = MockServer::start().await;
+        products(
+            &server,
+            "ONLY_HIDDEN",
+            None,
+            json!({"items": [product("VPN на месяц", OFFER)], "nextPage": null}),
+        )
+        .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v2/products"))
+            .and(query_param("productTypes", "SUBSCRIPTION"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "items": [{"type": "PRODUCT", "data": {
+                    "id": SUB_PRODUCT, "title": "VPN Стандарт", "type": "SUBSCRIPTION",
+                    "offers": [{"id": SUB_OFFER, "name": "Базовый", "prices": [
+                        {"amount": 349, "currency": "RUB", "periodicity": "MONTHLY"}
+                    ]}]
+                }}],
+                "nextPage": null
+            })))
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        let config = recurring_settings(json!([
+            plan_entry(SUB_OFFER, "MONTHLY", 29_900, "RUB", 3, 7),
+            plan_entry(
+                "11111111-1111-4111-8111-111111111111",
+                "PERIOD_YEAR",
+                299_000,
+                "RUB",
+                3,
+                9
+            )
+        ]));
+        let check = Lava::with_api_base(server.uri())
+            .check_connection(&config, &CheckContext::default())
+            .await;
+        assert_eq!(check.status, CheckStatus::Ok, "{}", check.summary);
+        let details = check.details.join("\n");
+        assert!(
+            details.contains("найдено 1, к срокам тарифов привязано 2"),
+            "{details}"
+        );
+        assert!(details.contains("в Lava.top цена 349"), "{details}");
+        assert!(details.contains("больше нет в Lava.top"), "{details}");
+        let plain = Lava::with_api_base(server.uri())
+            .check_connection(&settings(), &CheckContext::default())
+            .await;
+        assert!(plain.details.is_empty(), "{:?}", plain.details);
     }
 }

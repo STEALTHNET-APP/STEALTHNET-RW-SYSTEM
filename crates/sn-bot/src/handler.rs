@@ -667,6 +667,14 @@ async fn callback(turn: &mut Turn<'_>, client: &Client, data: &str) -> Result<Sc
             Some(id) => account::reissue(turn, client, id).await?,
             None => main_menu(turn.ctx, client).await?,
         },
+        "rno" => match id_arg(rest) {
+            Some(id) => account::renewal_confirm(turn, client, id).await?,
+            None => main_menu(turn.ctx, client).await?,
+        },
+        "rnoy" => match id_arg(rest) {
+            Some(id) => account::renewal_off(turn, client, id).await?,
+            None => main_menu(turn.ctx, client).await?,
+        },
         "bal" => account::balance(turn, client).await?,
         "top" | "topx" | "tp" if !turn.services().payments().balance_enabled() => {
             account::balance(turn, client).await?

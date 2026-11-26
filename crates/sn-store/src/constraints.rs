@@ -71,6 +71,10 @@ pub const UNIQUE_FIELDS: &[(&str, Option<&str>)] = &[
         Some("Вход через Google или Apple"),
     ),
     ("backup_runs_slot_key", None),
+    ("provider_subscriptions_external_key", None),
+    ("provider_subscriptions_live_key", None),
+    ("provider_subscription_charges_payment_key", None),
+    ("provider_subscription_charges_external_key", None),
 ];
 
 pub fn field_for(constraint: &str) -> Option<&'static str> {

@@ -71,6 +71,7 @@ pub enum LetterId {
     RenewalFailed,
     RenewalManual,
     RenewalOff,
+    RenewalCancelled,
     SupportReply,
     LoginLinked,
     LoginsUnlinked,
@@ -271,6 +272,11 @@ const PROVIDER: Var = var(
     "Google или Apple",
     Sample::Text("Google", "Google"),
 );
+const PAY_PROVIDER: Var = var(
+    "provider",
+    "платёжная система",
+    Sample::Text("Lava.top", "Lava.top"),
+);
 const ACCOUNT: Var = var(
     "account",
     "привязанный аккаунт",
@@ -309,7 +315,7 @@ const NEW_EMAIL: Var = var(
     Sample::Text("n***@example.com", "n***@example.com"),
 );
 
-pub const CATALOG: [Spec; 28] = [
+pub const CATALOG: [Spec; 29] = [
     Spec {
         id: LetterId::LoginCode,
         group: Group::Login,
@@ -738,6 +744,29 @@ pub const CATALOG: [Spec; 28] = [
         },
     },
     Spec {
+        id: LetterId::RenewalCancelled,
+        group: Group::Renewal,
+        title: "Автопродление через платёжку отключено",
+        when: "Автопродление через платёжную систему отключил оператор, оно отключилось из-за смены тарифа или его отключили в самой платёжной системе",
+        vars: &[PAY_PROVIDER, DATE],
+        required: &[],
+        path: &["/cabinet"],
+        ru: Texts {
+            subject: &["Автопродление отключено"],
+            text: &[
+                "Автопродление через {provider} отключено, больше списаний не будет. Подписка действует до {date}, дальше её можно продлить вручную.",
+            ],
+            button: "Открыть подписку",
+        },
+        en: Texts {
+            subject: &["Auto-renewal is off"],
+            text: &[
+                "Auto-renewal via {provider} is off, there will be no more charges. Your subscription runs until {date}, after that you can renew it by hand.",
+            ],
+            button: "Open subscription",
+        },
+    },
+    Spec {
         id: LetterId::SupportReply,
         group: Group::Support,
         title: "Ответ поддержки",
@@ -960,6 +989,7 @@ impl LetterId {
             LetterId::RenewalFailed => "renewal_failed",
             LetterId::RenewalManual => "renewal_manual",
             LetterId::RenewalOff => "renewal_off",
+            LetterId::RenewalCancelled => "renewal_cancelled",
             LetterId::SupportReply => "support_reply",
             LetterId::LoginLinked => "login_linked",
             LetterId::LoginsUnlinked => "logins_unlinked",

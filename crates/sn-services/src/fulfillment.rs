@@ -2000,14 +2000,18 @@ impl<'a> Fulfillment<'a> {
         };
         let state = current.as_ref().map(RemnaUser::state);
         let tag = matches!(context.order.intent, PurchaseIntent::Trial).then_some(TRIAL_TAG);
-        let extra_traffic = {
+        let (extra_traffic, grace) = {
             let mut conn = self.services.store().conn().await?;
-            conn.subscriptions()
+            let extra = conn
+                .subscriptions()
                 .extra_traffic(context.subscription.id)
                 .await?
-                .map_or(0, |extra| extra.bytes)
+                .map_or(0, |extra| extra.bytes);
+            let grace = crate::renewals::grace_for(&mut conn, context.order.id).await?;
+            (extra, grace)
         };
         let computed = plan(&PlanInput {
+            grace,
             extra_traffic,
             kind,
             snapshot: &context.snapshot,
@@ -2330,6 +2334,7 @@ impl<'a> Fulfillment<'a> {
             .transition(order.id, OrderStatus::Fulfilled)
             .await?;
         if changed {
+            crate::renewals::after_fulfilled(&mut tx, &fulfilled, self.services.now()).await?;
             let event = match (order.kind, subscription.remna.is_some()) {
                 (OrderKind::New | OrderKind::Trial, _)
                 | (OrderKind::AdminGrant | OrderKind::ModuleGrant, false) => {

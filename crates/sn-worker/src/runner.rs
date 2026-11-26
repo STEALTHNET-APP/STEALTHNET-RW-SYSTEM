@@ -38,6 +38,7 @@ pub struct WorkerConfig {
     pub end_expired_interval: Duration,
     pub chain_watch_interval: Duration,
     pub node_watch_interval: Duration,
+    pub renewals_interval: Duration,
     pub session_sweep_delay: Duration,
     pub reconcile_batch: usize,
 }
@@ -57,6 +58,7 @@ impl Default for WorkerConfig {
             end_expired_interval: Duration::from_secs(3_600),
             chain_watch_interval: Duration::from_secs(20),
             node_watch_interval: Duration::from_secs(15),
+            renewals_interval: Duration::from_secs(300),
             session_sweep_delay: START_DELAY,
             reconcile_batch: 500,
         }
@@ -73,10 +75,11 @@ pub enum Periodic {
     EndExpired,
     ChainWatch,
     NodeWatch,
+    Renewals,
 }
 
 impl Periodic {
-    pub const ALL: [Periodic; 8] = [
+    pub const ALL: [Periodic; 9] = [
         Periodic::Housekeeping,
         Periodic::AutoRenew,
         Periodic::Reconcile,
@@ -85,6 +88,7 @@ impl Periodic {
         Periodic::EndExpired,
         Periodic::ChainWatch,
         Periodic::NodeWatch,
+        Periodic::Renewals,
     ];
 
     pub const fn name(self) -> &'static str {
@@ -97,6 +101,7 @@ impl Periodic {
             Periodic::EndExpired => "end_expired",
             Periodic::ChainWatch => "chain_watch",
             Periodic::NodeWatch => "node_watch",
+            Periodic::Renewals => "renewals",
         }
     }
 
@@ -114,6 +119,7 @@ impl Periodic {
             Periodic::EndExpired => 6,
             Periodic::ChainWatch => 7,
             Periodic::NodeWatch => 8,
+            Periodic::Renewals => 9,
         }
     }
 }
@@ -395,6 +401,7 @@ impl Worker {
             Periodic::EndExpired => self.config.end_expired_interval,
             Periodic::ChainWatch => self.config.chain_watch_interval,
             Periodic::NodeWatch => self.config.node_watch_interval,
+            Periodic::Renewals => self.config.renewals_interval,
         }
     }
 
@@ -493,6 +500,12 @@ impl Worker {
                 .services
                 .node_watch()
                 .poll()
+                .await
+                .and_then(|report| serde_json::to_value(report).map_err(json_error)),
+            Periodic::Renewals => self
+                .services
+                .renewals()
+                .sweep(self.services.now())
                 .await
                 .and_then(|report| serde_json::to_value(report).map_err(json_error)),
         };

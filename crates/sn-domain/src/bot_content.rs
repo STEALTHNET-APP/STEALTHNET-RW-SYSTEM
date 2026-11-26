@@ -374,6 +374,10 @@ const AMOUNT: Var = Var {
     name: "amount",
     hint: "сумма",
 };
+const PAY_PROVIDER: Var = Var {
+    name: "provider",
+    hint: "платёжная система, например Lava.top",
+};
 const TOPUP_BONUS: Var = Var {
     name: "bonus",
     hint: "бонус за пополнение",
@@ -981,6 +985,54 @@ pub static CATALOG: &[Entry] = &[
         "Кнопка подтверждения новой ссылки",
         "Выпустить новую ссылку",
         &[],
+    ),
+    text(
+        "sub.renewal_on",
+        Subscription,
+        "Автопродление через платёжку",
+        "Автопродление: {provider} спишет {amount} около {date}",
+        &[PAY_PROVIDER, AMOUNT, DATE],
+    ),
+    text(
+        "sub.renewal_cancelling",
+        Subscription,
+        "Автопродление через платёжку отключается",
+        "Автопродление: отключаем в {provider}",
+        &[PAY_PROVIDER],
+    ),
+    hideable(
+        "sub.btn.renewal_off",
+        Subscription,
+        "Кнопка отключения автопродления через платёжку",
+        "Отключить автопродление",
+    ),
+    text(
+        "sub.renewal_confirm",
+        Subscription,
+        "Подтверждение отключения автопродления через платёжку",
+        "Отключить автопродление через {provider}? Больше списаний не будет, подписка доработает до {date}.",
+        &[PAY_PROVIDER, DATE],
+    ),
+    button(
+        "sub.btn.renewal_off_yes",
+        Subscription,
+        "Кнопка подтверждения отключения автопродления",
+        "Отключить",
+        &[],
+    ),
+    text(
+        "sub.renewal_done",
+        Subscription,
+        "Автопродление через платёжку отключено",
+        "Автопродление через {provider} отключено. Подписка действует до {date}.",
+        &[PAY_PROVIDER, DATE],
+    ),
+    text(
+        "sub.renewal_pending",
+        Subscription,
+        "Автопродление через платёжку ещё отключается",
+        "Отключаем автопродление в {provider}. Если сразу не получится, панель повторит сама.",
+        &[PAY_PROVIDER],
     ),
     text(
         "sub.reissued",
@@ -3087,6 +3139,20 @@ pub static CATALOG: &[Entry] = &[
         "Автопродление выключено",
         "Автопродление выключено: оплатить не удалось. Продлите подписку вручную.",
         &[],
+    ),
+    text(
+        "notify.renewal_cancelled",
+        Notify,
+        "Автопродление через платёжку отключено",
+        "Автопродление через {provider} отключено, больше списаний не будет. Подписка действует до {date}.",
+        &[PAY_PROVIDER, DATE],
+    ),
+    text(
+        "notify.renewal_cancelled_plain",
+        Notify,
+        "Автопродление через платёжку отключено, без даты",
+        "Автопродление через {provider} отключено, больше списаний не будет.",
+        &[PAY_PROVIDER],
     ),
     text(
         "notify.autorenew_after_off",

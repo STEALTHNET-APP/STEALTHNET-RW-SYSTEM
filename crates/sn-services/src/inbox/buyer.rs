@@ -9,7 +9,7 @@ use sn_payments::{BuyerPurpose, PlanBinding};
 
 pub const PAID_FROM_BALANCE: &str = "заказ оплачен с баланса после пополнения";
 
-fn topup_order(client_id: ClientId, amount: Money) -> ServiceResult<NewOrder> {
+pub(super) fn topup_order(client_id: ClientId, amount: Money) -> ServiceResult<NewOrder> {
     Ok(NewOrder {
         client_id,
         subscription_id: None,

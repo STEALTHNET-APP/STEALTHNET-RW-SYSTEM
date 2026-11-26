@@ -57,6 +57,13 @@ pub struct CheckoutMethod {
     pub unavailable: Option<Unavailable>,
 }
 
+pub fn plain_methods(methods: Vec<CheckoutMethod>) -> Vec<CheckoutMethod> {
+    methods
+        .into_iter()
+        .filter(|m| m.method.as_deref() != Some(sn_domain::payment::RECURRING_METHOD))
+        .collect()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MethodView {
     pub code: &'static str,

@@ -84,13 +84,13 @@ impl Checkout<'_> {
         };
         let limits = settings.topup_limits();
         let registry = self.services.payments();
-        let found = registry.checkout_methods(&MethodsContext {
+        let found = sn_payments::plain_methods(registry.checkout_methods(&MethodsContext {
             currency,
             total: limits.min,
             stars_total: None,
             balance: None,
             channel: channel.client(),
-        });
+        }));
         let methods = reachable(registry, found, telegram)
             .into_iter()
             .filter(|method| method.kind == ProviderKind::External && method.unavailable.is_none())

@@ -15,6 +15,25 @@ export type Mirror = {
   last_node: string | null;
 };
 
+export type Renewal = {
+  provider: string;
+  title: string;
+  name: string;
+  status: 'pending' | 'active' | 'cancelling' | 'cancelled' | 'failed';
+  amount: { minor: number; currency: 'USD' | 'RUB' } | null;
+  periodicity: string;
+  every: string;
+  days: number;
+  next_charge_at: string | null;
+  started_at: string;
+  charges: number;
+  email: string;
+  cancel_source: string | null;
+  ended_at: string | null;
+  paid_until: string | null;
+  problem: string | null;
+};
+
 export type Subscription = {
   id: number;
   public_id: string;

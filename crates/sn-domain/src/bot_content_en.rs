@@ -65,6 +65,19 @@ pub fn default(key: &str) -> Option<&'static str> {
         }
         "sub.btn.reissue_yes" => "Get a new link",
         "sub.reissued" => "New subscription link:\n<code>{url}</code>\nAdd it to your app again.",
+        "sub.renewal_on" => "Auto-renewal: {provider} will charge {amount} around {date}",
+        "sub.renewal_cancelling" => "Auto-renewal: turning it off in {provider}",
+        "sub.btn.renewal_off" => "Turn off auto-renewal",
+        "sub.renewal_confirm" => {
+            "Turn off auto-renewal via {provider}? There will be no more charges, the subscription runs until {date}."
+        }
+        "sub.btn.renewal_off_yes" => "Turn off",
+        "sub.renewal_done" => {
+            "Auto-renewal via {provider} is off. The subscription runs until {date}."
+        }
+        "sub.renewal_pending" => {
+            "Turning off auto-renewal in {provider}. If it doesn't work right away, the panel will retry by itself."
+        }
         "sub.trial_started" => {
             "Your free trial is being set up. It will show up under “Subscription” in a minute."
         }
@@ -535,6 +548,12 @@ pub fn default(key: &str) -> Option<&'static str> {
         }
         "notify.autorenew_disabled" => {
             "Auto-renewal is off because the payment failed. Renew the subscription by hand."
+        }
+        "notify.renewal_cancelled" => {
+            "Auto-renewal via {provider} is off, there will be no more charges. Your subscription runs until {date}."
+        }
+        "notify.renewal_cancelled_plain" => {
+            "Auto-renewal via {provider} is off, there will be no more charges."
         }
         "notify.autorenew_after_off" => {
             "The {amount} renewal charge went through before auto-renewal was turned off, so your subscription is renewed until {date}. If you don't need it, contact support and we'll refund you."

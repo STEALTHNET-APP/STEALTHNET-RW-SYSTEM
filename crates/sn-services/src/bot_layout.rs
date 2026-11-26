@@ -169,6 +169,7 @@ impl Install {
             link,
             remna,
             reissue: self.reissue,
+            renewal: false,
         }
     }
 
@@ -214,6 +215,10 @@ impl Install {
             "sub.btn.reissue" => (!self.reissue).then(|| {
                 "Выключено «Выпускать новую ссылку подписки» в «Кабинет и мини-приложение»".to_string()
             }),
+            "sub.btn.renewal_off" => Some(
+                "Видна, только когда подписку продлевает платёжная система, например Lava.top"
+                    .to_string(),
+            ),
             _ => None,
         }
     }

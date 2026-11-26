@@ -1016,6 +1016,18 @@ impl<'a> Checkout<'a> {
             currency,
             promo_code: cart.promo_code.clone(),
         };
+        if cart.extra_devices > 0
+            && let Some(current) = current.as_ref()
+            && current.tariff_id == Some(tariff.id)
+        {
+            let mut conn = self.services.store().conn().await?;
+            if crate::renewals::live_link(&mut conn, current.id)
+                .await?
+                .is_some()
+            {
+                return Err(crate::renewals::devices_refusal());
+            }
+        }
         let adjustments = modules
             .quote_adjustments_from(&self.services.module_context(), &hook, origin)
             .await?;
@@ -1038,6 +1050,21 @@ impl<'a> Checkout<'a> {
             }),
             telegram,
         );
+        let methods = self
+            .services
+            .renewals()
+            .offer_methods(
+                methods,
+                &crate::renewals::RenewalCart {
+                    tariff: &tariff,
+                    period: cart.period_id,
+                    quote: &quote,
+                    currency,
+                    extra_devices: cart.extra_devices,
+                    current: current.as_ref(),
+                },
+            )
+            .await?;
         Ok(Prepared {
             client,
             tariff,
@@ -1297,13 +1324,13 @@ impl<'a> Checkout<'a> {
         }
         let registry = self.services.payments();
         let code = method.map(str::trim).filter(|c| !c.is_empty());
-        let methods = registry.checkout_methods(&MethodsContext {
+        let methods = sn_payments::plain_methods(registry.checkout_methods(&MethodsContext {
             currency: amount.currency,
             total: amount,
             stars_total: None,
             balance: None,
             channel: channel.client(),
-        });
+        }));
         let chosen = reachable(registry, methods, telegram)
             .into_iter()
             .find(|m| {
@@ -1614,6 +1641,12 @@ impl<'a> Checkout<'a> {
                 if subscription.client_id != client_id {
                     return Err(ServiceError::NotFound("подписка"));
                 }
+                if item.module == ModuleId::Options
+                    && item.kind == sn_modules::catalog::options::ITEM_DEVICES
+                    && crate::renewals::live_link(&mut conn, id).await?.is_some()
+                {
+                    return Err(crate::renewals::devices_refusal());
+                }
             }
             let balance = conn
                 .ledger()
@@ -1642,13 +1675,15 @@ impl<'a> Checkout<'a> {
         }
         let methods = reachable(
             self.services.payments(),
-            self.services.payments().checkout_methods(&MethodsContext {
-                currency,
-                total: quote.total,
-                stars_total: quote.stars.map(|s| s.total),
-                balance: Some(balance),
-                channel,
-            }),
+            sn_payments::plain_methods(self.services.payments().checkout_methods(
+                &MethodsContext {
+                    currency,
+                    total: quote.total,
+                    stars_total: quote.stars.map(|s| s.total),
+                    balance: Some(balance),
+                    channel,
+                },
+            )),
             telegram,
         );
         Ok((client, quote, methods))
@@ -1872,7 +1907,22 @@ impl<'a> Checkout<'a> {
         }
         let client_ref = client_ref(&mut tx, client).await?;
         tx.commit().await?;
+        let plan = match (&order.intent, method.as_deref()) {
+            (
+                PurchaseIntent::Subscription {
+                    tariff_id,
+                    period_id,
+                    ..
+                },
+                Some(sn_domain::payment::RECURRING_METHOD),
+            ) => Some(sn_payments::PlanBinding {
+                tariff_id: tariff_id.0,
+                period_id: period_id.0,
+            }),
+            _ => None,
+        };
         let request = InvoiceRequest {
+            plan,
             payment_id: payment.id,
             payment_public_id: payment.public_id,
             order_public_id: created.public_id,
@@ -1908,6 +1958,14 @@ impl<'a> Checkout<'a> {
                         },
                     )
                     .await?;
+                crate::renewals::note_invoice(
+                    &mut conn,
+                    provider.id(),
+                    payment.id,
+                    &created,
+                    &invoice,
+                )
+                .await?;
                 drop(conn);
                 self.finish_replaced(&created, &replaced).await;
                 let pay_url = match &public_url {

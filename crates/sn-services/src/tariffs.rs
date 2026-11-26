@@ -115,6 +115,7 @@ pub struct TariffsView {
     pub categories: Vec<Category>,
     pub tariffs: Vec<Tariff>,
     pub stats: Vec<TariffStats>,
+    pub renewals: Vec<crate::renewals::BoundTerm>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -364,6 +365,7 @@ impl<'a> TariffAdmin<'a> {
             categories: conn.tariffs().categories(true).await?,
             tariffs,
             stats,
+            renewals: crate::renewals::bound_terms(self.services),
         })
     }
 

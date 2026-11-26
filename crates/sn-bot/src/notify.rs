@@ -45,6 +45,7 @@ pub mod templates {
     pub const REFUNDED_BLOCKED: &str = sn_services::inbox::BLOCKED_REFUND_TEMPLATE;
     pub const STARS_REFUNDED: &str = sn_services::stars_ledger::REFUNDED_TEMPLATE;
     pub const AUTORENEW_AFTER_OFF: &str = sn_services::autorenew::CHARGED_AFTER_OFF_TEMPLATE;
+    pub const RENEWAL_CANCELLED: &str = sn_services::renewals::CANCELLED_TEMPLATE;
     pub const PAYMENT_CREDITED: &str = sn_services::inbox::PAYMENT_CREDITED_TEMPLATE;
     pub const PAYMENT_REVIEW: &str = sn_services::inbox::PAYMENT_REVIEW_TEMPLATE;
     pub const SUBSCRIPTION_LINK: &str = sn_services::remna_transfer::LINK_TEMPLATE;
@@ -346,6 +347,24 @@ pub fn render(
             t("notify.autorenew_disabled", &[]),
             Some(("notify.btn.extend", "buy")),
         ),
+        templates::RENEWAL_CANCELLED => {
+            let provider = param(params, "provider_title")
+                .or_else(|| param(params, "provider"))
+                .unwrap_or_default();
+            (
+                match &date {
+                    Some(date) => t(
+                        "notify.renewal_cancelled",
+                        &[("provider", Text(&provider)), ("date", Text(date))],
+                    ),
+                    None => t(
+                        "notify.renewal_cancelled_plain",
+                        &[("provider", Text(&provider))],
+                    ),
+                },
+                Some(("notify.btn.extend", "buy")),
+            )
+        }
         templates::AUTORENEW_AFTER_OFF => (
             match (&amount, &date) {
                 (Some(amount), Some(date)) => t(
@@ -919,6 +938,13 @@ pub fn letter_of(
         templates::AUTORENEW_TURNED_OFF | templates::AUTORENEW_DISABLED => {
             (LetterId::RenewalOff, Values::new().maybe("date", date))
         }
+        templates::RENEWAL_CANCELLED => (
+            LetterId::RenewalCancelled,
+            Values::new().maybe("date", date).maybe(
+                "provider",
+                raw(params, "provider_title").or_else(|| raw(params, "provider")),
+            ),
+        ),
         templates::SUPPORT_REPLY => (
             LetterId::SupportReply,
             Values::new()

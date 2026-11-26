@@ -1,5 +1,5 @@
 import type { Money } from '../../lib/format';
-import type { Client, Subscription } from '../clients/types';
+import type { Client, Renewal, Subscription } from '../clients/types';
 
 export type Identity = {
   id: number;
@@ -62,6 +62,7 @@ export type SubscriptionDetails = {
   traffic_30d_bytes: number | null;
   remna_reachable: boolean;
   remna_missing_at: string | null;
+  renewal?: Renewal | null;
 };
 
 export type Device = {

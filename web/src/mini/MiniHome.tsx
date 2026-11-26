@@ -1,5 +1,6 @@
 import { Fragment, useState, type ReactNode } from 'react';
 import { Link } from 'react-router';
+import { api, ApiError } from '../lib/api';
 import { BrandMark } from '../lib/brand';
 import { dateLong, money, plural } from '../lib/format';
 import { t } from '../lib/i18n';
@@ -242,7 +243,10 @@ function Subscription({ block, extras }: { block: SubscriptionBlock; extras: Ext
         ? { text: reset !== 'no_reset' ? t('Трафик закончился, {when}', { when: resetWhen(reset, view.subscription).tail }) : t('Трафик закончился'), tone: 'warn' }
         : expired
           ? { text: t('Истекла'), tone: 'muted' }
-          : { text: view.subscription.autorenew.enabled ? t('Активна, автопродление включено') : t('Активна'), tone: 'ink2' };
+          : {
+              text: view.subscription.autorenew.enabled || view.renewal?.status === 'active' ? t('Активна, автопродление включено') : t('Активна'),
+              tone: 'ink2',
+            };
 
   const main: Btn = !view
     ? { label: pick(block.empty?.button, lang, t(EMPTY_TEXTS.button)), icon: 'tag', target: { to: '/app/plans' } }
@@ -316,6 +320,8 @@ function Subscription({ block, extras }: { block: SubscriptionBlock; extras: Ext
         </section>
       ) : null}
 
+      {view && !blocked ? <RenewalRow /> : null}
+
       <Act button={main} className="mn-main press" size={20} part="subscription" />
       {!view && extras.trial ? (
         <Link to="/app/trial" className="mn-pairbtn mn-trialbtn press" data-part="subscription">
@@ -324,6 +330,80 @@ function Subscription({ block, extras }: { block: SubscriptionBlock; extras: Ext
         </Link>
       ) : null}
     </>
+  );
+}
+
+function RenewalRow() {
+  const { view, setView } = useMini();
+  const [ask, setAsk] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const renewal = view?.renewal && (view.renewal.status === 'active' || view.renewal.status === 'cancelling') ? view.renewal : null;
+  if (!view || !renewal) {
+    return null;
+  }
+  const expire = view.subscription.mirror.expire_at;
+  const text =
+    renewal.status === 'cancelling'
+      ? t('Отключаем автопродление в {provider}', { provider: renewal.title })
+      : renewal.amount && renewal.next_charge_at
+        ? t('{provider} спишет {amount} около {date}', { provider: renewal.title, amount: money(renewal.amount), date: dateLong(renewal.next_charge_at, false) })
+        : t('Продлевает {provider}', { provider: renewal.title });
+  const turnOff = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api(`/api/client/subscriptions/${view.subscription.id}/autorenew`, {
+        method: 'PUT',
+        body: { enabled: false, period_id: view.subscription.autorenew.period_id },
+      });
+      const fresh = await api<typeof view>(`/api/client/subscriptions/${view.subscription.id}`).catch(() => null);
+      if (fresh) {
+        setView(fresh);
+      }
+      setAsk(false);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : t('Автопродление не отключилось'));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section aria-label={t('Автопродление')} className="mn-traffic" data-part="subscription">
+      <span className="mn-traffic-top">
+        <span className="mn-traffic-name">{t('Автопродление')}</span>
+      </span>
+      <span className="mn-traffic-sub">{text}</span>
+      {ask ? (
+        <>
+          <span className="mn-traffic-sub">
+            {expire
+              ? t('{provider} больше не будет списывать деньги. Подписка доработает до {date}, продлить её можно будет вручную.', {
+                  provider: renewal.title,
+                  date: dateLong(expire, false),
+                })
+              : t('{provider} больше не будет списывать деньги. Продлить подписку можно будет вручную.', { provider: renewal.title })}
+          </span>
+          <div className="mn-pair">
+            <button type="button" className="mn-pairbtn press" onClick={() => void turnOff()} disabled={busy}>
+              {busy ? t('Отключаем…') : t('Отключить автопродление')}
+            </button>
+            <button type="button" className="mn-pairbtn press" onClick={() => setAsk(false)} disabled={busy}>
+              {t('Оставить')}
+            </button>
+          </div>
+        </>
+      ) : renewal.status === 'active' ? (
+        <button type="button" className="mn-link press" onClick={() => setAsk(true)}>
+          {t('Отключить автопродление')}
+        </button>
+      ) : null}
+      {error ? (
+        <span className="mn-tone bad" role="alert">
+          {error}
+        </span>
+      ) : null}
+    </section>
   );
 }
 

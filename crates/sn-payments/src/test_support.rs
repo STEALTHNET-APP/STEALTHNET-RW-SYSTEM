@@ -25,6 +25,7 @@ pub(crate) fn config(pairs: &[(&str, serde_json::Value)]) -> ProviderConfig {
 
 pub(crate) fn invoice(amount: Amount, email: Option<&str>) -> InvoiceRequest {
     InvoiceRequest {
+        plan: None,
         payment_id: PaymentId(41),
         payment_public_id: PAYMENT,
         order_public_id: Uuid::from_u128(7),

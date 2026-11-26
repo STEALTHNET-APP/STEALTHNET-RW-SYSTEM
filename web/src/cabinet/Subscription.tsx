@@ -120,8 +120,34 @@ export function SubscriptionPage() {
     }
   };
 
+  const renewalOff = async () => {
+    if (!view) {
+      return;
+    }
+    setBusy(true);
+    try {
+      await api(`/api/client/subscriptions/${view.subscription.id}/autorenew`, {
+        method: 'PUT',
+        body: { enabled: false, period_id: view.subscription.autorenew.period_id },
+      });
+      setAsk('');
+      const fresh = await api<typeof view>(`/api/client/subscriptions/${view.subscription.id}`).catch(() => null);
+      if (fresh) {
+        detail.setView(fresh);
+      }
+    } catch (err) {
+      setError(failText(err, t('Автопродление не отключилось')));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const toggleAuto = async () => {
     if (!view) {
+      return;
+    }
+    if (view.renewal?.status === 'active') {
+      setAsk(ask === 'renewal' ? '' : 'renewal');
       return;
     }
     const enabled = !view.subscription.autorenew.enabled;
@@ -210,13 +236,24 @@ export function SubscriptionPage() {
   const renewPeriod = offer?.periods.find((p) => p.period_id === view?.subscription.autorenew.period_id) ?? offer?.periods.find((p) => p.days === view?.subscription.period_days) ?? null;
   const renewPrice: Money | null = renewPeriod?.price ?? null;
   const chargeDate = expire ? new Date(Date.parse(expire) - (site.autorenew_days_before ?? 1) * 86_400_000).toISOString() : null;
-  const autoOn = view?.subscription.autorenew.enabled ?? false;
+  const renewal = view?.renewal && (view.renewal.status === 'active' || view.renewal.status === 'cancelling') ? view.renewal : null;
+  const autoOn = renewal ? renewal.status === 'active' : (view?.subscription.autorenew.enabled ?? false);
   const balanceOff = me.balance_enabled === false;
   const held = heldBalance(me);
   const showBalance = !balanceOff || me.balance.minor > 0 || held !== null;
   const canCharge = !balanceOff || me.autorenew_card === true || (renewPrice !== null && me.balance.minor >= renewPrice.minor);
   const autoText = !view
     ? ''
+    : renewal
+      ? renewal.status === 'cancelling'
+        ? t('Отключаем автопродление в {provider}', { provider: renewal.title })
+        : renewal.amount && renewal.next_charge_at
+          ? t('{provider} спишет {amount} около {date}', {
+              provider: renewal.title,
+              amount: money(renewal.amount),
+              date: dateLong(renewal.next_charge_at, false),
+            })
+          : t('Продлевает {provider}', { provider: renewal.title })
     : blocked
       ? autoOn
         ? t('На время блокировки не списываем')
@@ -489,10 +526,41 @@ export function SubscriptionPage() {
   const devicesCard = <DevicesCard view={view} devices={devices} loading={!detail.ready} onDevices={detail.setDevices} onError={setError} link={subs.link} addLink />;
 
   const autoSwitch = view ? (
-    <button type="button" role="switch" className={phone ? 'cb-switch big' : 'cb-switch'} aria-checked={autoOn} aria-label={t('Автопродление')} onClick={() => void toggleAuto()} disabled={blocked}>
+    <button
+      type="button"
+      role="switch"
+      className={phone ? 'cb-switch big' : 'cb-switch'}
+      aria-checked={autoOn}
+      aria-label={t('Автопродление')}
+      onClick={() => void toggleAuto()}
+      disabled={blocked || busy || renewal?.status === 'cancelling'}
+    >
       <span />
     </button>
   ) : null;
+
+  const renewalAsk =
+    renewal && ask === 'renewal' ? (
+      <div className="cb-ask">
+        <p>
+          <strong>{t('Отключить автопродление?')}</strong>{' '}
+          {view?.subscription.mirror.expire_at
+            ? t('{provider} больше не будет списывать деньги. Подписка доработает до {date}, продлить её можно будет вручную.', {
+                provider: renewal.title,
+                date: dateLong(view.subscription.mirror.expire_at, false),
+              })
+            : t('{provider} больше не будет списывать деньги. Продлить подписку можно будет вручную.', { provider: renewal.title })}
+        </p>
+        <span className={phone ? 'cb-ask-btns col' : 'cb-ask-btns'}>
+          <button type="button" className="cb-main sm" onClick={() => void renewalOff()} disabled={busy}>
+            {busy ? t('Отключаем…') : t('Отключить автопродление')}
+          </button>
+          <button type="button" className="cb-cancel" onClick={() => setAsk('')} disabled={busy}>
+            {t('Оставить')}
+          </button>
+        </span>
+      </div>
+    ) : null;
 
   const errorLine = error ? (
     <p className="cb-error" role="alert">
@@ -515,6 +583,7 @@ export function SubscriptionPage() {
               <span className="cb-small cb-muted">{autoText}</span>
             </span>
             {autoSwitch}
+            {renewalAsk}
           </Card>
         ) : null}
       </div>
@@ -560,6 +629,9 @@ export function SubscriptionPage() {
                 </span>
                 {autoSwitch}
               </div>
+            ) : null}
+            {view && renewalAsk ? (
+              renewalAsk
             ) : null}
           </Card>
         ) : null}

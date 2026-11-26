@@ -305,6 +305,11 @@ export function Pay() {
         : t('Подписка продлится до {date}.', { date: dateLong(quote.expire_preview, true) })
       : null;
 
+  const renewalNote =
+    chosen?.method === 'subscription' && !blocked
+      ? t('Дальше платёжная система будет сама списывать эту сумму с карты в начале каждого срока. Отключить можно в кабинете и в боте, подписка доработает оплаченный срок.')
+      : null;
+
   const applyPromo = async () => {
     const code = promoInput.trim().toUpperCase();
     if (!code || promoBusy) {
@@ -658,6 +663,7 @@ export function Pay() {
               </button>
             )}
             {after ? <p className="cb-small cb-muted">{after}</p> : null}
+            {renewalNote ? <p className="cb-small cb-muted">{renewalNote}</p> : null}
           </Card>
         </div>
       </div>

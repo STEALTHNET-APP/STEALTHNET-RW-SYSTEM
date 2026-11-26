@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import { api, ApiError } from '../../lib/api';
-import { count, groupDigits, NBSP, plural } from '../../lib/format';
+import { count, groupDigits, money, NBSP, plural } from '../../lib/format';
 import { Icon } from '../../lib/icons';
 import { ConfirmDialog, Dialog } from '../client/dialogs';
 import { DeleteTariff } from './DeleteTariff';
@@ -25,6 +25,7 @@ import {
   type Applied,
   type Category,
   type Channels,
+  type BoundTerm,
   type Draft,
   type DraftDiscount,
   type DraftPack,
@@ -307,6 +308,7 @@ export function Tariffs() {
             hwidOff={hwidOff}
             busy={busy}
             error={formError}
+            renewals={[]}
             onEdit={edit}
             onSave={() => void save()}
             onCancel={() => {
@@ -403,6 +405,7 @@ export function Tariffs() {
                 hwidOff={hwidOff}
                 busy={busy}
                 error={formError}
+                renewals={(view?.renewals ?? []).filter((r) => r.tariff_id === draft.id && r.amount.currency === currency)}
                 onEdit={edit}
                 onSave={() => void save()}
                 onCancel={() => {
@@ -492,13 +495,14 @@ type FormProps = {
   hwidOff: boolean;
   busy: boolean;
   error: string | null;
+  renewals: BoundTerm[];
   onEdit: (patch: Partial<Draft>) => void;
   onSave: () => void;
   onCancel: () => void;
   onDelete: (() => void) | null;
 };
 
-function TariffForm({ draft, currency, squads, hwidOff, busy, error, onEdit, onSave, onCancel, onDelete }: FormProps) {
+function TariffForm({ draft, currency, squads, hwidOff, busy, error, renewals, onEdit, onSave, onCancel, onDelete }: FormProps) {
   const ids = useId();
   const sym = currency === 'RUB' ? '₽' : '$';
   const base = draft.periods.find((p) => Number(p.days) === 30);
@@ -589,6 +593,20 @@ function TariffForm({ draft, currency, squads, hwidOff, busy, error, onEdit, onS
                 </span>
               </label>
               <span className="muted tf-note">{note}</span>
+              {(() => {
+                const bound = renewals.find((r) => r.period_id === p.id);
+                if (!bound) {
+                  return null;
+                }
+                const same = minor === bound.amount.minor;
+                return (
+                  <span className={same ? 'muted tf-renewal' : 'warn-line tf-renewal'}>
+                    {same
+                      ? `Срок продаётся с автопродлением ${bound.title} за ${money(bound.amount)}: меняете цену здесь — поменяйте и в ${bound.title}`
+                      : `В ${bound.title} цена ${money(bound.amount)}: пока цены разные, кнопки автопродления у срока нет`}
+                  </span>
+                );
+              })()}
               {draft.periods.length > 1 ? (
                 <button type="button" className="tf-x hov" aria-label={`Убрать срок ${term}`} onClick={() => onEdit({ periods: draft.periods.filter((x) => x.key !== p.key) })} disabled={busy}>
                   <Icon name="close" size={16} stroke={2} />

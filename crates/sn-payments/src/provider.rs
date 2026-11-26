@@ -145,6 +145,8 @@ pub struct InvoiceRequest {
     pub save_payment_method: bool,
     #[serde(default)]
     pub method: Option<String>,
+    #[serde(default)]
+    pub plan: Option<PlanBinding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -194,12 +196,21 @@ pub struct PlanBinding {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RenewalRef {
+    pub series: String,
+    pub txid: String,
+    #[serde(default)]
+    pub charged_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value", rename_all = "snake_case")]
 pub enum PaymentRef {
     Payment(PaymentId),
     PublicId(Uuid),
     ProviderTxid(String),
     Buyer(Buyer),
+    Renewal(RenewalRef),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -233,11 +244,26 @@ impl ProviderNotice {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RenewalEvent {
+    Failed {
+        series: String,
+        reason: Option<String>,
+    },
+    Cancelled {
+        contract: String,
+        at: Option<DateTime<Utc>>,
+        until: Option<DateTime<Utc>>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum OutcomeSignal {
     Notice { notice: ProviderNotice },
     MethodRevoked,
     Precheck { account: Option<String> },
+    Renewal { event: RenewalEvent },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -312,12 +338,63 @@ impl WebhookOutcome {
         matches!(self.signal, Some(OutcomeSignal::MethodRevoked))
     }
 
+    pub fn renewal_event(&self) -> Option<&RenewalEvent> {
+        match &self.signal {
+            Some(OutcomeSignal::Renewal { event }) => Some(event),
+            _ => None,
+        }
+    }
+
     pub fn with_notice(mut self, kind: NoticeKind, text: impl Into<String>) -> Self {
         self.signal = Some(OutcomeSignal::Notice {
             notice: ProviderNotice::new(kind, text),
         });
         self
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RenewalPlan {
+    pub binding: PlanBinding,
+    pub amount: Money,
+    pub offer: String,
+    pub product: Option<String>,
+    pub periodicity: String,
+    pub name: String,
+    pub every: &'static str,
+    pub min_days: u32,
+    pub max_days: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RenewalCancel {
+    Cancelled,
+    Missing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RenewalStatus {
+    Active,
+    Cancelled,
+    Failed,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RenewalCharge {
+    pub id: String,
+    pub at: Option<DateTime<Utc>>,
+    pub paid: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RenewalState {
+    pub status: RenewalStatus,
+    pub paid_until: Option<DateTime<Utc>>,
+    pub cancelled_at: Option<DateTime<Utc>>,
+    pub charges: Vec<RenewalCharge>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -606,6 +683,40 @@ pub trait PaymentProvider: Send + Sync + 'static {
 
     fn plan_binding(&self, _config: &ProviderConfig, _plan: &str) -> Option<PlanBinding> {
         None
+    }
+
+    fn renewals_enabled(&self, _config: &ProviderConfig) -> bool {
+        false
+    }
+
+    fn renewal_plans(&self, _config: &ProviderConfig) -> Vec<RenewalPlan> {
+        Vec::new()
+    }
+
+    async fn cancel_renewal(
+        &self,
+        _config: &ProviderConfig,
+        _series: &str,
+        _email: &str,
+    ) -> PaymentResult<RenewalCancel> {
+        Err(PaymentError::Unsupported("отмена автопродления"))
+    }
+
+    async fn fetch_renewal(
+        &self,
+        _config: &ProviderConfig,
+        _series: &str,
+    ) -> PaymentResult<RenewalState> {
+        Err(PaymentError::Unsupported("сверка автопродления"))
+    }
+
+    async fn confirm_renewal(
+        &self,
+        _config: &ProviderConfig,
+        _series: &str,
+        _txid: &str,
+    ) -> PaymentResult<Option<WebhookOutcome>> {
+        Ok(None)
     }
 
     async fn catalog(&self, _config: &ProviderConfig) -> PaymentResult<Option<serde_json::Value>> {

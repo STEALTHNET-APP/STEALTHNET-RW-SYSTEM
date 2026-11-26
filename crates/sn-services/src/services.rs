@@ -537,6 +537,10 @@ impl Services {
         AutoRenew::new(self)
     }
 
+    pub fn renewals(&self) -> crate::renewals::Renewals<'_> {
+        crate::renewals::Renewals::new(self)
+    }
+
     pub fn events(&self) -> EventDispatcher<'_> {
         EventDispatcher::new(self)
     }

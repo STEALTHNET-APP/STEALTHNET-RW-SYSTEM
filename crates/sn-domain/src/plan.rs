@@ -80,8 +80,33 @@ pub struct HeldDevices {
     pub until: DateTime<Utc>,
 }
 
+pub const RECURRING_GRACE_HOURS: u32 = 48;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Grace {
+    pub hours: u32,
+    pub carried: bool,
+}
+
+impl Grace {
+    pub const fn first() -> Self {
+        Grace {
+            hours: RECURRING_GRACE_HOURS,
+            carried: false,
+        }
+    }
+
+    pub const fn renewal() -> Self {
+        Grace {
+            hours: RECURRING_GRACE_HOURS,
+            carried: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct PlanInput<'a> {
+    pub grace: Option<Grace>,
     pub kind: PlanKind,
     pub snapshot: &'a TariffSnapshot,
     pub extra_devices: u32,
@@ -170,6 +195,30 @@ pub fn new_expire_at(
     whole_seconds(base + Duration::days(days as i64))
 }
 
+pub fn graced_expire_at(
+    kind: PlanKind,
+    current_expire_at: Option<DateTime<Utc>>,
+    paid_at: DateTime<Utc>,
+    days: u32,
+    grace: Option<Grace>,
+) -> DateTime<Utc> {
+    let Some(grace) = grace else {
+        return new_expire_at(kind, current_expire_at, paid_at, days);
+    };
+    let buffer = Duration::hours(i64::from(grace.hours));
+    let term = Duration::days(i64::from(days));
+    let current = match kind {
+        PlanKind::Renewal => current_expire_at,
+        _ => None,
+    };
+    let end = match current {
+        Some(current) if grace.carried => (current - buffer).max(paid_at + buffer) + term,
+        Some(current) => current.max(paid_at) + buffer + term,
+        None => paid_at + buffer + term,
+    };
+    whole_seconds(end)
+}
+
 fn merge_squads(primary: &[SquadId], extra: &[SquadId]) -> Vec<SquadId> {
     let mut out: Vec<SquadId> = Vec::with_capacity(primary.len() + extra.len());
     for squad in primary.iter().chain(extra) {
@@ -205,7 +254,8 @@ pub fn plan(input: &PlanInput<'_>) -> Result<FulfillmentPlan, DomainError> {
     let tag = input.tag.map(str::to_string);
 
     let Some(current) = input.current else {
-        let expire_at = new_expire_at(input.kind, None, input.paid_at, snapshot.days);
+        let expire_at =
+            graced_expire_at(input.kind, None, input.paid_at, snapshot.days, input.grace);
         return Ok(FulfillmentPlan {
             kind: input.kind,
             action: PlanAction::Create {
@@ -235,11 +285,12 @@ pub fn plan(input: &PlanInput<'_>) -> Result<FulfillmentPlan, DomainError> {
     };
 
     let renewal = input.kind == PlanKind::Renewal;
-    let expire_at = new_expire_at(
+    let expire_at = graced_expire_at(
         input.kind,
         Some(current.expire_at),
         input.paid_at,
         snapshot.days,
+        input.grace,
     );
     let squads = if renewal {
         merge_squads(&snapshot.squads, input.keep_squads)
@@ -425,6 +476,7 @@ mod tests {
         let expire = Utc.with_ymd_and_hms(2027, 2, 14, 0, 0, 0).unwrap();
         let state = current(SubscriptionStatus::Active, expire);
         let p = plan(&PlanInput {
+            grace: None,
             extra_traffic: 0,
             kind: PlanKind::Renewal,
             snapshot: &snapshot,
@@ -455,6 +507,7 @@ mod tests {
         let expired = Utc.with_ymd_and_hms(2026, 11, 10, 0, 0, 0).unwrap();
         let state = current(SubscriptionStatus::Expired, expired);
         let p = plan(&PlanInput {
+            grace: None,
             extra_traffic: 0,
             kind: PlanKind::Renewal,
             snapshot: &snapshot,
@@ -479,6 +532,7 @@ mod tests {
         let expire = Utc.with_ymd_and_hms(2027, 2, 14, 0, 0, 0).unwrap();
         let state = current(SubscriptionStatus::Limited, expire);
         let p = plan(&PlanInput {
+            grace: None,
             extra_traffic: 0,
             kind: PlanKind::Change,
             snapshot: &snapshot,
@@ -505,6 +559,7 @@ mod tests {
         let tariff = standard();
         let snapshot = tariff.snapshot(tariff.period(PeriodId(12)).unwrap());
         let p = plan(&PlanInput {
+            grace: None,
             extra_traffic: 0,
             kind: PlanKind::New,
             snapshot: &snapshot,
@@ -525,6 +580,7 @@ mod tests {
 
     fn renewal(snapshot: &TariffSnapshot, state: &RemnaUserState) -> FulfillmentPlan {
         plan(&PlanInput {
+            grace: None,
             extra_traffic: 0,
             kind: PlanKind::Renewal,
             snapshot,
@@ -647,6 +703,7 @@ mod tests {
         let expire = Utc.with_ymd_and_hms(2027, 2, 14, 0, 0, 0).unwrap();
         let state = current(SubscriptionStatus::Active, expire);
         plan(&PlanInput {
+            grace: None,
             extra_traffic: 0,
             kind: PlanKind::Renewal,
             snapshot: &snapshot,
@@ -714,6 +771,7 @@ mod tests {
             until: expire,
         });
         let change = plan(&PlanInput {
+            grace: None,
             extra_traffic: 0,
             kind: PlanKind::Change,
             snapshot: &snapshot,
@@ -731,6 +789,7 @@ mod tests {
         assert_eq!(change.device_hold, None);
         assert_eq!(change.base_expire_at, Some(expire));
         let fresh = plan(&PlanInput {
+            grace: None,
             extra_traffic: 0,
             kind: PlanKind::New,
             snapshot: &snapshot,
@@ -805,6 +864,7 @@ mod tests {
         let paid = paid_with_microseconds();
         let target = paid_at() + Duration::seconds(1) + Duration::days(30);
         let fresh = plan(&PlanInput {
+            grace: None,
             extra_traffic: 0,
             kind: PlanKind::New,
             snapshot: &snapshot,
@@ -827,6 +887,7 @@ mod tests {
         );
         for kind in [PlanKind::Renewal, PlanKind::Change] {
             let p = plan(&PlanInput {
+                grace: None,
                 extra_traffic: 0,
                 kind,
                 snapshot: &snapshot,
@@ -854,6 +915,7 @@ mod tests {
         let snapshot = tariff.snapshot(tariff.period(PeriodId(12)).unwrap());
         assert!(
             plan(&PlanInput {
+                grace: None,
                 extra_traffic: 0,
                 kind: PlanKind::New,
                 snapshot: &snapshot,
@@ -886,6 +948,7 @@ mod tests {
         state.traffic_limit_bytes = limit * GIB;
         state.traffic_used_bytes = used * GIB;
         plan(&PlanInput {
+            grace: None,
             kind,
             snapshot: &snapshot,
             extra_devices: 0,
@@ -963,6 +1026,7 @@ mod tests {
         let state = current(SubscriptionStatus::Active, expire);
         let owner = profile();
         let input = |manual_devices: Option<u32>, held_devices: Option<HeldDevices>| PlanInput {
+            grace: None,
             extra_traffic: 0,
             kind: PlanKind::Renewal,
             snapshot: &snapshot,
@@ -994,5 +1058,73 @@ mod tests {
         .unwrap();
         assert_eq!(held.target.hwid_device_limit, Some(9));
         assert_eq!(held.device_hold.map(|h| h.limit_after), Some(7));
+    }
+
+    #[test]
+    fn запас_автопродления_не_копится_и_не_съедает_оплаченное() {
+        let at =
+            |day: i64| Utc.with_ymd_and_hms(2026, 1, 1, 12, 0, 0).unwrap() + Duration::days(day);
+        let first = graced_expire_at(PlanKind::New, None, at(0), 30, Some(Grace::first()));
+        assert_eq!(first, at(32));
+        let second = graced_expire_at(
+            PlanKind::Renewal,
+            Some(first),
+            at(30),
+            30,
+            Some(Grace::renewal()),
+        );
+        assert_eq!(second, at(62));
+        let third = graced_expire_at(
+            PlanKind::Renewal,
+            Some(second),
+            at(61),
+            30,
+            Some(Grace::renewal()),
+        );
+        assert_eq!(third, at(93));
+        let late = graced_expire_at(
+            PlanKind::Renewal,
+            Some(third),
+            at(94),
+            30,
+            Some(Grace::renewal()),
+        );
+        assert_eq!(late, at(126));
+        let with_left = graced_expire_at(
+            PlanKind::Renewal,
+            Some(at(20)),
+            at(0),
+            30,
+            Some(Grace::first()),
+        );
+        assert_eq!(with_left, at(52));
+        let after_left = graced_expire_at(
+            PlanKind::Renewal,
+            Some(with_left),
+            at(30),
+            30,
+            Some(Grace::renewal()),
+        );
+        assert_eq!(after_left, at(80));
+        let bought_more = graced_expire_at(
+            PlanKind::Renewal,
+            Some(at(92)),
+            at(60),
+            30,
+            Some(Grace::renewal()),
+        );
+        assert_eq!(bought_more, at(120));
+        let change = graced_expire_at(
+            PlanKind::Change,
+            Some(at(10)),
+            at(0),
+            30,
+            Some(Grace::first()),
+        );
+        assert_eq!(change, at(32));
+        assert_eq!(
+            graced_expire_at(PlanKind::Renewal, Some(at(10)), at(0), 30, None),
+            new_expire_at(PlanKind::Renewal, Some(at(10)), at(0), 30)
+        );
     }
 }

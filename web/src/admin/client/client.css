@@ -344,3 +344,16 @@
     flex-wrap: wrap;
   }
 }
+
+.cc-renewal {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  max-width: 520px;
+}
+
+.cc-renewal-note {
+  font-size: 13px;
+  font-weight: 400;
+}

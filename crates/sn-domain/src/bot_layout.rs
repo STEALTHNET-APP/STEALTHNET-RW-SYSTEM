@@ -110,7 +110,7 @@ pub static MENU: [Slot; 16] = [
     ),
 ];
 
-pub static SUBSCRIPTION: [Slot; 6] = [
+pub static SUBSCRIPTION: [Slot; 7] = [
     slot(
         "sub.btn.connect",
         Audience::All,
@@ -127,6 +127,11 @@ pub static SUBSCRIPTION: [Slot; 6] = [
         "Если подписка связана с Remnawave и включено «Выпускать новую ссылку подписки»",
     ),
     slot("sub.btn.extend", Audience::All, "Всегда"),
+    slot(
+        "sub.btn.renewal_off",
+        Audience::All,
+        "Если подписку продлевает платёжная система, например Lava.top",
+    ),
     slot("sub.btn.all", Audience::All, "Всегда"),
     slot("common.btn.menu", Audience::All, "Всегда"),
 ];
@@ -174,6 +179,7 @@ impl Screen {
                 vec!["sub.btn.devices".into()],
                 vec!["sub.btn.reissue".into()],
                 vec!["sub.btn.extend".into()],
+                vec!["sub.btn.renewal_off".into()],
                 vec!["sub.btn.all".into(), "common.btn.menu".into()],
             ],
         }
@@ -232,6 +238,7 @@ pub struct SubscriptionFacts {
     pub link: bool,
     pub remna: bool,
     pub reissue: bool,
+    pub renewal: bool,
 }
 
 impl SubscriptionFacts {
@@ -240,6 +247,7 @@ impl SubscriptionFacts {
             "sub.btn.connect" => self.link,
             "sub.btn.devices" => self.remna,
             "sub.btn.reissue" => self.remna && self.reissue,
+            "sub.btn.renewal_off" => self.renewal,
             "sub.btn.extend" | "sub.btn.all" | "common.btn.menu" => true,
             _ => false,
         }
@@ -582,6 +590,7 @@ mod tests {
             link: true,
             remna: false,
             reissue: true,
+            renewal: false,
         };
         assert_eq!(
             sub.keys(),

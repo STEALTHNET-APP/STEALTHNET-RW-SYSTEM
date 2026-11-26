@@ -958,6 +958,9 @@ fn reference_text(reference: &PaymentRef) -> String {
             "покупатель с Telegram ID {}, {}",
             buyer.telegram_id, buyer.txid
         ),
+        PaymentRef::Renewal(renewal) => {
+            format!("продление {} по подписке {}", renewal.txid, renewal.series)
+        }
     }
 }
 

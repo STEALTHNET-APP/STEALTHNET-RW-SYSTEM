@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, ApiError } from '../../lib/api';
-import { dateLong, days, daysLeft, NBSP, periodLabel, timeHM, traffic, trafficPair } from '../../lib/format';
+import { dateLong, days, daysLeft, money, NBSP, periodLabel, timeHM, traffic, trafficPair } from '../../lib/format';
 import { Icon } from '../../lib/icons';
-import type { Subscription } from '../clients/types';
+import type { Renewal, Subscription } from '../clients/types';
 import { LimitsDialog, QrDialog } from './dialogs';
 import { historyWhen } from './history';
 import { devicesWord, nextReset, platformName, responseText } from './model';
@@ -25,7 +25,53 @@ type Props = {
   onLinked: (text: string) => void;
 };
 
-type Ask = '' | 'reset' | 'link' | 'devices';
+type Ask = '' | 'reset' | 'link' | 'devices' | 'renewal';
+
+const CANCEL_SOURCES: Record<string, string> = {
+  client: 'клиентом',
+  operator: 'оператором',
+  refund: 'возвратом',
+  tariff: 'при смене тарифа',
+  block: 'при блокировке клиента',
+  chargeback: 'после чарджбэка',
+  gone: 'панелью: подписки уже нет',
+};
+
+export function renewalLine(renewal: Renewal): string {
+  const price = renewal.amount ? `${money(renewal.amount)} ${renewal.every}` : renewal.every;
+  switch (renewal.status) {
+    case 'active':
+      return `${renewal.title}, ${price}`;
+    case 'cancelling':
+      return `${renewal.title}: отключается`;
+    case 'failed':
+      return `${renewal.title}: не удалось списать`;
+    default:
+      return `${renewal.title}: отменено`;
+  }
+}
+
+export function renewalNote(renewal: Renewal): string {
+  const since = `оформлено ${dateLong(renewal.started_at)}, списаний ${renewal.charges}`;
+  switch (renewal.status) {
+    case 'active':
+      return [
+        renewal.next_charge_at ? `следующее списание около ${dateLong(renewal.next_charge_at)}` : null,
+        since,
+        `почта в ${renewal.title} ${renewal.email}`,
+      ]
+        .filter(Boolean)
+        .join(' · ');
+    case 'cancelling':
+      return renewal.problem ? `ждём ответа ${renewal.title}: ${renewal.problem}` : `ждём ответа ${renewal.title}`;
+    case 'failed':
+      return [renewal.ended_at ? `${renewal.title} отменила подписку ${dateLong(renewal.ended_at)}` : null, since].filter(Boolean).join(' · ');
+    default: {
+      const who = renewal.cancel_source === 'provider' ? `в ${renewal.title}` : (CANCEL_SOURCES[renewal.cancel_source ?? ''] ?? '');
+      return [renewal.ended_at ? `отменено ${dateLong(renewal.ended_at)}${who ? ` ${who}` : ''}` : null, since].filter(Boolean).join(' · ');
+    }
+  }
+}
 
 function failText(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : fallback;
@@ -137,6 +183,29 @@ export function SubscriptionBlock({ sub, details, tariff, clientBlocked, writabl
       'Новая ссылка не выпустилась',
     );
 
+  const renewal = details?.renewal ?? null;
+  const renewalCancel = () =>
+    void run(
+      'renewal-cancel',
+      undefined,
+      (next) => {
+        onView({ subscription: sub, renewal: (next as Renewal | null) ?? null });
+        setAsk('');
+        setMessage((next as Renewal | null)?.status === 'cancelling' ? 'Отмена отправлена, ждём ответа платёжной системы' : 'Автопродление отменено, клиент получит сообщение');
+      },
+      'Автопродление не отменилось',
+    );
+  const renewalCheck = () =>
+    void run(
+      'renewal-check',
+      undefined,
+      (next) => {
+        onView({ subscription: sub, renewal: (next as Renewal | null) ?? null });
+        setMessage('Сверено с платёжной системой');
+      },
+      'Сверка не прошла',
+    );
+
   const dropDevices = () =>
     void run(
       'disconnect-devices',
@@ -171,7 +240,12 @@ export function SubscriptionBlock({ sub, details, tariff, clientBlocked, writabl
   const limitBytes = mirror.traffic_limit_bytes && mirror.traffic_limit_bytes > 0 ? mirror.traffic_limit_bytes : null;
   const exhausted = mirror.status === 'limited';
   const reset = nextReset(sub, tariff);
-  const autorenew = sub.autorenew.enabled ? 'автопродление включено' : 'автопродление выключено';
+  const liveRenewal = renewal && (renewal.status === 'active' || renewal.status === 'cancelling') ? renewal : null;
+  const autorenew = liveRenewal
+    ? `автопродление через ${liveRenewal.title}`
+    : sub.autorenew.enabled
+      ? 'автопродление включено'
+      : 'автопродление выключено';
   const untilText = expired
     ? expireAt
       ? `закончилась ${dateLong(expireAt)}`
@@ -252,6 +326,43 @@ export function SubscriptionBlock({ sub, details, tariff, clientBlocked, writabl
             <span className="muted">Устройства</span>
             <span className="cc-fact-v">{devicesText}</span>
           </div>
+          {renewal ? (
+            <div className="cc-fact">
+              <span className="muted">Автопродление</span>
+              <span className="cc-fact-v cc-renewal">
+                <span>{renewalLine(renewal)}</span>
+                <span className="muted cc-renewal-note">{renewalNote(renewal)}</span>
+                {writable && liveRenewal ? (
+                  <span className="cc-btns">
+                    <button type="button" className="b34 hov" onClick={renewalCheck} disabled={busy}>
+                      Сверить с {renewal.title}
+                    </button>
+                    {renewal.status === 'active' ? (
+                      <button type="button" className="b34 hov" aria-expanded={ask === 'renewal'} onClick={() => setAsk(ask === 'renewal' ? '' : 'renewal')} disabled={busy}>
+                        Отменить автопродление
+                      </button>
+                    ) : null}
+                  </span>
+                ) : null}
+              </span>
+            </div>
+          ) : null}
+          {ask === 'renewal' && renewal ? (
+            <div role="status" className="cc-note" style={{ marginTop: 10 }}>
+              <span className="cc-note-text wide">
+                <strong>{renewal.title} больше не будет списывать деньги.</strong>
+                <span>{expireAt ? ` Подписка доработает до ${dateLong(expireAt)}.` : ''} Клиент получит сообщение.</span>
+              </span>
+              <span className="cc-btns">
+                <button type="button" className="b34 on-surface" onClick={renewalCancel} disabled={busy}>
+                  Отменить автопродление
+                </button>
+                <button type="button" className="b34 on-surface" onClick={() => setAsk('')} disabled={busy}>
+                  Оставить
+                </button>
+              </span>
+            </div>
+          ) : null}
           {squads.length > 0 ? (
             <div className="cc-fact">
               <span className="muted">Сквады</span>

@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router';
 import { api, ApiError } from '../../lib/api';
 import { count, dateLong, days, daysLeft, money, NBSP, traffic, trafficPair } from '../../lib/format';
 import { Icon, type IconName } from '../../lib/icons';
-import type { Subscription } from '../clients/types';
+import type { Renewal, Subscription } from '../clients/types';
 import { PhoneHeader } from '../phone';
 import { useSession } from '../session';
 import { BalanceDialog, BlockDialog, ConfirmDialog, GrantDialog, LimitsDialog, MessageDialog } from './dialogs';
@@ -13,7 +13,7 @@ import { EmailDialog } from './EmailDialog';
 import { RefundDialog } from './RefundDialog';
 import { devicesWord, emailOf, liveSubscriptions, nextReset, oauthLogins, personName, seenText, tariffOf, telegramOf } from './model';
 import { RemnaAddDialog, RemnaLinkNote } from './RemnaLink';
-import { planTitle } from './SubscriptionBlock';
+import { planTitle, renewalLine, renewalNote } from './SubscriptionBlock';
 import { ClientProtect } from '../protect/ClientProtect';
 import type { ClientCard, Device, HistoryPage, SubscriptionDetails } from './types';
 import '../home/phone.css';
@@ -24,7 +24,23 @@ import { ExtendDialog } from './ExtendDialog';
 
 type View = { subscription: Subscription; subscription_url?: string | null } & Partial<SubscriptionDetails>;
 type Toast = { id: number; kind: 'extend' | 'device' | 'info'; head: string; tail?: string; undo?: () => void };
-type Dialogs = '' | 'message' | 'balance' | 'grant' | 'change' | 'extend' | 'limits' | 'reissue' | 'block' | 'reset-2fa' | 'delete-sub' | 'delete' | 'password' | 'remna-add' | 'email';
+type Dialogs =
+  | ''
+  | 'message'
+  | 'balance'
+  | 'grant'
+  | 'change'
+  | 'extend'
+  | 'limits'
+  | 'reissue'
+  | 'renewal'
+  | 'block'
+  | 'reset-2fa'
+  | 'delete-sub'
+  | 'delete'
+  | 'password'
+  | 'remna-add'
+  | 'email';
 type Drop = { device: Device; index: number; subId: number; timer: number };
 type Tone = 'ink2' | 'warn' | 'muted' | 'bad';
 type SheetItem = { key: Dialogs; icon: IconName; label: string };
@@ -256,6 +272,9 @@ export function ClientPhone() {
       if (view.progress !== undefined) {
         next.progress = view.progress;
       }
+      if (view.renewal !== undefined) {
+        next.renewal = view.renewal;
+      }
       return next;
     });
   }, []);
@@ -319,7 +338,14 @@ export function ClientPhone() {
       ? expireAt
         ? `закончилась ${dateLong(expireAt)}`
         : 'закончилась'
-      : [expireAt ? `до ${dateLong(expireAt)}` : null, sub.kind === 'trial' ? null : `автопродление ${sub.autorenew.enabled ? 'включено' : 'выключено'}`]
+      : [
+          expireAt ? `до ${dateLong(expireAt)}` : null,
+          sub.kind === 'trial'
+            ? null
+            : details?.renewal && (details.renewal.status === 'active' || details.renewal.status === 'cancelling')
+              ? `автопродление через ${details.renewal.title}`
+              : `автопродление ${sub.autorenew.enabled ? 'включено' : 'выключено'}`,
+        ]
           .filter(Boolean)
           .join(', ')
     : '';
@@ -674,6 +700,22 @@ export function ClientPhone() {
             <dd className="pc-muted">{blocked ? 'Нет, клиент заблокирован' : 'Нет активной подписки'}</dd>
           </div>
         ) : null}
+        {details?.renewal ? (
+          <div className="pc-fact">
+            <dt>Автопродление</dt>
+            <dd>
+              {renewalLine(details.renewal)}
+              <span className="pc-small pc-muted" style={{ display: 'block' }}>
+                {renewalNote(details.renewal)}
+              </span>
+              {writable && details.renewal.status === 'active' ? (
+                <button type="button" className="pc-text press" onClick={() => setDialog('renewal')}>
+                  Отменить автопродление
+                </button>
+              ) : null}
+            </dd>
+          </div>
+        ) : null}
         {url ? (
           <div className="pc-link">
             <span className="pc-link-top">
@@ -941,6 +983,21 @@ export function ClientPhone() {
             setFullLink(false);
             setDetailsKey((k) => k + 1);
             show({ kind: 'info', head: 'Новая ссылка выпущена,', tail: ' клиент получит её в боте и в кабинете' });
+            void loadHistory();
+          }}
+        />
+      ) : null}
+      {dialog === 'renewal' && sub && details?.renewal ? (
+        <ConfirmDialog
+          title="Отменить автопродление"
+          text={`${details.renewal.title} больше не будет списывать деньги.${expireAt ? ` Подписка доработает до ${dateLong(expireAt)}.` : ''} Клиент получит сообщение.`}
+          confirm="Отменить автопродление"
+          onClose={() => setDialog('')}
+          run={async () => {
+            const next = await api<Renewal | null>(`${base}/renewal-cancel`, { method: 'POST' });
+            applyView({ subscription: sub, renewal: next });
+            setDialog('');
+            show({ kind: 'info', head: next?.status === 'cancelling' ? 'Отмена отправлена,' : 'Автопродление отменено,', tail: next?.status === 'cancelling' ? ' ждём ответа платёжной системы' : ' клиент получит сообщение' });
             void loadHistory();
           }}
         />

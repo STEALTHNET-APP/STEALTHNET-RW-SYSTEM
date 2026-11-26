@@ -502,6 +502,20 @@ async fn subscription_action(
             json(&ops.disconnect_device(id, &hwid, actor).await?)
         }
         "devices" => json(&ops.devices(id, actor).await?),
+        "renewal-cancel" => {
+            ops.view(id, actor, false).await?;
+            json(
+                &state
+                    .services
+                    .renewals()
+                    .cancel_subscription(id, sn_services::renewals::CancelSource::Operator, actor)
+                    .await?,
+            )
+        }
+        "renewal-check" => {
+            ops.view(id, actor, false).await?;
+            json(&state.services.renewals().check_subscription(id).await?)
+        }
         "limits" => {
             let change = body.limits.ok_or_else(|| {
                 ApiError::bad_request("validation.limits", "не указаны новые лимиты")

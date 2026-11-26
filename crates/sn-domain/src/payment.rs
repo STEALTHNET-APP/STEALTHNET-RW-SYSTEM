@@ -46,6 +46,8 @@ const fn shown() -> bool {
 pub const METHOD_TITLE_MAX: usize = 40;
 pub const LABEL_HINT_MAX: usize = 80;
 pub const AUTORENEW_METHOD: &str = "autorenew";
+pub const RECURRING_METHOD: &str = "subscription";
+pub const RENEWAL_METHOD: &str = "renewal";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ButtonLabel {

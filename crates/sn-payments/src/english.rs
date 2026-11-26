@@ -21,6 +21,7 @@ pub fn text(russian: &str) -> Option<&'static str> {
         "Карта" => "Card",
         "Карта (Беларусь)" => "Card (Belarus)",
         "Карта или СБП" => "Card or SBP",
+        "Карта с автопродлением" => "Card with auto-renewal",
         "Карты, СБП, SberPay и T-Pay" => "Cards, SBP, SberPay and T-Pay",
         "Карты белорусских банков" => "Belarusian bank cards",
         "Карты зарубежных банков" => "Cards from banks outside Russia",
@@ -46,13 +47,20 @@ pub fn text(russian: &str) -> Option<&'static str> {
         "Способ выбирается на странице оплаты" => {
             "Choose the method on the payment page"
         }
+        "Только у сроков с подпиской Lava.top" => {
+            "Only for terms with a Lava.top subscription"
+        }
         "Через СберБанк Онлайн" => "Via SberBank Online",
         "Через ЮMoney" => "Via YooMoney",
         "Через интернет-банк" => "Via online banking",
         "Через приложение Т-Банка" => "Via the T-Bank app",
         "Через приложение банка" => "Via your bank's app",
         "ЮMoney" => "YooMoney",
+        "каждый месяц" => "every month",
         "криптовалюта TON" => "TON crypto",
+        "раз в 180 дней" => "every 180 days",
+        "раз в 90 дней" => "every 90 days",
+        "раз в год" => "every year",
         _ => return None,
     })
 }

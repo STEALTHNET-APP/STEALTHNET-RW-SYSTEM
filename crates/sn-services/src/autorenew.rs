@@ -343,6 +343,9 @@ impl<'a> AutoRenew<'a> {
         if !current.autorenew.enabled
             || current.ended_at.is_some()
             || current.mirror.expire_at != Some(expire_at)
+            || crate::renewals::live_link(&mut tx, current.id)
+                .await?
+                .is_some()
         {
             return Ok(Attempt::Skipped);
         }
@@ -738,6 +741,7 @@ impl<'a> AutoRenew<'a> {
             .map(|u| u.trim().trim_end_matches('/').to_string())
             .filter(|u| !u.is_empty());
         InvoiceRequest {
+            plan: None,
             payment_id: payment.id,
             payment_public_id: payment.public_id,
             order_public_id: order.public_id,

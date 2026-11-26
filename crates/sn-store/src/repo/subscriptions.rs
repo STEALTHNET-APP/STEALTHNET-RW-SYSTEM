@@ -652,7 +652,10 @@ impl<'c> SubscriptionsRepo<'c> {
         limit: i64,
     ) -> StoreResult<Vec<Subscription>> {
         let filter = "ended_at IS NULL AND autorenew_enabled AND expire_at IS NOT NULL \
-                      AND expire_at <= $1 AND expire_at > $2";
+                      AND expire_at <= $1 AND expire_at > $2 \
+                      AND NOT EXISTS (SELECT 1 FROM provider_subscriptions ps \
+                      WHERE ps.subscription_id = subscriptions.id \
+                      AND ps.status IN ('active', 'cancelling'))";
         let rows: Vec<SubscriptionRow> = match after {
             Some(cursor) => sqlx::query_as(&format!(
                 "SELECT {COLUMNS} FROM subscriptions WHERE {filter} AND (expire_at, id) > ($3, $4) \

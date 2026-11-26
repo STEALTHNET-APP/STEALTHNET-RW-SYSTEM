@@ -1,4 +1,4 @@
-import type { Subscription } from '../admin/clients/types';
+import type { Renewal, Subscription } from '../admin/clients/types';
 import { count, dateLong, days, NBSP, type Money } from '../lib/format';
 import { lang, t } from '../lib/i18n';
 import type { Currency } from '../lib/types';
@@ -25,6 +25,7 @@ export type SubscriptionView = {
   subscription_url: string | null;
   countries: string[];
   tariff: TariffBrief | null;
+  renewal?: Renewal | null;
 };
 
 export type ClientMe = {

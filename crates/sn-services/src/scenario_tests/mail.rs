@@ -680,7 +680,7 @@ async fn шаблоны_писем_сохраняются_проверяются
     let admin = owner(services).await;
     let letters = services.letters();
     let view = letters.view().await.unwrap();
-    assert_eq!(view.letters.len(), 28);
+    assert_eq!(view.letters.len(), 29);
     assert!(!view.sends);
     let ready = |view: &crate::mail_letters::LettersView| {
         view.letters

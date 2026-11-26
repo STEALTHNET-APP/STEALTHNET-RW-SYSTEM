@@ -1569,9 +1569,15 @@
 
 .cb-card.cb-auto {
   flex-direction: row;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   padding: 8px 16px;
+}
+
+.cb-card.cb-auto > .cb-ask {
+  flex-basis: 100%;
+  margin-bottom: 8px;
 }
 
 .cb-auto .cb-small {

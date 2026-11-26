@@ -195,6 +195,9 @@ function ClientDesktop() {
       if (view.progress !== undefined) {
         next.progress = view.progress;
       }
+      if (view.renewal !== undefined) {
+        next.renewal = view.renewal;
+      }
       return next;
     });
   }, []);

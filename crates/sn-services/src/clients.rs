@@ -994,6 +994,14 @@ impl<'a> ClientOps<'a> {
             ))
             .await?;
         tx.commit().await?;
+        if let Err(err) = self
+            .services
+            .renewals()
+            .cancel_client(id, crate::renewals::CancelSource::Block, actor)
+            .await
+        {
+            tracing::warn!(client = %id, error = %err, "автопродление заблокированного клиента не отменено, повторит сверка");
+        }
         self.services.subscriptions().block_access(id, reason).await
     }
 

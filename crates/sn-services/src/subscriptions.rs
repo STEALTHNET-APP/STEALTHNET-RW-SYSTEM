@@ -97,6 +97,7 @@ pub struct SubscriptionView {
     pub subscription_url: Option<String>,
     pub countries: Vec<String>,
     pub tariff: Option<crate::clients::TariffBrief>,
+    pub renewal: Option<crate::renewals::RenewalView>,
 }
 
 async fn tariff_brief(
@@ -530,6 +531,11 @@ impl<'a> SubscriptionOps<'a> {
         let client = conn.clients().get(subscription.client_id).await?;
         let now = self.services.now();
         let tariff = tariff_brief(&mut conn, subscription.tariff_id).await?;
+        let renewal = self
+            .services
+            .renewals()
+            .view_in(&mut conn, subscription.id)
+            .await?;
         Ok(SubscriptionView {
             status: admin_status(Some(&subscription), client.is_blocked(), now),
             progress: period_progress(&subscription, now),
@@ -538,6 +544,7 @@ impl<'a> SubscriptionOps<'a> {
                 .filter(|url| !url.is_empty()),
             countries,
             tariff,
+            renewal,
             subscription,
         })
     }
@@ -571,12 +578,18 @@ impl<'a> SubscriptionOps<'a> {
         let mut views = Vec::with_capacity(subscriptions.len());
         for subscription in subscriptions {
             let tariff = tariff_brief(&mut conn, subscription.tariff_id).await?;
+            let renewal = self
+                .services
+                .renewals()
+                .view_in(&mut conn, subscription.id)
+                .await?;
             views.push(SubscriptionView {
                 status: admin_status(Some(&subscription), client.is_blocked(), now),
                 progress: period_progress(&subscription, now),
                 subscription_url: None,
                 countries: Vec::new(),
                 tariff,
+                renewal,
                 subscription,
             });
         }
@@ -812,6 +825,10 @@ impl<'a> SubscriptionOps<'a> {
         let subscription = self.owned(id, actor).await?;
         staff_only(actor)?;
         ensure_live(&subscription)?;
+        self.services
+            .renewals()
+            .cancel_subscription(id, crate::renewals::CancelSource::Operator, actor)
+            .await?;
         if let Some(link) = &subscription.remna {
             let remna = self.services.remna()?;
             let user_id = link.user_id;
@@ -855,6 +872,29 @@ impl<'a> SubscriptionOps<'a> {
         actor: Actor,
     ) -> ServiceResult<()> {
         let subscription = self.owned(id, actor).await?;
+        let live = {
+            let mut conn = self.services.store().conn().await?;
+            crate::renewals::live_link(&mut conn, subscription.id).await?
+        };
+        if let Some(link) = live {
+            if enabled {
+                return Err(ServiceError::rejected(
+                    "renewal.active",
+                    format!(
+                        "Подписку уже продлевает {}: сначала отключите это автопродление",
+                        crate::renewals::title_of(self.services, &link.provider)
+                    ),
+                ));
+            }
+            let source = match actor {
+                Actor::Admin(_) => crate::renewals::CancelSource::Operator,
+                _ => crate::renewals::CancelSource::Client,
+            };
+            self.services
+                .renewals()
+                .cancel_link(link.id, source, actor)
+                .await?;
+        }
         let mut conn = self.services.store().conn().await?;
         conn.subscriptions()
             .set_autorenew(

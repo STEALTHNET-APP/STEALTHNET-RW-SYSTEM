@@ -18,6 +18,7 @@ use sn_modules::catalog::antibot;
 use sn_payments::{MethodsContext, ProviderKind};
 use sn_services::bot_content::BotContent;
 use sn_services::checkout::{Channel, CheckoutResult};
+use sn_services::renewals::LinkStatus;
 use sn_services::support::Delivered;
 use sn_services::{Actor, ServiceError, Services};
 use sn_store::{Db, StoreError};
@@ -202,15 +203,43 @@ pub async fn subscription(
         )),
         _ => {}
     }
-    lines.add(ui::text(
-        c,
-        if sub.autorenew.enabled {
-            "sub.autorenew_on"
-        } else {
-            "sub.autorenew_off"
-        },
-        &[],
-    ));
+    let renewal = view.renewal.as_ref().filter(|r| r.status.live());
+    match renewal {
+        Some(renewal) if renewal.status == LinkStatus::Active => lines.add(ui::text(
+            c,
+            "sub.renewal_on",
+            &[
+                ("provider", Text(&renewal.title)),
+                (
+                    "amount",
+                    Html(&renewal.amount.map(text::money).unwrap_or_default()),
+                ),
+                (
+                    "date",
+                    Text(
+                        &renewal
+                            .next_charge_at
+                            .map(|at| text::date(at, offset))
+                            .unwrap_or_default(),
+                    ),
+                ),
+            ],
+        )),
+        Some(renewal) => lines.add(ui::text(
+            c,
+            "sub.renewal_cancelling",
+            &[("provider", Text(&renewal.title))],
+        )),
+        None => lines.add(ui::text(
+            c,
+            if sub.autorenew.enabled {
+                "sub.autorenew_on"
+            } else {
+                "sub.autorenew_off"
+            },
+            &[],
+        )),
+    }
     let mut connect = None;
     match (&view.subscription_url, &link_error) {
         (Some(url), _) => {
@@ -232,6 +261,7 @@ pub async fn subscription(
         link: connect.is_some(),
         remna: sub.remna.is_some(),
         reissue: settings.client_access.self_reissue,
+        renewal: renewal.is_some_and(|r| r.status == LinkStatus::Active),
     };
     let present: Vec<(&str, Button)> = facts
         .keys()
@@ -243,6 +273,7 @@ pub async fn subscription(
                     .and_then(|url| ui::link(c, key, &[], url.clone())),
                 "sub.btn.devices" => ui::button(c, key, &[], format!("dev:{id}")),
                 "sub.btn.reissue" => ui::button(c, key, &[], format!("rei:{id}")),
+                "sub.btn.renewal_off" => ui::button(c, key, &[], format!("rno:{id}")),
                 "sub.btn.extend" => ui::button(c, key, &[], format!("buy:{id}")),
                 "sub.btn.all" => ui::button(c, key, &[], "subs"),
                 "common.btn.menu" => ui::menu(c),
@@ -415,6 +446,104 @@ pub fn reissue_confirm(c: &BotContent, id: i64) -> Screen {
         .section(Section::Subscription)
 }
 
+pub async fn renewal_confirm(
+    turn: &mut Turn<'_>,
+    client: &Client,
+    id: i64,
+) -> Result<Screen, BotError> {
+    let services = turn.services().clone();
+    let content = services.bot_content_in(lang::current());
+    let c = &*content;
+    let view = match services
+        .subscriptions()
+        .view(SubscriptionId(id), Actor::Client(client.id), false)
+        .await
+    {
+        Ok(view) => view,
+        Err(err) => return Ok(Screen::notice(text::user_error(&err))),
+    };
+    let Some(renewal) = view
+        .renewal
+        .as_ref()
+        .filter(|r| r.status == LinkStatus::Active)
+    else {
+        return subscription(turn, client, id).await;
+    };
+    let date = view
+        .subscription
+        .mirror
+        .expire_at
+        .map(|at| text::date(at, services.settings().remna_offset()))
+        .unwrap_or_default();
+    Ok(Screen::new(ui::text(
+        c,
+        "sub.renewal_confirm",
+        &[("provider", Text(&renewal.title)), ("date", Text(&date))],
+    ))
+    .keyboard(
+        Keyboard::new()
+            .push(ui::button(
+                c,
+                "sub.btn.renewal_off_yes",
+                &[],
+                format!("rnoy:{id}"),
+            ))
+            .push(ui::cancel(c, format!("sub:{id}"))),
+    )
+    .section(Section::Subscription))
+}
+
+pub async fn renewal_off(
+    turn: &mut Turn<'_>,
+    client: &Client,
+    id: i64,
+) -> Result<Screen, BotError> {
+    let services = turn.services().clone();
+    let content = services.bot_content_in(lang::current());
+    let c = &*content;
+    let actor = Actor::Client(client.id);
+    let sid = SubscriptionId(id);
+    if let Err(err) = services
+        .subscriptions()
+        .set_autorenew(sid, false, None, actor)
+        .await
+    {
+        return Ok(Screen::notice(text::user_error(&err)));
+    }
+    let view = match services.subscriptions().view(sid, actor, false).await {
+        Ok(view) => view,
+        Err(err) => return Ok(Screen::notice(text::user_error(&err))),
+    };
+    let title = view
+        .renewal
+        .as_ref()
+        .map(|r| r.title.clone())
+        .unwrap_or_default();
+    let date = view
+        .subscription
+        .mirror
+        .expire_at
+        .map(|at| text::date(at, services.settings().remna_offset()))
+        .unwrap_or_default();
+    let line = match view.renewal.as_ref().map(|r| r.status) {
+        Some(LinkStatus::Cancelling) => {
+            ui::text(c, "sub.renewal_pending", &[("provider", Text(&title))])
+        }
+        _ => ui::text(
+            c,
+            "sub.renewal_done",
+            &[("provider", Text(&title)), ("date", Text(&date))],
+        ),
+    };
+    Ok(Screen::new(line)
+        .keyboard(
+            Keyboard::new()
+                .push(ui::back(c, format!("sub:{id}")))
+                .push(ui::menu(c)),
+        )
+        .section(Section::Subscription))
+}
+
 pub async fn reissue(turn: &mut Turn<'_>, client: &Client, id: i64) -> Result<Screen, BotError> {
     let content = turn.content();
     let c = &*content;
@@ -541,6 +670,7 @@ pub async fn topup_amount(turn: &mut Turn<'_>, minor: i64) -> Result<Screen, Bot
         })
         .into_iter()
         .filter(|m| m.kind == ProviderKind::External && m.unavailable.is_none())
+        .filter(|m| m.method.as_deref() != Some(sn_domain::payment::RECURRING_METHOD))
         .collect();
     if methods.is_empty() {
         return Ok(Screen::notice(ui::text(c, "bal.no_methods", &[])).section(Section::Balance));

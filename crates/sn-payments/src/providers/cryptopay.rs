@@ -530,6 +530,7 @@ mod tests {
 
     fn usd_request() -> InvoiceRequest {
         InvoiceRequest {
+            plan: None,
             payment_id: PaymentId(1),
             payment_public_id: Uuid::from_u128(1),
             order_public_id: Uuid::from_u128(2),
