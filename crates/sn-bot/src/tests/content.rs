@@ -1,5 +1,5 @@
 use super::*;
-use crate::handler::emoji_codes;
+use crate::handler::{emoji_codes, emoji_line};
 use crate::telegram::Message;
 use sn_services::bot_content::{
     CONSENT_KEY, CONTENT_KEY, DOCUMENTS_KEY, EMOJI_REJECTED_KEY, IMAGES_KEY,
@@ -267,7 +267,7 @@ fn команда_emoji_отвечает_кодами_для_текстов_и_�
             .text
             .contains("🚀 — <code>5377498341074542641</code>")
     );
-    assert_eq!(screen.text.matches("5368324170671202286").count(), 2);
+    assert_eq!(screen.text.matches("5368324170671202286").count(), 3);
     assert!(
         screen.text.contains(
             "&lt;tg-emoji emoji-id=&quot;5368324170671202286&quot;&gt;🔥&lt;/tg-emoji&gt;"
@@ -278,6 +278,34 @@ fn команда_emoji_отвечает_кодами_для_текстов_и_�
     }))
     .unwrap();
     assert!(emoji_codes(&empty).text.contains("Пришлите /emoji"));
+}
+
+#[test]
+fn команда_emoji_собирает_фразу_одной_строкой_для_вставки() {
+    let message: Message = serde_json::from_value(serde_json::json!({
+        "message_id": 5, "chat": {"id": 7, "type": "private"}, "date": 1,
+        "text": "/emoji@demo_bot Скидка 🔥 до <пятницы> & 😎",
+        "entities": [
+            {"type": "bot_command", "offset": 0, "length": 15},
+            {"type": "custom_emoji", "offset": 23, "length": 2, "custom_emoji_id": "111"},
+            {"type": "custom_emoji", "offset": 41, "length": 2, "custom_emoji_id": "222"}
+        ]
+    }))
+    .unwrap();
+    assert_eq!(
+        emoji_line(&message),
+        "Скидка <tg-emoji emoji-id=\"111\">🔥</tg-emoji> до &lt;пятницы&gt; &amp; <tg-emoji emoji-id=\"222\">😎</tg-emoji>"
+    );
+    let screen = emoji_codes(&message);
+    assert!(
+        screen.text.contains("🔥 — <code>111</code>"),
+        "{}",
+        screen.text
+    );
+    assert!(screen.text.contains("😎 — <code>222</code>"));
+    assert!(screen.text.contains(
+        "&lt;tg-emoji emoji-id=&quot;111&quot;&gt;🔥&lt;/tg-emoji&gt; до &amp;lt;пятницы&amp;gt;"
+    ));
 }
 
 #[tokio::test]

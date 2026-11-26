@@ -54,7 +54,7 @@ export type Audience =
 
 export type AudienceKind = Audience['kind'];
 
-export type ButtonSpec = { text: string; url?: string; section?: Section };
+export type ButtonSpec = { text: string; url?: string; section?: Section; style?: 'primary' | 'success' | 'danger'; emoji_id?: string };
 
 export type Image = { id: number; content_type: string; width: number; height: number; size: number };
 

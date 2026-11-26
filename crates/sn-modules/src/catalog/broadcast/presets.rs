@@ -52,6 +52,8 @@ fn button(text: &str, section: BotSection) -> ButtonSpec {
         text: text.into(),
         url: None,
         section: Some(section),
+        style: None,
+        emoji_id: None,
     }
 }
 

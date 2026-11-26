@@ -25,7 +25,9 @@ use async_trait::async_trait;
 use axum::Router;
 use chrono::{DateTime, Duration as Span, Utc};
 use serde::{Deserialize, Serialize};
-use sn_domain::bot_content::{CAPTION_MAX, TEXT_MAX, normalize_markup, visible_len};
+use sn_domain::bot_content::{
+    ButtonStyle, CAPTION_MAX, EMOJI_ID_MAX, TEXT_MAX, normalize_markup, visible_len,
+};
 use sn_domain::client::Locale;
 use sn_domain::format::plural_ru;
 use sn_domain::ids::{AdminId, CategoryId, ClientId, TariffId};
@@ -375,6 +377,10 @@ pub struct ButtonSpec {
     pub url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub section: Option<BotSection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<ButtonStyle>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emoji_id: Option<String>,
 }
 
 impl ButtonSpec {
@@ -383,6 +389,8 @@ impl ButtonSpec {
             text: self.text.clone(),
             url: self.url.clone(),
             callback: self.section.map(BotSection::callback),
+            style: self.style.map(|style| style.as_str().to_string()),
+            emoji_id: self.emoji_id.clone(),
         }
     }
 }
@@ -529,6 +537,17 @@ pub fn clean_buttons(raw: &[ButtonSpec]) -> Result<Vec<ButtonSpec>, BroadcastErr
                 .as_deref()
                 .map(str::trim)
                 .filter(|u| !u.is_empty());
+            let emoji_id = match button.emoji_id.as_deref().map(str::trim) {
+                None | Some("") => None,
+                Some(id) if id.len() <= EMOJI_ID_MAX && id.bytes().all(|b| b.is_ascii_digit()) => {
+                    Some(id.to_string())
+                }
+                Some(_) => {
+                    return Err(invalid(format!(
+                        "Кнопка {n}: код премиум-эмодзи — только цифры, его присылает бот по команде /emoji"
+                    )));
+                }
+            };
             match (url, button.section) {
                 (Some(url), None) => {
                     let url = clean_url(url).ok_or_else(|| {
@@ -540,12 +559,16 @@ pub fn clean_buttons(raw: &[ButtonSpec]) -> Result<Vec<ButtonSpec>, BroadcastErr
                         text,
                         url: Some(url),
                         section: None,
+                        style: button.style,
+                        emoji_id,
                     })
                 }
                 (None, Some(section)) => Ok(ButtonSpec {
                     text,
                     url: None,
                     section: Some(section),
+                    style: button.style,
+                    emoji_id,
                 }),
                 _ => Err(invalid(format!(
                     "Кнопка {n}: укажите адрес ссылки или раздел бота"

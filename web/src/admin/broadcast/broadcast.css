@@ -196,6 +196,58 @@
   cursor: pointer;
 }
 
+.bc-tool[aria-expanded='true'] {
+  border-color: var(--ink-2);
+  color: var(--ink);
+}
+
+.bc-emoji {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.bc-steps {
+  margin: 0;
+  padding-left: 20px;
+  color: var(--ink-2);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.bc-steps code {
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 13px;
+}
+
+.bc-steps a {
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+.bc-emoji-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.bc-emoji-row .field {
+  flex: 1 1 auto;
+}
+
+.bc-paste {
+  min-height: 40px;
+  resize: vertical;
+}
+
+.bc-emoji-row .btn-line {
+  flex: none;
+  height: 40px;
+}
+
 .bc-area {
   min-height: 170px;
   font-size: 15px;
@@ -276,6 +328,18 @@
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1.25fr) 40px;
   gap: 8px;
   align-items: center;
+}
+
+.bc-blook {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.bc-emoji-id {
+  flex: 1 1 200px;
+  max-width: 280px;
 }
 
 .bc-remove {
@@ -613,6 +677,11 @@
   font-size: 13px;
   font-weight: 600;
   color: var(--muted);
+}
+
+.bc-preview-note {
+  display: block;
+  margin-top: 8px;
 }
 
 .bc-keys {

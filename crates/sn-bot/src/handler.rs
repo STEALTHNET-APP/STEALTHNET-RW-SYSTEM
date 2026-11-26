@@ -417,30 +417,62 @@ pub fn emoji_codes(message: &Message) -> Screen {
     }
     if found.is_empty() {
         return Screen::notice(
-            "Пришлите /emoji вместе с премиум-эмодзи в одном сообщении — бот ответит их кодами для текстов и кнопок.",
+            "Пришлите /emoji вместе с премиум-эмодзи в одном сообщении, можно целой фразой. Бот ответит строкой для текста и кодами для кнопок.",
         );
     }
-    let mut out = vec!["<b>Коды премиум-эмодзи</b>".to_string()];
+    let mut out = vec![
+        "<b>Для текста</b> — скопируйте строку целиком и вставьте в текст:".to_string(),
+        format!("<code>{}</code>", escape(&emoji_line(message))),
+        String::new(),
+        "<b>Для значка кнопки</b> — код в поле «Премиум-эмодзи» у кнопки:".to_string(),
+    ];
     for (fallback, id) in &found {
-        out.push(String::new());
         out.push(format!(
             "{} — <code>{}</code>",
             escape(fallback),
             escape(id)
         ));
-        out.push(format!(
-            "<code>{}</code>",
-            escape(&format!(
-                "<tg-emoji emoji-id=\"{id}\">{fallback}</tg-emoji>"
-            ))
-        ));
     }
-    out.push(String::new());
-    out.push(
-        "Код из первой строки вставьте в поле «Премиум-эмодзи» у кнопки, а строку с тегом — прямо в текст."
-            .into(),
-    );
     Screen::notice(out.join("\n"))
+}
+
+pub fn emoji_line(message: &Message) -> String {
+    let text = message.text.as_deref().unwrap_or_default();
+    let units: Vec<u16> = text.encode_utf16().collect();
+    let skip = units
+        .iter()
+        .position(|u| *u == u16::from(b' ') || *u == u16::from(b'\n'))
+        .unwrap_or(units.len());
+    let mut marks: Vec<(usize, usize, &str)> = message
+        .entities
+        .iter()
+        .flatten()
+        .filter(|e| e.kind == "custom_emoji")
+        .filter_map(|e| {
+            let id = e.custom_emoji_id.as_deref()?;
+            let start = usize::try_from(e.offset).ok()?;
+            let end = start.checked_add(usize::try_from(e.length).ok()?)?;
+            (start >= skip && end <= units.len()).then_some((start, end, id))
+        })
+        .collect();
+    marks.sort_by_key(|mark| mark.0);
+    let piece = |from: usize, to: usize| String::from_utf16_lossy(&units[from..to]);
+    let mut out = String::new();
+    let mut at = skip;
+    for (start, end, id) in marks {
+        if start < at {
+            continue;
+        }
+        out.push_str(&escape(&piece(at, start)));
+        out.push_str(&format!(
+            "<tg-emoji emoji-id=\"{}\">{}</tg-emoji>",
+            escape(id),
+            escape(&piece(start, end))
+        ));
+        at = end;
+    }
+    out.push_str(&escape(&piece(at, units.len())));
+    out.trim().to_string()
 }
 
 async fn enter(turn: &mut Turn<'_>, start_param: Option<&str>) -> Result<Gate, BotError> {

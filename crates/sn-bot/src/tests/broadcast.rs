@@ -125,11 +125,15 @@ async fn рассылка_уходит_через_bot_api_и_отмечает_з
                     text: "Продлить".into(),
                     url: None,
                     section: Some(BotSection::Buy),
+                    style: None,
+                    emoji_id: None,
                 },
                 ButtonSpec {
                     text: "Новости".into(),
                     url: Some("t.me/stealth_news".into()),
                     section: None,
+                    style: None,
+                    emoji_id: None,
                 },
             ],
             audience: Audience::All,
@@ -291,6 +295,8 @@ async fn премиум_эмодзи_снимаются_если_telegram_их_�
         text: "Меню".into(),
         url: None,
         callback: Some("n:m".into()),
+        style: None,
+        emoji_id: None,
     }];
     let delivery = sender
         .send(
@@ -306,6 +312,64 @@ async fn премиум_эмодзи_снимаются_если_telegram_их_�
     let sent = bodies(&server, "sendMessage").await;
     assert_eq!(sent.len(), 2);
     assert_eq!(sent[1]["text"], "Огонь 🔥");
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn цвет_и_значок_кнопки_уходят_в_telegram_а_при_отказе_значок_снимается() {
+    let Some((db, services, server, _ctx)) = setup().await else {
+        return;
+    };
+    Mock::given(method("POST"))
+        .and(path_regex(r"/sendMessage$"))
+        .and(body_string_contains("icon_custom_emoji_id"))
+        .and(body_partial_json(serde_json::json!({ "chat_id": 43 })))
+        .respond_with(fail(400, "Bad Request: DOCUMENT_INVALID", None))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    let sender = TelegramSender::new(services.clone(), &server.uri());
+    let buttons = [
+        OutButton {
+            text: "Продлить".into(),
+            url: None,
+            callback: Some("n:buy".into()),
+            style: Some("success".into()),
+            emoji_id: Some("5368324170671202286".into()),
+        },
+        OutButton {
+            text: "Канал".into(),
+            url: Some("https://t.me/demo".into()),
+            callback: None,
+            style: Some("primary".into()),
+            emoji_id: None,
+        },
+    ];
+    for chat in [42, 43] {
+        let delivery = sender
+            .send(
+                chat,
+                &Outgoing {
+                    html: "Скидка",
+                    photo: None,
+                    buttons: &buttons,
+                },
+            )
+            .await;
+        assert!(delivery.is_sent(), "{delivery:?}");
+    }
+    let sent = bodies(&server, "sendMessage").await;
+    assert_eq!(sent.len(), 3);
+    let first = &sent[0]["reply_markup"]["inline_keyboard"];
+    assert_eq!(first[0][0]["style"], "success");
+    assert_eq!(first[0][0]["icon_custom_emoji_id"], "5368324170671202286");
+    assert_eq!(first[0][0]["callback_data"], "n:buy");
+    assert_eq!(first[1][0]["style"], "primary");
+    assert!(first[1][0].get("icon_custom_emoji_id").is_none());
+    let retried = &sent[2]["reply_markup"]["inline_keyboard"];
+    assert_eq!(sent[2]["chat_id"], 43);
+    assert_eq!(retried[0][0]["style"], "success");
+    assert!(retried[0][0].get("icon_custom_emoji_id").is_none());
     db.cleanup().await;
 }
 

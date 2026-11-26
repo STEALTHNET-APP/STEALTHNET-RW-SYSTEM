@@ -81,6 +81,8 @@ fn rule_draft(trigger: Trigger, days: u16, channel: Channel) -> RuleDraft {
             text: "Продлить".into(),
             url: None,
             section: Some(BotSection::Buy),
+            style: None,
+            emoji_id: None,
         }],
         en: None,
         enabled: true,
@@ -1247,6 +1249,8 @@ async fn английский_текст_уходит_клиентам_на_ан
             text: "Renew".into(),
             url: None,
             section: Some(BotSection::Buy),
+            style: None,
+            emoji_id: None,
         }],
     });
     let rule = create_rule(&ctx, &draft, None).await.unwrap();

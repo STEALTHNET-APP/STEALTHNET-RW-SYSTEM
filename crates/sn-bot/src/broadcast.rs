@@ -1,4 +1,6 @@
-use crate::telegram::{Keyboard, Message, PhotoInput, TelegramApi, TelegramError, strip_tags};
+use crate::telegram::{
+    Button, Keyboard, Message, PhotoInput, TelegramApi, TelegramError, strip_tags,
+};
 use crate::text::escape;
 use async_trait::async_trait;
 use sn_domain::bot_content::strip_custom_emoji;
@@ -55,11 +57,12 @@ impl TelegramSender {
 
 pub fn keyboard(buttons: &[OutButton]) -> Keyboard {
     buttons.iter().fold(Keyboard::new(), |keyboard, button| {
-        match (&button.url, &button.callback) {
-            (Some(url), _) => keyboard.link(&button.text, url),
-            (None, Some(data)) => keyboard.button(&button.text, data),
-            (None, None) => keyboard,
-        }
+        let made = match (&button.url, &button.callback) {
+            (Some(url), _) => Some(Button::url(&button.text, url)),
+            (None, Some(data)) => Some(Button::callback(&button.text, data)),
+            (None, None) => None,
+        };
+        keyboard.push(made.map(|made| made.look(button.emoji_id.clone(), button.style.as_deref())))
     })
 }
 
@@ -220,7 +223,7 @@ impl BotSender for TelegramSender {
             Ok(sent) => return delivered(sent, uploaded),
             Err(err) => err,
         };
-        let plain_emoji = message.html.contains("<tg-emoji")
+        let plain_emoji = (message.html.contains("<tg-emoji") || keyboard.has_custom_emoji())
             && matches!(err, TelegramError::Api { code: 400, .. })
             && chat_gone(&err).is_none()
             && !stale_file(&err);
@@ -232,7 +235,7 @@ impl BotSender for TelegramSender {
                     chat_id,
                     &strip_custom_emoji(message.html),
                     message.photo,
-                    &keyboard,
+                    &keyboard.plain(),
                     true,
                 )
                 .await,

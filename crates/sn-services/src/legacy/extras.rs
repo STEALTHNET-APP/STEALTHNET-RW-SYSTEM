@@ -1600,6 +1600,8 @@ fn rule_button(label: &str, url: &str) -> Option<ButtonSpec> {
             text,
             url: Some(url.to_string()),
             section: None,
+            style: None,
+            emoji_id: None,
         });
     }
     let section = match url.strip_prefix("menu:").unwrap_or(url).trim_matches('/') {
@@ -1619,6 +1621,8 @@ fn rule_button(label: &str, url: &str) -> Option<ButtonSpec> {
         text,
         url: None,
         section: Some(section),
+        style: None,
+        emoji_id: None,
     })
 }
 

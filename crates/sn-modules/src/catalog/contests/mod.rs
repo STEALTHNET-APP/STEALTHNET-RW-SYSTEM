@@ -166,6 +166,8 @@ impl Audience {
             text: text.into(),
             url: None,
             section: Some(BotSection::Contests),
+            style: None,
+            emoji_id: None,
         }
     }
 }

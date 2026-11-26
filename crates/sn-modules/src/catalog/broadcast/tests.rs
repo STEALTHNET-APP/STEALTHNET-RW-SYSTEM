@@ -465,11 +465,15 @@ fn кнопки_нормализуются_и_проверяются() {
             text: "  Наш   канал ".into(),
             url: Some("t.me/news".into()),
             section: None,
+            style: None,
+            emoji_id: None,
         },
         ButtonSpec {
             text: "Продлить".into(),
             url: Some("  ".into()),
             section: Some(BotSection::Buy),
+            style: None,
+            emoji_id: None,
         },
     ])
     .unwrap();
@@ -481,12 +485,16 @@ fn кнопки_нормализуются_и_проверяются() {
         text: "Две цели".into(),
         url: Some("https://a.ru".into()),
         section: Some(BotSection::Menu),
+        style: None,
+        emoji_id: None,
     }]);
     assert!(both.is_err());
     let empty = clean_buttons(&[ButtonSpec {
         text: " ".into(),
         url: Some("https://a.ru".into()),
         section: None,
+        style: None,
+        emoji_id: None,
     }]);
     assert!(
         matches!(empty, Err(BroadcastError::Rejected { message, .. }) if message.starts_with("Кнопка 1"))
@@ -496,6 +504,8 @@ fn кнопки_нормализуются_и_проверяются() {
             text: format!("К{i}"),
             url: None,
             section: Some(BotSection::Menu),
+            style: None,
+            emoji_id: None,
         })
         .collect();
     assert!(clean_buttons(&many).is_err());
@@ -586,6 +596,8 @@ async fn черновик_сохраняется_правится_и_удаля�
         text: "Подробнее".into(),
         url: Some("t.me/news".into()),
         section: None,
+        style: None,
+        emoji_id: None,
     }];
     let created = create(&ctx, &ok, None).await.unwrap();
     assert_eq!(created.status, Status::Draft);
@@ -925,11 +937,15 @@ async fn рассылка_уходит_всем_и_отмечает_остано
             text: "Купить".into(),
             url: None,
             section: Some(BotSection::Buy),
+            style: None,
+            emoji_id: None,
         },
         ButtonSpec {
             text: "Канал".into(),
             url: Some("https://t.me/news".into()),
             section: None,
+            style: None,
+            emoji_id: None,
         },
     ];
     let created = create(&ctx, &message, None).await.unwrap();
@@ -1804,11 +1820,15 @@ fn письмо_собирается_из_того_же_текста() {
             text: "Продлить".into(),
             url: None,
             section: Some(BotSection::Buy),
+            style: None,
+            emoji_id: None,
         },
         ButtonSpec {
             text: "Канал".into(),
             url: Some("t.me/news".into()),
             section: None,
+            style: None,
+            emoji_id: None,
         },
     ])
     .unwrap();
@@ -1975,6 +1995,8 @@ async fn письма_уходят_с_темпом_отпиской_и_ошиб�
         text: "Продлить".into(),
         url: None,
         section: Some(BotSection::Buy),
+        style: None,
+        emoji_id: None,
     }];
     let created = create(&ctx, &message, None).await.unwrap();
     start(&ctx, created.id, None, None).await.unwrap();
@@ -2832,4 +2854,47 @@ async fn условия_про_деньги_только_с_правом_ден�
     assert!(options["filter"]["categories"].is_array());
     assert!(options["filter"]["utm"].is_array());
     db.cleanup().await;
+}
+
+#[test]
+fn цвет_и_значок_кнопки_проверяются_и_старые_кнопки_читаются() {
+    let old: Vec<ButtonSpec> = serde_json::from_value(serde_json::json!([
+        {"text": "Меню", "section": "menu"},
+        {"text": "Сайт", "url": "https://example.com"}
+    ]))
+    .unwrap();
+    assert!(
+        old.iter()
+            .all(|b| b.style.is_none() && b.emoji_id.is_none())
+    );
+    assert_eq!(
+        serde_json::to_value(&old[0]).unwrap(),
+        serde_json::json!({"text": "Меню", "section": "menu"})
+    );
+    let raw: Vec<ButtonSpec> = serde_json::from_value(serde_json::json!([
+        {"text": "Продлить", "section": "buy", "style": "success", "emoji_id": " 5368324170671202286 "},
+        {"text": "Канал", "url": "https://t.me/demo", "style": "danger", "emoji_id": ""}
+    ]))
+    .unwrap();
+    let clean = clean_buttons(&raw).unwrap();
+    assert_eq!(
+        clean[0].style,
+        Some(sn_domain::bot_content::ButtonStyle::Success)
+    );
+    assert_eq!(clean[0].emoji_id.as_deref(), Some("5368324170671202286"));
+    assert_eq!(clean[1].emoji_id, None);
+    let out = clean[0].out();
+    assert_eq!(out.style.as_deref(), Some("success"));
+    assert_eq!(out.emoji_id.as_deref(), Some("5368324170671202286"));
+    let bad: Vec<ButtonSpec> = serde_json::from_value(serde_json::json!([
+        {"text": "Продлить", "section": "buy", "emoji_id": "🔥"}
+    ]))
+    .unwrap();
+    assert_eq!(code(clean_buttons(&bad).unwrap_err()), "broadcast.invalid");
+    assert!(
+        serde_json::from_value::<ButtonSpec>(
+            serde_json::json!({"text": "Продлить", "section": "buy", "style": "purple"})
+        )
+        .is_err()
+    );
 }

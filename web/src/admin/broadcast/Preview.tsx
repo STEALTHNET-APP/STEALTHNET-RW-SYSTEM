@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Icon } from '../../lib/icons';
 import { TelegramText } from '../pages/telegram';
 import type { ButtonSpec, Channel } from './model';
+import { premiumCount } from './emoji';
 import '../pages/bot.css';
 
 type Props = {
@@ -28,12 +29,16 @@ export function Preview({ text, image, buttons, className }: Props) {
       {buttons.length ? (
         <div className="bc-keys">
           {buttons.map((button, index) => (
-            <span key={index} className="bt-tg-btn bc-key">
+            <span key={index} className={`bt-tg-btn bc-key ${button.style ?? ''}`}>
+              {button.emoji_id ? <span className="bt-icon" title="Значок из премиум-эмодзи" aria-hidden="true" /> : null}
               <span>{button.text.trim() || 'Кнопка'}</span>
               {button.url !== undefined && !button.section ? <Icon name="external" size={13} /> : null}
             </span>
           ))}
         </div>
+      ) : null}
+      {premiumCount(text) || buttons.some((button) => button.emoji_id) ? (
+        <span className="cap bc-preview-note">Премиум-эмодзи здесь показаны обычными и подчёркнуты пунктиром, значок кнопки — серым квадратом.</span>
       ) : null}
     </div>
   );

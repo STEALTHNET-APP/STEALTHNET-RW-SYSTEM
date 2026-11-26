@@ -5,10 +5,11 @@ import { Icon } from '../../lib/icons';
 import { displayName, type ClientRow } from '../clients/types';
 import { unclosedTag, visibleLength } from '../pages/telegram';
 import { BASE, CHANNELS, count, failText, hasBot, hasEmail, imageUrl, type ButtonSpec, type Channel, type Image, type Options, type Section } from './model';
+import { BUTTON_STYLES, emojiIdProblem, insertAt, readPasted, type ButtonStyle } from './emoji';
 import '../form.css';
 
 type Kind = 'url' | 'section';
-export type ButtonDraft = { text: string; kind: Kind; url: string; section: Section };
+export type ButtonDraft = { text: string; kind: Kind; url: string; section: Section; style: ButtonStyle | ''; emoji_id: string };
 type Target = { id: number; name: string; handle: string };
 export type Note = { text: string; tone: 'ok' | 'bad' | 'plain' };
 
@@ -33,13 +34,21 @@ function keep(key: string, value: string) {
 const URL_START = /^(https?:\/\/[^\s/?#]+|tg:\/\/\S+|t\.me\/\S+|@\w+)/i;
 
 export function toDraft(button: ButtonSpec): ButtonDraft {
+  const look = { style: button.style ?? '', emoji_id: button.emoji_id ?? '' } as const;
   return button.section
-    ? { text: button.text, kind: 'section', url: '', section: button.section }
-    : { text: button.text, kind: 'url', url: button.url ?? '', section: 'menu' };
+    ? { text: button.text, kind: 'section', url: '', section: button.section, ...look }
+    : { text: button.text, kind: 'url', url: button.url ?? '', section: 'menu', ...look };
 }
 
 export function toSpec(button: ButtonDraft): ButtonSpec {
-  return button.kind === 'section' ? { text: button.text, section: button.section } : { text: button.text, url: button.url };
+  const base: ButtonSpec = button.kind === 'section' ? { text: button.text, section: button.section } : { text: button.text, url: button.url };
+  if (button.style) {
+    base.style = button.style;
+  }
+  if (button.emoji_id.trim()) {
+    base.emoji_id = button.emoji_id.trim();
+  }
+  return base;
 }
 
 function storedTarget(): Target | null {
@@ -101,7 +110,7 @@ function buttonProblem(button: ButtonDraft, max: number): string | null {
       return 'Адрес должен начинаться с https://, http:// или tg://';
     }
   }
-  return null;
+  return emojiIdProblem(button.emoji_id);
 }
 
 export type MessageValue = { channel: Channel; subject: string; text: string; image: Image | null; buttons: ButtonDraft[] };
@@ -197,6 +206,44 @@ export function MessageFields({ options, value, onChange, check, tried, busy, se
   const { limit, length, textProblem, buttonProblems, subjectLength, subjectProblem, mailOff } = check;
   const area = useRef<HTMLTextAreaElement>(null);
   const file = useRef<HTMLInputElement>(null);
+  const [emojiOpen, setEmojiOpen] = useState(false);
+  const [pasted, setPasted] = useState('');
+  const [pasteNote, setPasteNote] = useState<Note | null>(null);
+  const caret = useRef<{ start: number; end: number } | null>(null);
+  const bot = options.bot_username ? options.bot_username.replace(/^@/, '') : null;
+
+  const remember = () => {
+    const el = area.current;
+    if (el) {
+      caret.current = { start: el.selectionStart, end: el.selectionEnd };
+    }
+  };
+
+  const pasteEmoji = (raw: string) => {
+    const found = readPasted(raw);
+    if (found.kind === 'code') {
+      setPasteNote({ text: 'Это код для значка кнопки: вставьте его в поле «Премиум-эмодзи» у кнопки ниже', tone: 'plain' });
+      return;
+    }
+    if (found.kind === 'none') {
+      setPasteNote({ text: 'Здесь нет премиум-эмодзи. Отправьте боту /emoji вместе с ними и скопируйте строку из ответа', tone: 'bad' });
+      return;
+    }
+    const el = area.current;
+    const spot = caret.current ?? { start: text.length, end: text.length };
+    const gap = spot.start > 0 && !/\s$/.test(text.slice(0, spot.start)) ? ' ' : '';
+    const placed = insertAt(text, spot.start, spot.end, gap + found.value);
+    caret.current = { start: placed.caret, end: placed.caret };
+    onChange({ text: placed.text });
+    setPasted('');
+    setPasteNote({ text: 'Вставлено в текст', tone: 'ok' });
+    window.requestAnimationFrame(() => {
+      if (el) {
+        el.focus();
+        el.setSelectionRange(placed.caret, placed.caret);
+      }
+    });
+  };
 
   const wrap = (before: string, after: string, fallback: string) => {
     const el = area.current;
@@ -325,7 +372,59 @@ export function MessageFields({ options, value, onChange, check, tried, busy, se
               <button type="button" className="bc-tool hov" onClick={() => wrap('<tg-spoiler>', '</tg-spoiler>', 'скрытый текст')}>
                 Скрытый текст
               </button>
+              <button
+                type="button"
+                className="bc-tool hov"
+                aria-expanded={emojiOpen}
+                aria-controls="bc-emoji"
+                onClick={() => {
+                  setEmojiOpen(!emojiOpen);
+                  setPasteNote(null);
+                }}
+              >
+                Премиум-эмодзи
+              </button>
             </div>
+            {emojiOpen ? (
+              <div id="bc-emoji" className="bc-emoji" role="group" aria-label="Премиум-эмодзи">
+                <ol className="bc-steps">
+                  <li>
+                    Откройте {bot ? <a href={`https://t.me/${bot}`} target="_blank" rel="noreferrer noopener">@{bot}</a> : 'своего бота'} и отправьте{' '}
+                    <code>/emoji</code> вместе с премиум-эмодзи, можно целой фразой.
+                  </li>
+                  <li>Скопируйте из ответа строку «Для текста».</li>
+                  <li>Вставьте её сюда: эмодзи встанут в текст там, где стоял курсор, а если в текст ещё не нажимали — в конец.</li>
+                </ol>
+                <span className="bc-emoji-row">
+                  <textarea
+                    className="field bc-paste"
+                    rows={2}
+                    value={pasted}
+                    placeholder="Вставьте ответ бота на /emoji"
+                    aria-label="Ответ бота на /emoji"
+                    onChange={(e) => {
+                      setPasted(e.target.value);
+                      setPasteNote(null);
+                    }}
+                    onPaste={(e) => {
+                      const raw = e.clipboardData.getData('text');
+                      if (raw) {
+                        e.preventDefault();
+                        pasteEmoji(raw);
+                      }
+                    }}
+                  />
+                  <button type="button" className="btn-line hov" onClick={() => pasteEmoji(pasted)} disabled={!pasted.trim()}>
+                    Вставить
+                  </button>
+                </span>
+                {pasteNote ? <span className={pasteNote.tone === 'bad' ? 'err' : 'cap'}>{pasteNote.text}</span> : null}
+                <span className="cap">
+                  Telegram покажет премиум-эмодзи, если у владельца бота есть Telegram Premium или бот купил дополнительные имена на Fragment. Иначе сообщение уйдёт с обычными
+                  эмодзи. В системных уведомлениях и в письмах они тоже обычные.
+                </span>
+              </div>
+            ) : null}
             <textarea
               ref={area}
               id="bc-text"
@@ -336,9 +435,12 @@ export function MessageFields({ options, value, onChange, check, tried, busy, se
               aria-label="Текст сообщения"
               aria-invalid={textProblem !== null}
               aria-describedby="bc-text-cap"
+              onSelect={remember}
+              onBlur={remember}
               onChange={(e) => {
                 onChange({ text: e.target.value });
                 onNote(null);
+                caret.current = { start: e.target.selectionStart, end: e.target.selectionEnd };
               }}
               spellCheck
             />
@@ -361,8 +463,16 @@ export function MessageFields({ options, value, onChange, check, tried, busy, se
                   <code>{'<blockquote>цитата</blockquote>'}</code>, <code>{'<code>код</code>'}</code>
                 </li>
                 <li>
-                  Премиум-эмодзи: отправьте боту <code>/emoji</code> с нужными эмодзи и вставьте строку из ответа. Если Telegram их не примет, уйдут обычные.
+                  Премиум-эмодзи — кнопка «Премиум-эмодзи» над полем: отправьте боту <code>/emoji</code> с нужными эмодзи и вставьте строку из ответа. Строка выглядит так:{' '}
+                  <code>{'<tg-emoji emoji-id="5368324170671202286">🔥</tg-emoji>'}</code>.
                 </li>
+                <li>
+                  Премиум-эмодзи в тексте и значок на кнопке Telegram показывает, если у владельца бота есть Telegram Premium или бот купил дополнительные имена на Fragment.
+                  Если Telegram их не примет, сообщение уйдёт с обычными эмодзи и без значков. Там, где премиум-эмодзи показать нельзя (например, в системных уведомлениях), и
+                  в сообщении, которое переслал человек без Premium, видно обычное эмодзи.
+                </li>
+                <li>Цвет кнопки — синяя, зелёная или красная; без цвета кнопка выглядит так, как принято в приложении клиента.</li>
+                <li>В письме премиум-эмодзи становятся обычными, а у кнопок нет цвета и значка.</li>
               </ul>
             </details>
             <div className="bc-inline">{preview}</div>
@@ -424,7 +534,8 @@ export function MessageFields({ options, value, onChange, check, tried, busy, se
             Кнопки
           </h2>
           <span className="muted">
-            Встают под сообщением, каждая в своей строке. Раздел бота открывается отдельным сообщением, само сообщение остаётся в чате.
+            Встают под сообщением, каждая в своей строке. Раздел бота открывается отдельным сообщением, само сообщение остаётся в чате. Цвет и значок из премиум-эмодзи
+            необязательны{hasEmail(channel) ? '; в письме кнопка будет без них' : ''}.
           </span>
         </div>
         <div className="row">
@@ -484,7 +595,30 @@ export function MessageFields({ options, value, onChange, check, tried, busy, se
                       <Icon name="close" size={18} />
                     </button>
                   </div>
-                  {problem && (tried || button.text.trim() || button.url.trim()) ? <span className="err">{problem}</span> : null}
+                  <div className="bc-blook">
+                    <span className="segs" role="group" aria-label={`Цвет кнопки ${index + 1}`}>
+                      {BUTTON_STYLES.map((style) => (
+                        <button
+                          key={style.value || 'plain'}
+                          type="button"
+                          aria-pressed={button.style === style.value}
+                          onClick={() => changeButton(index, { style: style.value })}
+                        >
+                          {style.label}
+                        </button>
+                      ))}
+                    </span>
+                    <input
+                      className="field mono bc-emoji-id"
+                      value={button.emoji_id}
+                      inputMode="numeric"
+                      placeholder="Премиум-эмодзи: код"
+                      aria-label={`Код премиум-эмодзи для значка кнопки ${index + 1}`}
+                      aria-invalid={emojiIdProblem(button.emoji_id) !== null}
+                      onChange={(e) => changeButton(index, { emoji_id: e.target.value })}
+                    />
+                  </div>
+                  {problem && (tried || button.text.trim() || button.url.trim() || button.emoji_id.trim()) ? <span className="err">{problem}</span> : null}
                   {button.kind === 'section' && sectionTitle && !sectionTitle.available ? (
                     <span className="warn-line">Модуль раздела выключен: кнопка откроет главное меню</span>
                   ) : null}
@@ -495,7 +629,7 @@ export function MessageFields({ options, value, onChange, check, tried, busy, se
               <button
                 type="button"
                 className="btn-line hov bc-add"
-                onClick={() => onChange({ buttons: [...buttons, { text: '', kind: 'url', url: '', section: 'menu' }] })}
+                onClick={() => onChange({ buttons: [...buttons, { text: '', kind: 'url', url: '', section: 'menu', style: '', emoji_id: '' }] })}
               >
                 Добавить кнопку
               </button>

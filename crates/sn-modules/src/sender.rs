@@ -9,6 +9,10 @@ pub struct OutButton {
     pub url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub callback: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub style: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub emoji_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
