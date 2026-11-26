@@ -78,6 +78,7 @@ mod security_headers;
 mod server_clock;
 mod site_limits;
 mod support_files;
+mod support_list;
 mod support_mode;
 mod support_role;
 mod telegram_link;

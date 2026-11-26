@@ -728,6 +728,31 @@ a.btn-line {
   padding: 16px 16px 120px;
 }
 
+.adm:has(.page-fit) {
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+}
+
+.adm:has(.page-fit) .page {
+  min-height: 0;
+  padding-bottom: 20px;
+}
+
+.adm[data-layout='phone']:has(.page-fit) .page {
+  height: 100%;
+  padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+}
+
+.adm[data-layout='phone']:has(.page-fit.no-nav) .pnav {
+  display: none;
+}
+
+.page-fit {
+  flex: 1 1 0;
+  min-height: 0;
+}
+
 .st-dot {
   display: inline-block;
   flex: 0 0 8px;

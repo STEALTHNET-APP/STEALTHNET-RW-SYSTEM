@@ -212,6 +212,11 @@ pub const ACTIONS: &[ActionLabel] = &[
         Area::Clients,
     ),
     a(
+        "ticket.bulk_closed",
+        "Обращения в поддержку закрыты списком",
+        Area::Clients,
+    ),
+    a(
         "subscription.add_days",
         "Добавлены дни к подписке",
         Area::Subscriptions,
@@ -1242,6 +1247,8 @@ const FIELDS: &[(&str, &str)] = &[
     ("apps", "Приложений"),
     ("icons", "Значков"),
     ("count", "Количество"),
+    ("waiting_days", "Ждали ответа дольше, дней"),
+    ("tickets", "Номера обращений"),
     ("telegram", "Telegram"),
     ("telegram_id", "ID в Telegram"),
     ("closed_client", "Закрытый пустой аккаунт"),

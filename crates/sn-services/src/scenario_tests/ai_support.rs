@@ -227,7 +227,7 @@ async fn админы_узнают_о_передаче_оператору_а_н�
         "not_found"
     );
     let (items, _) = support
-        .list_view(TicketFilter::Waiting, Default::default(), None)
+        .list_view(TicketFilter::Waiting, Default::default(), None, None)
         .await
         .unwrap();
     let listed = items.items.iter().find(|i| i.ticket.id == cabinet).unwrap();

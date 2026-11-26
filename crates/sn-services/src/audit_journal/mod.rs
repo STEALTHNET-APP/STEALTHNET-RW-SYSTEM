@@ -538,6 +538,10 @@ pub fn title_for(action: &str, details: &Value) -> String {
                 _ => labels::title_of(action).into(),
             }
         }
+        "ticket.bulk_closed" => match details.get("count").and_then(Value::as_u64) {
+            Some(count) => format!("Закрыто обращений в поддержку: {count}"),
+            None => labels::title_of(action).into(),
+        },
         "subscription.add_days" | "subscription.add_days_undone" => {
             match details
                 .get("days")

@@ -153,6 +153,15 @@ const UNREAD: &str = "FROM ticket_messages u WHERE u.ticket_id = t.id AND u.auth
                       AND u.id > COALESCE((SELECT max(c.id) FROM ticket_messages c \
                           WHERE c.ticket_id = t.id AND c.author = 'client'), 0)";
 
+const WAITING_LONGER: &str = "t.status = 'open' AND t.last_author = 'client' \
+     AND COALESCE((SELECT m.created_at FROM ticket_messages m WHERE m.id = t.last_message_id), t.created_at) \
+         < now() - make_interval(days => $1::int)";
+
+fn sorted_ids(mut ids: Vec<i64>) -> Vec<TicketId> {
+    ids.sort_unstable();
+    ids.into_iter().map(TicketId).collect()
+}
+
 const fn filter_order(
     filter: TicketFilter,
 ) -> (&'static str, &'static str, &'static str, &'static str) {
@@ -365,6 +374,37 @@ impl<'c> TicketsRepo<'c> {
         Ok(())
     }
 
+    pub async fn close_many(&mut self, ids: &[TicketId]) -> StoreResult<Vec<TicketId>> {
+        let ids: Vec<i64> = ids.iter().map(|id| id.0).collect();
+        let closed: Vec<i64> = sqlx::query_scalar(
+            "UPDATE tickets SET status = 'closed', closed_at = now() \
+             WHERE id = ANY($1) AND status = 'open' RETURNING id",
+        )
+        .bind(&ids)
+        .fetch_all(&mut *self.conn)
+        .await?;
+        Ok(sorted_ids(closed))
+    }
+
+    pub async fn count_waiting_longer(&mut self, days: u32) -> StoreResult<i64> {
+        Ok(sqlx::query_scalar(&format!(
+            "SELECT count(*) FROM tickets t WHERE {WAITING_LONGER}"
+        ))
+        .bind(i32::try_from(days).unwrap_or(i32::MAX))
+        .fetch_one(&mut *self.conn)
+        .await?)
+    }
+
+    pub async fn close_waiting_longer(&mut self, days: u32) -> StoreResult<Vec<TicketId>> {
+        let closed: Vec<i64> = sqlx::query_scalar(&format!(
+            "UPDATE tickets t SET status = 'closed', closed_at = now() WHERE {WAITING_LONGER} RETURNING t.id"
+        ))
+        .bind(i32::try_from(days).unwrap_or(i32::MAX))
+        .fetch_all(&mut *self.conn)
+        .await?;
+        Ok(sorted_ids(closed))
+    }
+
     pub async fn mark_read(&mut self, id: TicketId) -> StoreResult<u64> {
         Ok(sqlx::query(
             "UPDATE ticket_messages SET read_at = now() WHERE ticket_id = $1 AND author = 'client' AND read_at IS NULL",
@@ -439,6 +479,7 @@ impl<'c> TicketsRepo<'c> {
         &mut self,
         filter: TicketFilter,
         page: PageRequest,
+        after_id: Option<TicketId>,
         query: Option<&str>,
     ) -> StoreResult<Page<TicketListItem>> {
         let (condition, key, direction, compare) = filter_order(filter);
@@ -473,7 +514,7 @@ impl<'c> TicketsRepo<'c> {
                  AND i.kind = 'telegram' ORDER BY i.id LIMIT 1) tg ON true \
              LEFT JOIN LATERAL (SELECT i.value FROM client_identities i WHERE i.client_id = t.client_id \
                  AND i.kind = 'email' ORDER BY i.id LIMIT 1) em ON true \
-             WHERE {condition} AND ($1::bigint IS NULL OR {key} {compare} $1) \
+             WHERE {condition} AND ($1::bigint IS NULL OR ({key}, t.id) {compare} ($1, $5::bigint)) \
              AND ($3::text IS NULL OR t.subject ILIKE $3 \
                  OR EXISTS (SELECT 1 FROM ticket_messages qm WHERE qm.ticket_id = t.id AND qm.body ILIKE $3) \
                  OR EXISTS (SELECT 1 FROM ticket_files qf WHERE qf.ticket_id = t.id AND qf.name ILIKE $3) \
@@ -485,6 +526,7 @@ impl<'c> TicketsRepo<'c> {
         .bind(page.fetch_limit())
         .bind(like)
         .bind(folded)
+        .bind(after_id.map(|id| id.0))
         .fetch_all(&mut *self.conn)
         .await?;
         let keyed = rows

@@ -23,6 +23,25 @@ pub const MAX_MESSAGE_CHARS: usize = 4_000;
 pub const MAX_SUBJECT_CHARS: usize = 200;
 pub const REPLY_TEMPLATE: &str = "support_reply";
 pub const CLIENT_TICKETS_LIMIT: i64 = 100;
+pub const MAX_CLOSE_MANY: usize = 500;
+pub const MAX_WAITING_DAYS: u32 = 3_650;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CloseMany {
+    Tickets(Vec<TicketId>),
+    WaitingDays(u32),
+}
+
+fn waiting_days(days: u32) -> ServiceResult<u32> {
+    if (1..=MAX_WAITING_DAYS).contains(&days) {
+        Ok(days)
+    } else {
+        Err(ServiceError::rejected(
+            "support.waiting_days",
+            format!("Укажите от 1 до {MAX_WAITING_DAYS} дней"),
+        ))
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OpenTicket {
@@ -253,12 +272,57 @@ impl<'a> SupportOps<'a> {
         &self,
         filter: TicketFilter,
         page: PageRequest,
+        after_id: Option<TicketId>,
         query: Option<&str>,
     ) -> ServiceResult<(Page<sn_store::TicketListItem>, sn_store::TicketCounts)> {
         let mut conn = self.services.store().conn().await?;
-        let items = conn.tickets().list_view(filter, page, query).await?;
+        let items = conn
+            .tickets()
+            .list_view(filter, page, after_id, query)
+            .await?;
         let counts = conn.tickets().counts().await?;
         Ok((items, counts))
+    }
+
+    pub async fn count_waiting_longer(&self, days: u32) -> ServiceResult<i64> {
+        let days = waiting_days(days)?;
+        let mut conn = self.services.store().conn().await?;
+        Ok(conn.tickets().count_waiting_longer(days).await?)
+    }
+
+    pub async fn close_many(&self, request: &CloseMany, admin: AdminId) -> ServiceResult<u64> {
+        let mut tx = self.services.store().begin().await?;
+        let (closed, days) = match request {
+            CloseMany::Tickets(ids) => {
+                if ids.is_empty() || ids.len() > MAX_CLOSE_MANY {
+                    return Err(ServiceError::rejected(
+                        "support.close_many",
+                        format!("Отметьте от 1 до {MAX_CLOSE_MANY} обращений"),
+                    ));
+                }
+                (tx.tickets().close_many(ids).await?, None)
+            }
+            CloseMany::WaitingDays(days) => {
+                let days = waiting_days(*days)?;
+                (tx.tickets().close_waiting_longer(days).await?, Some(days))
+            }
+        };
+        if !closed.is_empty() {
+            tx.audit()
+                .record(&Actor::Admin(admin).audit(
+                    "ticket.bulk_closed",
+                    "ticket",
+                    None,
+                    serde_json::json!({
+                        "count": closed.len(),
+                        "waiting_days": days,
+                        "tickets": closed.iter().take(MAX_CLOSE_MANY).map(|id| id.0).collect::<Vec<_>>(),
+                    }),
+                ))
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(closed.len() as u64)
     }
 
     pub async fn for_client(&self, client_id: ClientId) -> ServiceResult<Vec<ClientTicket>> {

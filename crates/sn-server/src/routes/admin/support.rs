@@ -9,11 +9,15 @@ use serde::Deserialize;
 use sn_domain::access::Permission;
 use sn_domain::ids::{TicketFileId, TicketId};
 use sn_domain::support::TicketFilter;
-use sn_services::support::{ReplyRequest, TicketThread};
+use sn_services::support::{CloseMany, ReplyRequest, TicketThread};
 
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/support/tickets", get(list))
+        .route(
+            "/support/tickets/close-many",
+            get(close_many_count).post(close_many),
+        )
         .route(
             "/support/tickets/{id}",
             get(thread).post(reply).delete(remove),
@@ -32,6 +36,8 @@ struct ListQuery {
     limit: Option<u32>,
     #[serde(default)]
     after: Option<i64>,
+    #[serde(default)]
+    after_id: Option<i64>,
 }
 
 fn filter(value: Option<&str>) -> ApiResult<TicketFilter> {
@@ -60,11 +66,20 @@ async fn list(
     let (page, counts) = state
         .services
         .support()
-        .list_view(filter, paging.request(), query.q.as_deref())
+        .list_view(
+            filter,
+            paging.request(),
+            query.after_id.map(TicketId),
+            query.q.as_deref(),
+        )
         .await?;
+    let next_id = page
+        .next
+        .and_then(|_| page.items.last().map(|item| item.ticket.id));
     Ok(Json(serde_json::json!({
         "items": page.items,
         "next": page.next,
+        "next_id": next_id,
         "counts": counts,
         "files": state.services.support().file_limits(),
     })))
@@ -157,4 +172,56 @@ async fn reopen(
         .reopen(TicketId(id), admin.actor())
         .await?;
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+struct WaitingQuery {
+    waiting_days: u32,
+}
+
+async fn close_many_count(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    ApiQuery(query): ApiQuery<WaitingQuery>,
+) -> ApiResult<Json<serde_json::Value>> {
+    admin.require(Permission::Support)?;
+    let count = state
+        .services
+        .support()
+        .count_waiting_longer(query.waiting_days)
+        .await?;
+    Ok(Json(serde_json::json!({ "count": count })))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CloseManyBody {
+    #[serde(default)]
+    ids: Option<Vec<i64>>,
+    #[serde(default)]
+    waiting_days: Option<u32>,
+}
+
+async fn close_many(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    ApiJson(body): ApiJson<CloseManyBody>,
+) -> ApiResult<Json<serde_json::Value>> {
+    admin.require(Permission::Support)?;
+    let request = match (body.ids, body.waiting_days) {
+        (Some(ids), None) => CloseMany::Tickets(ids.into_iter().map(TicketId).collect()),
+        (None, Some(days)) => CloseMany::WaitingDays(days),
+        _ => {
+            return Err(ApiError::bad_request(
+                "validation.close_many",
+                "укажите ids или waiting_days",
+            ));
+        }
+    };
+    let closed = state
+        .services
+        .support()
+        .close_many(&request, admin.0.admin_id)
+        .await?;
+    Ok(Json(serde_json::json!({ "closed": closed })))
 }

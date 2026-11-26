@@ -435,10 +435,14 @@ function MainBoard() {
               const alert = trafficAlert(node);
               return (
                 <div key={node.uuid} className="hm-node">
-                  <span className="hm-code">{node.name}</span>
-                  <span className="hm-city muted">
-                    <Flag code={node.country_code} />
-                    {countryName(node.country_code)}
+                  <span className="hm-code" title={node.name}>
+                    {node.name}
+                  </span>
+                  <span className="hm-city muted" title={countryName(node.country_code) || undefined}>
+                    <span className="hm-node-flag">
+                      <Flag code={node.country_code} />
+                    </span>
+                    <span>{countryName(node.country_code)}</span>
                   </span>
                   <span className="hm-state num">
                     <span style={{ color: state.tone === 'bad' ? 'var(--bad)' : state.tone === 'warn' ? 'var(--warn)' : state.tone === 'muted' ? 'var(--muted)' : 'var(--ink-2)', fontWeight: state.tone === 'bad' ? 600 : 400 }}>
@@ -640,7 +644,7 @@ function Daylight() {
                 return (
                   <span key={node.uuid} className="hm-flow-item">
                     <span className="hm-bar" aria-hidden="true" />
-                    <strong>{node.name}</strong>
+                    <strong title={node.name}>{node.name}</strong>
                     <span className="muted">
                       <Flag code={node.country_code} />
                       {countryName(node.country_code)}

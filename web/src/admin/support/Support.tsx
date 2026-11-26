@@ -1,21 +1,25 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { api, ApiError } from '../../lib/api';
-import { dateLong, dateNumeric, days, daysLeft, groupDigits, money, NBSP, timeHM, traffic, trafficPair } from '../../lib/format';
+import { count, dateLong, dateNumeric, days, daysLeft, groupDigits, money, NBSP, timeHM, traffic, trafficPair } from '../../lib/format';
 import { Icon } from '../../lib/icons';
+import { useMedia, usePhone } from '../../lib/media';
+import { PhoneHeader } from '../phone';
 import { useSession } from '../session';
 import { planTitle } from '../client/SubscriptionBlock';
 import { emailOf, liveSubscriptions, nextReset, personName, platformName, seenText, tariffOf, telegramOf } from '../client/model';
 import type { ClientCard, Device, SubscriptionDetails } from '../client/types';
 import { minutesSince, spanText } from '../home/model';
+import '../form.css';
 import './support.css';
 import { Avatar } from '../Avatar';
 import type { HandoffReason, TicketAi } from '../../lib/supportChat';
 import { AttachButton, DraftList, MessageFiles, useAttachments, type Attachment, type FileLimits } from '../../lib/ticketFiles';
+import { appendPage, collect, cursorOf, DAYS_MAX, listPath, PAGE, PICK_MAX, readDays, readFilter, type Cursor, type Filter, type Paged } from './list';
 
 const FILES = '/api/admin/support/files';
-
-type Filter = 'waiting' | 'answered' | 'closed';
+const CLOSE_MANY = '/api/admin/support/tickets/close-many';
+const NARROW = '(max-width: 760px)';
 
 type Ticket = {
   id: number;
@@ -43,6 +47,8 @@ type ListItem = {
 };
 
 type Counts = { waiting: number; answered: number; closed: number };
+
+type ListPage = Paged<ListItem> & { counts: Counts; files?: FileLimits | null };
 
 type Message = { author: 'client' | 'support' | 'ai' | 'system'; admin_id: number | null; body: string; attachments: Attachment[]; created_at: string };
 
@@ -132,13 +138,26 @@ function dayLabel(iso: string): string {
 
 export function Support() {
   const { me, supportWaiting } = useSession();
+  const phone = usePhone();
+  const single = useMedia(NARROW);
   const [params, setParams] = useSearchParams();
-  const filter = (params.get('filter') as Filter | null) ?? 'waiting';
+  const filter = readFilter(params.get('filter'));
   const ticketParam = params.get('ticket');
+  const selected = ticketParam && /^\d{1,18}$/.test(ticketParam) ? Number(ticketParam) : null;
   const [q, setQ] = useState('');
   const [query, setQuery] = useState('');
   const [items, setItems] = useState<ListItem[] | null>(null);
+  const [cursor, setCursor] = useState<Cursor | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [listError, setListError] = useState<string | null>(null);
+  const [round, setRound] = useState(0);
   const [counts, setCounts] = useState<Counts>({ waiting: 0, answered: 0, closed: 0 });
+  const [picking, setPicking] = useState(false);
+  const [picked, setPicked] = useState<Set<number>>(() => new Set());
+  const [bulk, setBulk] = useState<'picked' | 'old' | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [asideOpen, setAsideOpen] = useState(false);
+  const [person, setPerson] = useState<Person | null>(null);
   const [thread, setThread] = useState<Thread | null>(null);
   const [threadError, setThreadError] = useState<string | null>(null);
   const [reply, setReply] = useState('');
@@ -150,64 +169,198 @@ export function Support() {
   const files = useAttachments(FILES, fileLimits);
   const resetFiles = files.reset;
   const feedRef = useRef<HTMLDivElement | null>(null);
-  const selected = ticketParam ? Number(ticketParam) : null;
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const moreRef = useRef<HTMLButtonElement | null>(null);
+  const itemsRef = useRef<ListItem[] | null>(null);
+  const cursorRef = useRef<Cursor | null>(null);
+  const generation = useRef(0);
+  const busy = useRef<symbol | null>(null);
+  const listScroll = useRef(0);
+  const live = useRef({ single, selected, setParams });
+  const showList = !single || selected === null;
+  const showThread = !single || selected !== null;
+
+  useEffect(() => {
+    live.current = { single, selected, setParams };
+  });
 
   useEffect(() => {
     const timer = window.setTimeout(() => setQuery(q.trim()), 300);
     return () => window.clearTimeout(timer);
   }, [q]);
 
-  const loadList = useCallback(async () => {
-    try {
-      const search = new URLSearchParams({ filter, limit: '50' });
-      if (query) {
-        search.set('q', query);
-      }
-      const data = await api<{ items: ListItem[]; counts: Counts; files?: FileLimits | null }>(`/api/admin/support/tickets?${search.toString()}`);
-      setItems(data.items);
-      setCounts(data.counts);
-      setFileLimits(data.files ?? null);
-      supportWaiting(data.counts.waiting);
-      return data.items;
-    } catch {
-      setItems([]);
-      return [];
-    }
-  }, [filter, query, supportWaiting]);
+  const apply = useCallback(
+    (page: ListPage, list: ListItem[], next: Cursor | null) => {
+      itemsRef.current = list;
+      cursorRef.current = next;
+      setItems(list);
+      setCursor(next);
+      setCounts(page.counts);
+      setFileLimits(page.files ?? null);
+      supportWaiting(page.counts.waiting);
+    },
+    [supportWaiting],
+  );
+
+  const fetchPage = useCallback((after: Cursor | null, limit: number) => api<ListPage>(listPath(filter, query, after, limit)), [filter, query]);
 
   useEffect(() => {
-    void loadList().then((list) => {
-      if (!ticketParam && list[0]) {
-        const next = new URLSearchParams(params);
-        next.set('ticket', String(list[0].ticket.id));
-        setParams(next, { replace: true });
-      }
-    });
-    const timer = window.setInterval(() => void loadList(), 30_000);
-    return () => window.clearInterval(timer);
-  }, [loadList]);
+    const mine = ++generation.current;
+    const token = Symbol('list');
+    busy.current = token;
+    itemsRef.current = null;
+    cursorRef.current = null;
+    setItems(null);
+    setCursor(null);
+    setListError(null);
+    setPicked(new Set());
+    listRef.current?.scrollTo({ top: 0 });
+    fetchPage(null, PAGE)
+      .then((page) => {
+        if (mine !== generation.current) {
+          return;
+        }
+        apply(page, page.items, cursorOf(page));
+        const now = live.current;
+        if (!now.single && now.selected === null && page.items[0]) {
+          const first = page.items[0].ticket.id;
+          now.setParams(
+            (prev) => {
+              const next = new URLSearchParams(prev);
+              next.set('ticket', String(first));
+              return next;
+            },
+            { replace: true },
+          );
+        }
+      })
+      .catch((err: unknown) => {
+        if (mine === generation.current) {
+          itemsRef.current = [];
+          setItems([]);
+          setListError(failText(err, 'Список не загрузился'));
+        }
+      })
+      .finally(() => {
+        if (busy.current === token) {
+          busy.current = null;
+        }
+      });
+  }, [fetchPage, apply, round]);
 
-  const loadThread = useCallback(async (id: number) => {
-    try {
-      const data = await api<Thread>(`/api/admin/support/tickets/${id}`);
-      setThread(data);
-      setThreadError(null);
-    } catch (err) {
-      setThread(null);
-      setThreadError(failText(err, 'Обращение не загрузилось'));
+  const refresh = useCallback(async () => {
+    if (busy.current) {
+      return;
     }
+    const mine = generation.current;
+    const token = Symbol('refresh');
+    busy.current = token;
+    try {
+      const got = await collect<ListItem, ListPage>(fetchPage, Math.max(PAGE, itemsRef.current?.length ?? 0));
+      if (mine === generation.current) {
+        apply(got.last, got.items, got.next);
+      }
+    } catch {
+      return;
+    } finally {
+      if (busy.current === token) {
+        busy.current = null;
+      }
+    }
+  }, [fetchPage, apply]);
+
+  const loadMore = useCallback(async () => {
+    const after = cursorRef.current;
+    if (busy.current || !after) {
+      return;
+    }
+    const mine = generation.current;
+    const token = Symbol('more');
+    busy.current = token;
+    setLoadingMore(true);
+    try {
+      const page = await fetchPage(after, PAGE);
+      if (mine === generation.current) {
+        apply(page, appendPage(itemsRef.current ?? [], page.items), cursorOf(page));
+        setListError(null);
+      }
+    } catch (err) {
+      if (mine === generation.current) {
+        setListError(failText(err, 'Не удалось загрузить ещё'));
+      }
+    } finally {
+      if (busy.current === token) {
+        busy.current = null;
+      }
+      setLoadingMore(false);
+    }
+  }, [fetchPage, apply]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        void refresh();
+      }
+    }, 30_000);
+    return () => window.clearInterval(timer);
+  }, [refresh]);
+
+  useEffect(() => {
+    const target = moreRef.current;
+    if (!target || !cursor || !showList || typeof IntersectionObserver === 'undefined') {
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          void loadMore();
+        }
+      },
+      { root: single ? null : listRef.current, rootMargin: '0px 0px 600px 0px' },
+    );
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [cursor, loadMore, single, showList]);
+
+  const patch = useCallback((id: number, change: (item: ListItem) => ListItem) => {
+    const list = itemsRef.current;
+    if (!list || !list.some((item) => item.ticket.id === id)) {
+      return;
+    }
+    const next = list.map((item) => (item.ticket.id === id ? change(item) : item));
+    itemsRef.current = next;
+    setItems(next);
   }, []);
+
+  const loadThread = useCallback(
+    async (id: number) => {
+      try {
+        const data = await api<Thread>(`/api/admin/support/tickets/${id}`);
+        setThread(data);
+        setThreadError(null);
+        patch(id, (item) => ({ ...item, unread: false }));
+      } catch (err) {
+        setThread(null);
+        setThreadError(failText(err, 'Обращение не загрузилось'));
+      }
+    },
+    [patch],
+  );
 
   useEffect(() => {
     setReply('');
     setSendError(null);
     setCloseAfter(false);
     setAskDelete(false);
+    setAsideOpen(false);
     resetFiles();
     if (selected) {
-      void loadThread(selected).then(() => void loadList());
+      setThread((current) => (current?.ticket.id === selected ? current : null));
+      setThreadError(null);
+      void loadThread(selected);
     } else {
       setThread(null);
+      setThreadError(null);
     }
   }, [selected, loadThread, resetFiles]);
 
@@ -215,7 +368,24 @@ export function Support() {
     feedRef.current?.scrollTo({ top: feedRef.current.scrollHeight });
   }, [thread]);
 
+  useLayoutEffect(() => {
+    if (single) {
+      window.scrollTo(0, selected === null ? listScroll.current : 0);
+    }
+  }, [single, selected]);
+
+  useEffect(() => {
+    if (!notice) {
+      return;
+    }
+    const timer = window.setTimeout(() => setNotice(null), 8_000);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
+
   const pick = (id: number) => {
+    if (single) {
+      listScroll.current = window.scrollY;
+    }
     const next = new URLSearchParams(params);
     next.set('ticket', String(id));
     setParams(next);
@@ -225,7 +395,41 @@ export function Support() {
     const next = new URLSearchParams(params);
     next.set('filter', value);
     next.delete('ticket');
+    setPicking(false);
     setParams(next);
+  };
+
+  const listHref = `/admin/support?filter=${filter}`;
+
+  const togglePick = (id: number) => {
+    const next = new Set(picked);
+    if (next.has(id)) {
+      next.delete(id);
+    } else if (next.size < PICK_MAX) {
+      next.add(id);
+    }
+    setPicked(next);
+  };
+
+  const shown = items ?? [];
+  const allOn = shown.length > 0 && shown.slice(0, PICK_MAX).every((item) => picked.has(item.ticket.id));
+  const toggleAll = () => setPicked(allOn ? new Set() : new Set(shown.slice(0, PICK_MAX).map((item) => item.ticket.id)));
+  const pickedIds = shown.filter((item) => picked.has(item.ticket.id)).map((item) => item.ticket.id);
+  const canPick = filter !== 'closed' && shown.length > 0;
+
+  const stopPicking = () => {
+    setPicking(false);
+    setPicked(new Set());
+  };
+
+  const afterBulk = (closed: number) => {
+    setBulk(null);
+    stopPicking();
+    setNotice(closed ? `Закрыто: ${count(closed, 'обращение', 'обращения', 'обращений')}` : 'Закрывать было нечего');
+    setRound((value) => value + 1);
+    if (selected) {
+      void loadThread(selected);
+    }
   };
 
   const canSend = (reply.trim() !== '' || files.ids.length > 0) && files.ready;
@@ -245,7 +449,7 @@ export function Support() {
       setReply('');
       setCloseAfter(false);
       files.reset();
-      void loadList();
+      void refresh();
     } catch (err) {
       setSendError(failText(err, 'Ответ не отправился'));
     } finally {
@@ -261,7 +465,7 @@ export function Support() {
     try {
       await api(`/api/admin/support/tickets/${thread.ticket.id}/${action}`, { method: 'POST', body: {} });
       await loadThread(thread.ticket.id);
-      void loadList();
+      void refresh();
     } catch (err) {
       setSendError(failText(err, 'Статус не изменился'));
     }
@@ -271,15 +475,19 @@ export function Support() {
     if (!thread) {
       return;
     }
+    const id = thread.ticket.id;
     setSending(true);
     try {
-      await api(`/api/admin/support/tickets/${thread.ticket.id}`, { method: 'DELETE' });
+      await api(`/api/admin/support/tickets/${id}`, { method: 'DELETE' });
       setAskDelete(false);
       setThread(null);
+      const rest = (itemsRef.current ?? []).filter((item) => item.ticket.id !== id);
+      itemsRef.current = rest;
+      setItems(rest);
       const next = new URLSearchParams(params);
       next.delete('ticket');
       setParams(next);
-      void loadList();
+      void refresh();
     } catch (err) {
       setSendError(failText(err, 'Обращение не удалилось'));
     } finally {
@@ -293,221 +501,475 @@ export function Support() {
   const handoff = thread ? handoffLine(thread.ai) : null;
   const handoffAt = thread?.ai?.handoff_at ? Date.parse(thread.ai.handoff_at) : null;
   const handoffIndex = handoff && handoffAt !== null && thread ? thread.messages.filter((m) => Date.parse(m.created_at) <= handoffAt).length : null;
+  const known = thread && person?.id === thread.ticket.client_id ? person : null;
+  const who = listed ? itemName(listed) : known ? known.name : thread ? `Клиент ${thread.ticket.client_id}` : 'Обращение';
+  const handle = listed ? (listed.telegram_username ? `@${listed.telegram_username}` : '') : (known?.handle ?? '');
+  const rootClass = ['sp', showThread ? 'page-fit' : '', single && showThread ? 'no-nav' : '', phone ? 'phone' : ''].filter(Boolean).join(' ');
+
+  const chips = (
+    <div role="group" aria-label="Какие обращения показать" className={phone ? 'chips flt-scroll' : 'chips'}>
+      {FILTERS.map(([key, label, countKey]) => (
+        <button key={key} type="button" className="chip" aria-pressed={filter === key} onClick={() => pickFilter(key)}>
+          <span>{label}</span>
+          <span className="chip-n">{groupDigits(counts[countKey])}</span>
+        </button>
+      ))}
+    </div>
+  );
 
   return (
-    <div className="sp">
-      <header className="sp-head">
-        <h1 className="page-title tight">Поддержка</h1>
-        <div role="group" aria-label="Какие обращения показать" className="chips">
-          {FILTERS.map(([key, label, countKey]) => (
-            <button key={key} type="button" className="chip" aria-pressed={filter === key} onClick={() => pickFilter(key)}>
-              <span>{label}</span>
-              <span className="chip-n">{groupDigits(counts[countKey])}</span>
-            </button>
-          ))}
-        </div>
-      </header>
+    <div className={rootClass}>
+      {phone ? (
+        showThread ? (
+          <PhoneHeader title={who} back={{ to: listHref, label: 'Все обращения' }} center>
+            {thread ? (
+              <button type="button" className="ph-circ press" aria-label="О клиенте" aria-expanded={asideOpen} onClick={() => setAsideOpen(!asideOpen)}>
+                <span className="ph-dot">
+                  <Icon name="user" size={19} />
+                </span>
+              </button>
+            ) : null}
+          </PhoneHeader>
+        ) : (
+          <>
+            <PhoneHeader title="Поддержка" />
+            {chips}
+          </>
+        )
+      ) : showList ? (
+        <header className="sp-head">
+          <h1 className="page-title tight">Поддержка</h1>
+          {chips}
+        </header>
+      ) : null}
 
       <div className="sp-cols">
-        <section aria-label="Обращения" className="sp-sec sp-list">
-          <label className="sp-search">
-            <Icon name="search" size={17} stroke={1.9} />
-            <span className="sr-only">Поиск обращений</span>
-            <input type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Имя, тема или текст" maxLength={100} />
-          </label>
-          <div className="sp-items">
-            {items === null ? <p className="sp-empty">Загружаем…</p> : null}
-            {items && items.length === 0 ? <p className="sp-empty">Обращений нет</p> : null}
-            {items?.map((item) => {
-              const name = itemName(item);
-              const minutes = minutesSince(item.waiting_since);
-              const waitColor =
-                filter === 'waiting' && minutes !== null ? (minutes >= 120 ? 'var(--bad)' : minutes >= 30 ? 'var(--warn)' : 'var(--muted)') : 'var(--muted)';
-              const time = filter === 'waiting' && minutes !== null ? spanText(minutes) : item.last_message_at ? shortWhen(item.last_message_at) : '';
-              const preview = item.preview ? `${item.last_author === 'support' ? 'Вы: ' : item.last_author === 'ai' ? 'ИИ: ' : ''}${item.preview}` : '';
-              const mark = aiMark(item.ai, item.ticket.status, item.last_author);
-              return (
-                <button key={item.ticket.id} type="button" className="sp-item" aria-pressed={item.ticket.id === selected} onClick={() => pick(item.ticket.id)}>
-                  <Avatar id={item.ticket.client_id} name={name} className="sp-ava" />
-                  <span className="sp-item-main">
-                    <span className="sp-item-top">
-                      <strong className="sp-ell">{name}</strong>
-                      <span className="sp-time num" style={{ color: waitColor }}>
-                        {time}
-                      </span>
-                    </span>
-                    <span className="sp-subj-row">
-                      <span className="sp-ell sp-subj">{item.ticket.subject ?? 'Без темы'}</span>
-                      {mark ? <span className="sp-ai">{mark}</span> : null}
-                    </span>
-                    <span className="sp-ell sp-prev">{preview}</span>
-                  </span>
-                  {item.unread ? (
-                    <span className="sp-dot" aria-hidden="true">
-                      <span className="sr-only">Не прочитано</span>
-                    </span>
-                  ) : null}
+        {showList ? (
+          <section aria-label="Обращения" className="sp-sec sp-list">
+            <label className="sp-search">
+              <Icon name="search" size={17} stroke={1.9} />
+              <span className="sr-only">Поиск обращений</span>
+              <input type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Имя, тема или текст" maxLength={100} />
+            </label>
+            {picking ? (
+              <div role="group" aria-label="Отмеченные обращения" className="sp-tools">
+                <input type="checkbox" className="sp-check" checked={allOn} onChange={toggleAll} aria-label="Отметить все показанные" />
+                <span className="sp-picked num">Отмечено: {groupDigits(pickedIds.length)}</span>
+                <button type="button" className="sp-tool hov" onClick={() => setBulk('picked')} disabled={pickedIds.length === 0}>
+                  Закрыть
                 </button>
-              );
-            })}
-          </div>
-        </section>
-
-        <section aria-label="Переписка" className="sp-sec sp-thread">
-          {!thread && !threadError ? <p className="sp-empty">{selected ? 'Загружаем переписку…' : 'Выберите обращение слева'}</p> : null}
-          {threadError ? (
-            <p className="sp-empty err" role="alert">
-              {threadError}
-            </p>
-          ) : null}
-          {thread && state ? (
-            <>
-              <div className="sp-thead">
-                <div className="sp-col" style={{ flex: '1 1 240px', minWidth: 0 }}>
-                  <h2 className="sp-h2">{thread.ticket.subject ?? 'Без темы'}</h2>
-                  <span className="muted">
-                    {listed ? itemName(listed) : `Клиент ${thread.ticket.client_id}`}
-                    {listed?.telegram_username ? ` · @${listed.telegram_username}` : ''}
-                  </span>
-                </div>
-                <span className="sp-state" style={{ color: state.color }}>
-                  <span aria-hidden="true" className="sp-state-dot" style={{ background: state.color }} />
-                  {state.text}
-                </span>
-                <button type="button" className="b38 hov" onClick={() => void toggleClosed()}>
-                  {thread.ticket.status === 'closed' ? 'Открыть снова' : 'Закрыть'}
-                </button>
-                <button type="button" className="b38 hov" aria-expanded={askDelete} onClick={() => setAskDelete(!askDelete)}>
-                  Удалить
+                <button type="button" className="sp-tool hov" onClick={stopPicking}>
+                  Отменить
                 </button>
               </div>
-              {askDelete ? (
-                <div role="status" className="sp-confirm sp-delete">
-                  <span>
-                    <strong>Удалить обращение?</strong> Переписка и файлы удалятся без возможности вернуть.
+            ) : canPick || (filter === 'waiting' && counts.waiting > 0) ? (
+              <div className="sp-tools">
+                {canPick ? (
+                  <button type="button" className="sp-tool hov" onClick={() => setPicking(true)}>
+                    Выбрать
+                  </button>
+                ) : null}
+                {filter === 'waiting' && counts.waiting > 0 ? (
+                  <button type="button" className="sp-tool hov" onClick={() => setBulk('old')}>
+                    Закрыть старые
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
+            {notice ? (
+              <p role="status" className="sp-notice">
+                {notice}
+              </p>
+            ) : null}
+            <div className="sp-items" ref={listRef}>
+              {items === null ? <p className="sp-empty">Загружаем…</p> : null}
+              {items && items.length === 0 && !listError ? <p className="sp-empty">{query ? 'Ничего не нашли' : 'Обращений нет'}</p> : null}
+              {items?.map((item) => {
+                const name = itemName(item);
+                const minutes = minutesSince(item.waiting_since);
+                const waitColor =
+                  filter === 'waiting' && minutes !== null ? (minutes >= 120 ? 'var(--bad)' : minutes >= 30 ? 'var(--warn)' : 'var(--muted)') : 'var(--muted)';
+                const time = filter === 'waiting' && minutes !== null ? spanText(minutes) : item.last_message_at ? shortWhen(item.last_message_at) : '';
+                const preview = item.preview ? `${item.last_author === 'support' ? 'Вы: ' : item.last_author === 'ai' ? 'ИИ: ' : ''}${item.preview}` : '';
+                const mark = aiMark(item.ai, item.ticket.status, item.last_author);
+                const body = (
+                  <>
+                    <Avatar id={item.ticket.client_id} name={name} className="sp-ava" />
+                    <span className="sp-item-main">
+                      <span className="sp-item-top">
+                        <strong className="sp-ell">{name}</strong>
+                        <span className="sp-time num" style={{ color: waitColor }}>
+                          {time}
+                        </span>
+                      </span>
+                      <span className="sp-subj-row">
+                        <span className="sp-ell sp-subj">{item.ticket.subject ?? 'Без темы'}</span>
+                        {mark ? <span className="sp-ai">{mark}</span> : null}
+                      </span>
+                      <span className="sp-ell sp-prev">{preview}</span>
+                    </span>
+                    {item.unread ? (
+                      <span className="sp-dot" aria-hidden="true">
+                        <span className="sr-only">Не прочитано</span>
+                      </span>
+                    ) : null}
+                  </>
+                );
+                if (picking) {
+                  const on = picked.has(item.ticket.id);
+                  return (
+                    <label key={item.ticket.id} className={on ? 'sp-item pick on' : 'sp-item pick'}>
+                      <input type="checkbox" className="sp-check" checked={on} onChange={() => togglePick(item.ticket.id)} />
+                      {body}
+                    </label>
+                  );
+                }
+                return (
+                  <button
+                    key={item.ticket.id}
+                    type="button"
+                    className="sp-item"
+                    aria-pressed={!single && item.ticket.id === selected}
+                    onClick={() => pick(item.ticket.id)}
+                  >
+                    {body}
+                  </button>
+                );
+              })}
+              {listError ? (
+                <p className="sp-empty err" role="alert">
+                  {listError}
+                </p>
+              ) : null}
+              {cursor ? (
+                <button ref={moreRef} type="button" className="sp-more hov" onClick={() => void loadMore()} disabled={loadingMore}>
+                  {loadingMore ? 'Загружаем…' : 'Показать ещё'}
+                </button>
+              ) : null}
+            </div>
+          </section>
+        ) : null}
+
+        {showThread ? (
+          <section aria-label="Переписка" className="sp-sec sp-thread">
+            {!thread && !threadError ? <p className="sp-empty">{selected ? 'Загружаем переписку…' : 'Выберите обращение слева'}</p> : null}
+            {threadError ? (
+              <div className="sp-empty">
+                <p className="err" role="alert">
+                  {threadError}
+                </p>
+                {single && !phone ? (
+                  <Link to={listHref} className="sp-open">
+                    Все обращения
+                  </Link>
+                ) : null}
+              </div>
+            ) : null}
+            {thread && state ? (
+              <>
+                <div className="sp-thead">
+                  {single && !phone ? (
+                    <Link to={listHref} className="sp-back hov" aria-label="Все обращения">
+                      <Icon name="chevron-left" size={20} stroke={2} />
+                    </Link>
+                  ) : null}
+                  <div className="sp-col sp-title">
+                    <h2 className="sp-h2">{thread.ticket.subject ?? 'Без темы'}</h2>
+                    {phone ? null : (
+                      <span className="muted sp-ell">
+                        {who}
+                        {handle && handle !== who ? ` · ${handle}` : ''}
+                      </span>
+                    )}
+                  </div>
+                  <span className="sp-state" style={{ color: state.color }}>
+                    <span aria-hidden="true" className="sp-state-dot" style={{ background: state.color }} />
+                    {state.text}
                   </span>
-                  <div className="sp-delete-btns">
-                    <button type="button" className="b34 on-surface" onClick={() => void removeTicket()} disabled={sending}>
-                      Удалить обращение
+                  <span className="sp-thead-btns">
+                    {phone ? null : (
+                      <button type="button" className="b38 hov sp-info" aria-expanded={asideOpen} onClick={() => setAsideOpen(!asideOpen)}>
+                        Клиент
+                      </button>
+                    )}
+                    <button type="button" className="b38 hov" onClick={() => void toggleClosed()}>
+                      {thread.ticket.status === 'closed' ? 'Открыть снова' : 'Закрыть'}
                     </button>
-                    <button type="button" className="b34 on-surface" onClick={() => setAskDelete(false)} disabled={sending}>
-                      Отменить
+                    <button type="button" className="b38 hov" aria-expanded={askDelete} onClick={() => setAskDelete(!askDelete)}>
+                      Удалить
                     </button>
+                  </span>
+                </div>
+                {askDelete ? (
+                  <div role="status" className="sp-confirm sp-delete">
+                    <span>
+                      <strong>Удалить обращение?</strong> Переписка и файлы удалятся без возможности вернуть.
+                    </span>
+                    <div className="sp-delete-btns">
+                      <button type="button" className="b34 on-surface" onClick={() => void removeTicket()} disabled={sending}>
+                        Удалить обращение
+                      </button>
+                      <button type="button" className="b34 on-surface" onClick={() => setAskDelete(false)} disabled={sending}>
+                        Отменить
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+                <div className="sp-feed" ref={feedRef}>
+                  {thread.messages.map((m, index) => {
+                    const prev = thread.messages[index - 1];
+                    const handoffHere = handoff && handoffIndex === index;
+                    const newDay = !prev || new Date(prev.created_at).toDateString() !== new Date(m.created_at).toDateString();
+                    const mine = m.author === 'support' || m.author === 'ai';
+                    const author =
+                      m.author === 'support'
+                        ? m.admin_id === me.admin.admin_id
+                          ? 'вы'
+                          : m.admin_id && adminEmail.get(m.admin_id)
+                            ? (adminEmail.get(m.admin_id) ?? '').split('@')[0]
+                            : 'поддержка'
+                        : m.author === 'ai'
+                          ? 'ИИ-помощник'
+                          : '';
+                    const fresh = (minutesSince(m.created_at) ?? 99) < 1;
+                    const stamp = `${fresh ? 'сейчас' : timeHM(m.created_at)}${author ? ` · ${author}` : ''}`;
+                    return (
+                      <div key={`${m.created_at}-${index}`} className="sp-msg-wrap">
+                        {handoffHere ? <span className="sp-day">{handoff}</span> : null}
+                        {newDay ? (
+                          <span className="sp-day">
+                            {dayLabel(m.created_at)}
+                            {index === 0 && CHANNEL_WORD[thread.ticket.channel] ? ` · ${CHANNEL_WORD[thread.ticket.channel]}` : ''}
+                          </span>
+                        ) : null}
+                        {m.author === 'system' ? (
+                          <span className="sp-day">{m.body}</span>
+                        ) : (
+                          <div className={m.author === 'ai' ? 'sp-msg mine ai' : mine ? 'sp-msg mine' : 'sp-msg'}>
+                            {m.body ? <div className="sp-bubble">{m.body}</div> : null}
+                            <MessageFiles files={m.attachments} base={FILES} prefix="sp" />
+                            <span className="sp-stamp">{stamp}</span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                  {handoff && handoffIndex !== null && handoffIndex >= thread.messages.length ? <span className="sp-day">{handoff}</span> : null}
+                </div>
+                <div className="sp-reply">
+                  {thread.ai?.state === 'active' && thread.ticket.status === 'open' ? (
+                    <p className="sp-ai-note">Сейчас отвечает ИИ. Если ответите сами, ИИ в этом обращении замолчит.</p>
+                  ) : null}
+                  <div role="group" aria-label="Шаблоны ответов" className="sp-templates">
+                    {TEMPLATES.map(([label, text]) => (
+                      <button key={label} type="button" className="hov" onClick={() => setReply(text)}>
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  <label className="sr-only" htmlFor="sp-reply">
+                    Ответ клиенту
+                  </label>
+                  <textarea
+                    id="sp-reply"
+                    className="sp-field"
+                    rows={3}
+                    value={reply}
+                    maxLength={4000}
+                    onChange={(e) => setReply(e.target.value)}
+                    placeholder={
+                      thread.ticket.channel === 'bot'
+                        ? 'Ответ уйдёт клиенту в Telegram'
+                        : thread.ticket.channel === 'miniapp'
+                          ? 'Ответ появится в мини-приложении и придёт клиенту в Telegram'
+                          : me.menu.some((m) => m.module === 'mail')
+                            ? 'Ответ уйдёт клиенту в кабинет и на почту'
+                            : 'Ответ появится у клиента в кабинете'
+                    }
+                    disabled={sending}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                        void send();
+                      }
+                    }}
+                    onPaste={(e) => {
+                      if (files.enabled && e.clipboardData.files.length) {
+                        e.preventDefault();
+                        files.add(e.clipboardData.files);
+                      }
+                    }}
+                  />
+                  <DraftList files={files} prefix="sp" disabled={sending} />
+                  {sendError ? (
+                    <p className="err" role="alert">
+                      {sendError}
+                    </p>
+                  ) : null}
+                  <div className="sp-send">
+                    {thread.ticket.status === 'open' ? (
+                      <label className="tf-check">
+                        <input type="checkbox" checked={closeAfter} onChange={() => setCloseAfter(!closeAfter)} disabled={sending} />
+                        Закрыть после ответа
+                      </label>
+                    ) : (
+                      <span />
+                    )}
+                    <span className="sp-send-side">
+                      <AttachButton files={files} className="sp-clip hov" disabled={sending} />
+                      <button type="button" className="btn-main btn" onClick={() => void send()} disabled={sending || !canSend} style={{ height: 42 }}>
+                        {sending ? 'Отправляем…' : 'Отправить'}
+                      </button>
+                    </span>
                   </div>
                 </div>
-              ) : null}
-              <div className="sp-feed" ref={feedRef}>
-                {thread.messages.map((m, index) => {
-                  const prev = thread.messages[index - 1];
-                  const handoffHere = handoff && handoffIndex === index;
-                  const newDay = !prev || new Date(prev.created_at).toDateString() !== new Date(m.created_at).toDateString();
-                  const mine = m.author === 'support' || m.author === 'ai';
-                  const who =
-                    m.author === 'support'
-                      ? m.admin_id === me.admin.admin_id
-                        ? 'вы'
-                        : m.admin_id && adminEmail.get(m.admin_id)
-                          ? (adminEmail.get(m.admin_id) ?? '').split('@')[0]
-                          : 'поддержка'
-                      : m.author === 'ai'
-                        ? 'ИИ-помощник'
-                        : '';
-                  const fresh = (minutesSince(m.created_at) ?? 99) < 1;
-                  const stamp = `${fresh ? 'сейчас' : timeHM(m.created_at)}${who ? ` · ${who}` : ''}`;
-                  return (
-                    <div key={`${m.created_at}-${index}`} className="sp-msg-wrap">
-                      {handoffHere ? <span className="sp-day">{handoff}</span> : null}
-                      {newDay ? (
-                        <span className="sp-day">
-                          {dayLabel(m.created_at)}
-                          {index === 0 && CHANNEL_WORD[thread.ticket.channel] ? ` · ${CHANNEL_WORD[thread.ticket.channel]}` : ''}
-                        </span>
-                      ) : null}
-                      {m.author === 'system' ? (
-                        <span className="sp-day">{m.body}</span>
-                      ) : (
-                        <div className={m.author === 'ai' ? 'sp-msg mine ai' : mine ? 'sp-msg mine' : 'sp-msg'}>
-                          {m.body ? <div className="sp-bubble">{m.body}</div> : null}
-                          <MessageFiles files={m.attachments} base={FILES} prefix="sp" />
-                          <span className="sp-stamp">{stamp}</span>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-                {handoff && handoffIndex !== null && handoffIndex >= thread.messages.length ? <span className="sp-day">{handoff}</span> : null}
-              </div>
-              <div className="sp-reply">
-                {thread.ai?.state === 'active' && thread.ticket.status === 'open' ? (
-                  <p className="sp-ai-note">Сейчас отвечает ИИ. Если ответите сами, ИИ в этом обращении замолчит.</p>
-                ) : null}
-                <div role="group" aria-label="Шаблоны ответов" className="sp-templates">
-                  {TEMPLATES.map(([label, text]) => (
-                    <button key={label} type="button" className="hov" onClick={() => setReply(text)}>
-                      {label}
-                    </button>
-                  ))}
-                </div>
-                <label className="sr-only" htmlFor="sp-reply">
-                  Ответ клиенту
-                </label>
-                <textarea
-                  id="sp-reply"
-                  className="sp-field"
-                  rows={3}
-                  value={reply}
-                  maxLength={4000}
-                  onChange={(e) => setReply(e.target.value)}
-                  placeholder={
-                    thread.ticket.channel === 'bot'
-                      ? 'Ответ уйдёт клиенту в Telegram'
-                      : thread.ticket.channel === 'miniapp'
-                        ? 'Ответ появится в мини-приложении и придёт клиенту в Telegram'
-                        : me.menu.some((m) => m.module === 'mail')
-                        ? 'Ответ уйдёт клиенту в кабинет и на почту'
-                        : 'Ответ появится у клиента в кабинете'
-                  }
-                  disabled={sending}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-                      void send();
-                    }
-                  }}
-                  onPaste={(e) => {
-                    if (files.enabled && e.clipboardData.files.length) {
-                      e.preventDefault();
-                      files.add(e.clipboardData.files);
-                    }
-                  }}
-                />
-                <DraftList files={files} prefix="sp" disabled={sending} />
-                {sendError ? (
-                  <p className="err" role="alert">
-                    {sendError}
-                  </p>
-                ) : null}
-                <div className="sp-send">
-                  {thread.ticket.status === 'open' ? (
-                    <label className="tf-check">
-                      <input type="checkbox" checked={closeAfter} onChange={() => setCloseAfter(!closeAfter)} disabled={sending} />
-                      Закрыть после ответа
-                    </label>
-                  ) : (
-                    <span />
-                  )}
-                  <span className="sp-send-side">
-                    <AttachButton files={files} className="sp-clip hov" disabled={sending} />
-                    <button type="button" className="btn-main btn" onClick={() => void send()} disabled={sending || !canSend} style={{ height: 42 }}>
-                      {sending ? 'Отправляем…' : 'Отправить'}
-                    </button>
-                  </span>
-                </div>
-              </div>
-            </>
-          ) : null}
-        </section>
+              </>
+            ) : null}
+          </section>
+        ) : null}
 
-        {thread ? <ClientAside key={thread.ticket.client_id} clientId={thread.ticket.client_id} /> : <aside className="sp-sec sp-aside" aria-label="Клиент" />}
+        {showThread && thread ? (
+          <ClientAside key={thread.ticket.client_id} clientId={thread.ticket.client_id} open={asideOpen} onHide={() => setAsideOpen(false)} onPerson={setPerson} />
+        ) : !single ? (
+          <aside className="sp-sec sp-aside" aria-label="Клиент" />
+        ) : null}
+      </div>
+
+      {bulk === 'picked' ? <ClosePicked ids={pickedIds} onCancel={() => setBulk(null)} onDone={afterBulk} /> : null}
+      {bulk === 'old' ? <CloseOld onCancel={() => setBulk(null)} onDone={afterBulk} /> : null}
+    </div>
+  );
+}
+
+function ClosePicked({ ids, onCancel, onDone }: { ids: number[]; onCancel: () => void; onDone: (closed: number) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const run = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const data = await api<{ closed: number }>(CLOSE_MANY, { method: 'POST', body: { ids } });
+      onDone(data.closed);
+    } catch (err) {
+      setError(failText(err, 'Не получилось закрыть'));
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="dialog-back" role="presentation" onClick={() => (busy ? undefined : onCancel())}>
+      <div className="dialog" role="dialog" aria-modal="true" aria-labelledby="sp-picked-h" onClick={(e) => e.stopPropagation()}>
+        <h2 id="sp-picked-h">Закрыть отмеченные: {groupDigits(ids.length)}</h2>
+        <p className="muted">Клиентам ничего не придёт. В журнал действий попадёт одна запись. Закрытое обращение можно открыть снова в списке «Закрытые».</p>
+        {error ? (
+          <p className="err" role="alert">
+            {error}
+          </p>
+        ) : null}
+        <div className="dialog-actions">
+          <button type="button" className="btn-main btn" onClick={() => void run()} disabled={busy || ids.length === 0}>
+            {busy ? 'Закрываем…' : `Закрыть ${groupDigits(ids.length)}`}
+          </button>
+          <button type="button" className="btn-line hov" onClick={onCancel} disabled={busy}>
+            Отменить
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CloseOld({ onCancel, onDone }: { onCancel: () => void; onDone: (closed: number) => void }) {
+  const [text, setText] = useState('30');
+  const [found, setFound] = useState<number | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const daysValue = readDays(text);
+
+  useEffect(() => {
+    setFound(null);
+    setError(null);
+    if (daysValue === null) {
+      return;
+    }
+    let alive = true;
+    const timer = window.setTimeout(() => {
+      api<{ count: number }>(`${CLOSE_MANY}?waiting_days=${daysValue}`)
+        .then((data) => {
+          if (alive) {
+            setFound(data.count);
+          }
+        })
+        .catch((err: unknown) => {
+          if (alive) {
+            setError(failText(err, 'Не получилось посчитать'));
+          }
+        });
+    }, 250);
+    return () => {
+      alive = false;
+      window.clearTimeout(timer);
+    };
+  }, [daysValue]);
+
+  const run = async () => {
+    if (daysValue === null) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const data = await api<{ closed: number }>(CLOSE_MANY, { method: 'POST', body: { waiting_days: daysValue } });
+      onDone(data.closed);
+    } catch (err) {
+      setError(failText(err, 'Не получилось закрыть'));
+      setBusy(false);
+    }
+  };
+
+  const line =
+    daysValue === null
+      ? `Укажите число от 1 до ${groupDigits(DAYS_MAX)}`
+      : found === null
+        ? 'Считаем…'
+        : found === 0
+          ? 'Таких обращений нет'
+          : `Закроется ${count(found, 'обращение', 'обращения', 'обращений')}`;
+
+  return (
+    <div className="dialog-back" role="presentation" onClick={() => (busy ? undefined : onCancel())}>
+      <div className="dialog" role="dialog" aria-modal="true" aria-labelledby="sp-old-h" onClick={(e) => e.stopPropagation()}>
+        <h2 id="sp-old-h">Закрыть старые обращения</h2>
+        <p className="muted">
+          Закроются обращения, которые ждут ответа дольше указанного срока, если клиент за это время ничего не писал. Клиентам ничего не придёт. В журнал действий попадёт одна запись.
+        </p>
+        <label className="sp-days-row">
+          <span>Ждут ответа дольше, дней</span>
+          <input
+            className="fld"
+            inputMode="numeric"
+            value={text}
+            maxLength={4}
+            aria-invalid={daysValue === null}
+            onChange={(e) => setText(e.target.value.replace(/\D/g, ''))}
+            disabled={busy}
+            autoFocus
+          />
+        </label>
+        <p role="status" className="sp-found">
+          {line}
+        </p>
+        {error ? (
+          <p className="err" role="alert">
+            {error}
+          </p>
+        ) : null}
+        <div className="dialog-actions">
+          <button type="button" className="btn-main btn" onClick={() => void run()} disabled={busy || daysValue === null || !found}>
+            {busy ? 'Закрываем…' : found ? `Закрыть ${groupDigits(found)}` : 'Закрыть'}
+          </button>
+          <button type="button" className="btn-line hov" onClick={onCancel} disabled={busy}>
+            Отменить
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -526,7 +988,9 @@ function shortWhen(iso: string): string {
 
 type Ask = '' | 'reset' | 'devices' | 'link';
 
-function ClientAside({ clientId }: { clientId: number }) {
+type Person = { id: number; name: string; handle: string };
+
+function ClientAside({ clientId, open, onHide, onPerson }: { clientId: number; open: boolean; onHide: () => void; onPerson: (person: Person) => void }) {
   const { can } = useSession();
   const writable = can('clients_write');
   const [card, setCard] = useState<ClientCard | null>(null);
@@ -560,8 +1024,40 @@ function ClientAside({ clientId }: { clientId: number }) {
     void load();
   }, [load]);
 
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onHide();
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [open, onHide]);
+
+  useEffect(() => {
+    if (card) {
+      const tg = telegramOf(card);
+      const email = emailOf(card);
+      onPerson({ id: clientId, name: personName(card), handle: tg?.meta?.username ? `@${tg.meta.username}` : (email?.value ?? '') });
+    }
+  }, [card, clientId, onPerson]);
+
+  const asideClass = open ? 'sp-sec sp-aside open' : 'sp-sec sp-aside';
+  const hide = (
+    <button type="button" className="sp-aside-x hov" onClick={onHide} aria-label="Скрыть данные клиента">
+      <Icon name="close" size={18} stroke={2} />
+    </button>
+  );
+
   if (!card) {
-    return <aside className="sp-sec sp-aside" aria-label="Клиент" />;
+    return (
+      <aside className={asideClass} aria-label="Клиент">
+        {hide}
+      </aside>
+    );
   }
   const sub = liveSubscriptions(card)[0] ?? null;
   const live = details?.subscription ?? sub;
@@ -646,7 +1142,8 @@ function ClientAside({ clientId }: { clientId: number }) {
     ) : null;
 
   return (
-    <aside className="sp-sec sp-aside" aria-label="Клиент">
+    <aside className={asideClass} aria-label="Клиент">
+      {hide}
       <div className="sp-person">
         <Avatar id={card.client.id} name={name} className="sp-ava big" retry />
         <span className="sp-col" style={{ minWidth: 0 }}>

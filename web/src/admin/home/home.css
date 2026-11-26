@@ -253,26 +253,47 @@
 
 .hm-node {
   display: flex;
-  align-items: baseline;
-  gap: 12px;
-  padding: 12px 0;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0;
   border-top: 1px solid var(--line);
+  white-space: nowrap;
 }
 
 .hm-code {
-  flex: 0 0 44px;
+  flex: 0 1 auto;
+  min-width: 48px;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-weight: 700;
 }
 
 .hm-city {
-  flex: 1;
-  min-width: 0;
-  white-space: nowrap;
+  flex: 0 100 auto;
+  min-width: 18px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 6px;
+  height: 20px;
   overflow: hidden;
-  text-overflow: ellipsis;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.hm-node-flag {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+}
+
+.hm-node-flag img.country-flag {
+  margin-right: 0;
 }
 
 .hm-state {
+  flex: none;
+  margin-left: auto;
   text-align: right;
 }
 
@@ -424,7 +445,16 @@
   display: inline-flex;
   align-items: center;
   gap: 10px;
+  max-width: 100%;
+  min-width: 0;
   padding-right: 16px;
+  white-space: nowrap;
+}
+
+.hm-flow-item strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .hm-bar {
