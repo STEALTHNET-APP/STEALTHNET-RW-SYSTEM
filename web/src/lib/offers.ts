@@ -28,6 +28,21 @@ export function categoryOffers<T extends OfferLike>(offers: T[], categoryId: num
   return offers.filter((offer) => offer.category.id === categoryId);
 }
 
+export function flatOffers<T extends OfferLike>(offers: T[], terms: (offer: T) => string): T[] | null {
+  const [first] = offers;
+  if (!first || offers.length < 2 || offers.some((offer) => offer.periods.length !== 1)) {
+    return null;
+  }
+  if (new Set(offers.map((offer) => offer.periods[0]?.days)).size !== offers.length) {
+    return null;
+  }
+  const same = terms(first);
+  if (offers.some((offer) => terms(offer) !== same)) {
+    return null;
+  }
+  return offerCategories(offers).flatMap((category) => categoryOffers(offers, category.id));
+}
+
 export function offerById<T extends OfferLike>(offers: T[], tariffId: number | null | undefined): T | null {
   return offers.find((offer) => offer.tariff.id === tariffId) ?? null;
 }

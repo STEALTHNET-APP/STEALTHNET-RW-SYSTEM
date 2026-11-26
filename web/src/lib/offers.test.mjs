@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { categoryOffers, categoryPick, firstPick, offerCategories, renewsCurrent, tariffPick, targetPick } from './offers.ts';
+import { categoryOffers, categoryPick, firstPick, flatOffers, offerCategories, renewsCurrent, tariffPick, targetPick } from './offers.ts';
 
 const period = (id, months) => ({ period_id: id, months, days: months * 30 });
 const offer = (id, category, included, max, periods) => ({
@@ -79,4 +79,21 @@ test('смену тарифа внутри категории сервер сч�
   assert.equal(renewsCurrent(second, second), true);
   assert.equal(renewsCurrent(second, other), false);
   assert.equal(renewsCurrent(null, second), null);
+});
+
+test('тарифы с одним сроком показываются сразу все, если условия одинаковые', () => {
+  const single = (id, category, sort, days) => ({
+    category: { id: category, name: `Категория ${category}`, sort },
+    tariff: { id, name: `Тариф ${id}`, devices: { included: 7, extra: null } },
+    periods: [{ period_id: id * 10, months: Math.max(1, Math.round(days / 30)), days }],
+  });
+  const week = single(1, 10, 1, 7);
+  const month = single(2, 20, 2, 30);
+  const year = single(3, 30, 3, 365);
+  const terms = () => 'семь устройств';
+  assert.deepEqual(flatOffers([year, week, month], terms).map((o) => o.tariff.id), [1, 2, 3]);
+  assert.equal(flatOffers([week], terms), null);
+  assert.equal(flatOffers([week, first], terms), null);
+  assert.equal(flatOffers([week, single(4, 40, 4, 7)], terms), null);
+  assert.equal(flatOffers([week, month], (o) => (o.tariff.id === 1 ? 'одно устройство' : 'семь устройств')), null);
 });

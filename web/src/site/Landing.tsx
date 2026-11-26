@@ -18,7 +18,7 @@ import { SiteHeader } from './SiteHeader';
 import { botLink, storedReferral } from '../lib/referral';
 import { reportVisit, storedUtm } from '../lib/utm';
 import { startParam } from '../lib/utmTags';
-import { categoryOffers, categoryPick, offerById, offerCategories, SHORT_PERIOD_DAYS, tariffPick, type OfferPick } from '../lib/offers';
+import { categoryOffers, categoryPick, flatOffers, offerById, offerCategories, SHORT_PERIOD_DAYS, tariffPick, type OfferPick } from '../lib/offers';
 import {
   appsNote,
   CTA_BUTTONS,
@@ -218,7 +218,8 @@ function LandingPage({ mode }: { mode: Mode }) {
     api<PublicCatalog>('/api/public/catalog')
       .then((c) => {
         setCatalog(c);
-        setTariffId(c.tariffs[0]?.tariff.id ?? null);
+        const flat = flatOffers(c.tariffs, everywhere);
+        setTariffId((flat ? flat[Math.min(1, flat.length - 1)] : c.tariffs[0])?.tariff.id ?? null);
       })
       .catch(() => setCatalog({ currency: site.currency, tariffs: [] }));
   }, [site.currency]);
@@ -452,16 +453,21 @@ function LandingPage({ mode }: { mode: Mode }) {
           return null;
         }
         const plansText = text(block.text, '');
-        const salePromo = promoOf(offer.periods);
+        const flat = flatOffers(offers, everywhere);
+        const cards = (flat ?? [offer]).flatMap((o) => (flat ? o.periods.slice(0, 1) : o.periods).map((p) => ({ offer: o, period: p })));
+        const head = flat?.[0] ?? offer;
+        const description = flat ? (flat.every((o) => o.tariff.description === head.tariff.description) ? head.tariff.description : '') : offer.tariff.description;
+        const chosen = flat ? (cards.find((c) => c.offer.tariff.id === offer.tariff.id) ?? null) : selected ? { offer, period: selected } : null;
+        const salePromo = promoOf(cards.map((c) => c.period));
         return (
           <section key="plans" id="plans" aria-labelledby="plans-h" className="ld-sec ld-plans" data-block="plans">
             <div className="ld-plans-head">
               <div>
                 <h2 id="plans-h">{text(block.title, t(DEFAULT_TEXT.plansTitle)) || t(DEFAULT_TEXT.plansTitle)}</h2>
                 {plansText ? <p className="ld-ink2 ld-plans-text">{plansText}</p> : null}
-                {!phone && offer.tariff.description ? <p className="ld-ink2">{offer.tariff.description}</p> : null}
+                {!phone && description ? <p className="ld-ink2">{description}</p> : null}
               </div>
-              {categories.length > 1 || siblings.length > 1 ? (
+              {!flat && (categories.length > 1 || siblings.length > 1) ? (
                 <div className="ld-plans-pick">
                   {categories.length > 1 ? (
                     <div role="group" aria-label={t('Тип тарифа')} className={categories.length > 3 ? 'ld-seg many' : 'ld-seg'}>
@@ -485,15 +491,22 @@ function LandingPage({ mode }: { mode: Mode }) {
               ) : null}
             </div>
             <p className={phone ? 'ld-ink2' : 'ld-strong'}>
-              {phone && offer.tariff.description ? `${offer.tariff.description}. ` : ''}
-              {everywhere(offer)}
+              {phone && description ? `${description}. ` : ''}
+              {everywhere(head)}
             </p>
             {salePromo ? <p className="ld-sale">{promoTitle(salePromo)}</p> : null}
             {phone ? (
               <>
                 <div role="radiogroup" aria-label={t('Срок подписки')} className="ld-terms">
-                  {offer.periods.map((p) => (
-                    <button key={p.period_id} type="button" role="radio" aria-checked={selected?.period_id === p.period_id} className="ld-term" onClick={() => setTerm(p.period_id)}>
+                  {cards.map(({ offer: o, period: p }) => (
+                    <button
+                      key={`${o.tariff.id}:${p.period_id}`}
+                      type="button"
+                      role="radio"
+                      aria-checked={chosen?.offer.tariff.id === o.tariff.id && chosen.period.period_id === p.period_id}
+                      className="ld-term"
+                      onClick={() => (flat ? showPick({ tariffId: o.tariff.id, periodId: p.period_id, devices: o.tariff.devices.included }) : setTerm(p.period_id))}
+                    >
                       <span className="ld-dot" aria-hidden="true" />
                       <span className="ld-term-name">{termName(p.months, p.days)}</span>
                       <span className={p.promotion ? 'ld-term-price num sale' : 'ld-term-price num'}>
@@ -513,16 +526,16 @@ function LandingPage({ mode }: { mode: Mode }) {
                     </button>
                   ))}
                 </div>
-                {selected ? (
-                  <Link to={`/cabinet/pay?tariff=${offer.tariff.id}&period=${selected.period_id}`} className="ld-btn big full">
-                    {t('Купить за {price}', { price: money(selected.price) })}
+                {chosen ? (
+                  <Link to={`/cabinet/pay?tariff=${chosen.offer.tariff.id}&period=${chosen.period.period_id}`} className="ld-btn big full">
+                    {t('Купить за {price}', { price: money(chosen.period.price) })}
                   </Link>
                 ) : null}
               </>
             ) : (
-              <div className={offer.periods.length > 2 ? 'ld-grid cards' : 'ld-grid cards few'}>
-                {offer.periods.map((p, i) => (
-                  <div key={p.period_id} className="ld-card">
+              <div className={cards.length > 2 ? 'ld-grid cards' : 'ld-grid cards few'}>
+                {cards.map(({ offer: o, period: p }, i) => (
+                  <div key={`${o.tariff.id}:${p.period_id}`} className="ld-card">
                     <span className="ld-card-name">{termName(p.months, p.days)}</span>
                     {p.promotion ? (
                       <span className="ld-card-old">
@@ -537,9 +550,9 @@ function LandingPage({ mode }: { mode: Mode }) {
                       </span>
                     ) : null}
                     <Link
-                      to={`/cabinet/pay?tariff=${offer.tariff.id}&period=${p.period_id}`}
+                      to={`/cabinet/pay?tariff=${o.tariff.id}&period=${p.period_id}`}
                       className={i === 1 ? 'ld-btn mid' : 'ld-btn2 mid'}
-                      aria-label={t('Выбрать: {plan}, {period}', { plan: offer.tariff.name, period: termName(p.months, p.days) })}
+                      aria-label={t('Выбрать: {plan}, {period}', { plan: o.tariff.name, period: termName(p.months, p.days) })}
                     >
                       {t('Выбрать')}
                     </Link>
