@@ -35,15 +35,7 @@ function fromTerms(state: unknown): boolean {
   return typeof state === 'object' && state !== null && (state as { terms?: unknown }).terms === true;
 }
 
-function methodStars(m: CheckoutMethod): number | null {
-  const a = m.amount;
-  if (typeof a === 'number') {
-    return a;
-  }
-  return a && typeof a === 'object' && typeof a.stars === 'number' ? a.stars : null;
-}
-
-function methodNote(m: CheckoutMethod, balance: Money): string {
+function methodNote(m: CheckoutMethod, balance: Money, starsTotal: number | null): string {
   if (m.unavailable?.type === 'insufficient_balance') {
     return t('Не хватает: на балансе {amount}', { amount: money(m.unavailable.balance) });
   }
@@ -53,8 +45,7 @@ function methodNote(m: CheckoutMethod, balance: Money): string {
   if (m.kind === 'balance') {
     return t('На балансе {amount}', { amount: money(balance) });
   }
-  const amount = m.kind === 'stars' ? methodStars(m) : null;
-  return amount !== null ? t('{stars}, оплата в Telegram', { stars: stars(amount) }) : m.hint;
+  return m.kind === 'stars' && starsTotal !== null ? t('{stars}, оплата в Telegram', { stars: stars(starsTotal) }) : m.hint;
 }
 
 export function MiniPlans() {
@@ -372,7 +363,7 @@ export function MiniPlans() {
           {methods.length > 0 ? (
             <div role="radiogroup" aria-label={t('Способ оплаты')} className="mn-terms">
               {methods.map((m) => {
-                const hint = methodNote(m, me.balance);
+                const hint = methodNote(m, me.balance, q?.stars?.total ?? null);
                 return (
                   <button key={methodKey(m)} type="button" role="radio" aria-checked={chosen === m} className="mn-term mn-method press" disabled={!!m.unavailable} onClick={() => setMethod(methodKey(m))}>
                     <span className="mn-dot" aria-hidden="true" />
