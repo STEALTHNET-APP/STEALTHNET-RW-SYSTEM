@@ -55,6 +55,8 @@ pub struct CheckoutMethod {
     pub hint: String,
     pub amount: Option<Amount>,
     pub unavailable: Option<Unavailable>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub needs_email: bool,
 }
 
 pub fn plain_methods(methods: Vec<CheckoutMethod>) -> Vec<CheckoutMethod> {
@@ -446,6 +448,7 @@ impl ProviderRegistry {
                                 hint: crate::english::shown(method.hint),
                                 amount: Some(ctx.total.into()),
                                 unavailable: None,
+                                needs_email: provider.needs_email(config, Some(method.code)),
                             });
                         }
                         continue;
@@ -475,10 +478,13 @@ impl ProviderRegistry {
                         hint,
                         amount: Some(ctx.total.into()),
                         unavailable,
+                        needs_email: false,
                     });
                     continue;
                 }
             };
+            let needs_email = provider.kind() == ProviderKind::External
+                && provider.needs_email(state.map_or(&empty, |state| &state.config), None);
             methods.push(CheckoutMethod {
                 provider: provider.id(),
                 method: None,
@@ -487,6 +493,7 @@ impl ProviderRegistry {
                 hint,
                 amount,
                 unavailable,
+                needs_email,
             });
         }
         methods.extend(balance_method);

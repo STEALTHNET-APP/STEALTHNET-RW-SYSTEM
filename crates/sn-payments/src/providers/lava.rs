@@ -1236,6 +1236,10 @@ impl PaymentProvider for Lava {
         method == Some(RECURRING_METHOD) || offer_id(config).is_some()
     }
 
+    fn needs_email(&self, _config: &ProviderConfig, _method: Option<&str>) -> bool {
+        true
+    }
+
     fn validate_settings(&self, config: &ProviderConfig) -> PaymentResult<()> {
         util::require_fields(&self.settings_schema(), config)?;
         if config.get("offer_id").is_some() && offer_id(config).is_none() {
@@ -3448,6 +3452,8 @@ mod tests {
         assert!(!lava.method_ready(&only, None));
         assert!(lava.method_ready(&settings(), Some("card")));
         assert!(lava.method_ready(&settings(), None));
+        assert!(lava.needs_email(&settings(), Some("card")));
+        assert!(lava.needs_email(&only, Some(RECURRING_METHOD)));
         for bare in [
             subscriptions_only_settings(json!([])),
             config(&[

@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sn_domain::client::{
     Client, ClientStatus, Identity, IdentityKind, Locale, NewIdentity, RegistrationSource,
-    TelegramProfile,
+    TelegramProfile, normalize_identity,
 };
 use sn_domain::events::DomainEvent;
 use sn_domain::ids::{
@@ -41,6 +41,7 @@ pub(crate) use payments::method_title;
 pub use payments::{ClientPayment, ClientPayments, Purchase};
 
 pub const MAX_BLOCK_REASON: usize = 500;
+pub const RECEIPT_EMAIL_INVALID: &str = "receipt.email_invalid";
 pub const MAX_MESSAGE: usize = 3_500;
 const MESSAGE_TEMPLATE: &str = "text";
 
@@ -265,6 +266,7 @@ pub struct ClientCard {
     pub bot_available: bool,
     pub two_factor: crate::two_factor::TwoFactor,
     pub multi_subscriptions: bool,
+    pub receipt_email: Option<String>,
 }
 
 const BLOCKED_REASON: &str = "клиент заблокирован";
@@ -486,7 +488,9 @@ impl<'a> ClientOps<'a> {
             .collect();
         let stats = conn.clients().card_stats(id, currency).await?;
         let two_factor = crate::two_factor::TwoFactor::of(conn.clients().totp(id).await?.as_ref());
+        let receipt_email = conn.clients().receipt_email(id).await?;
         Ok(ClientCard {
+            receipt_email,
             client,
             identities,
             balance,
@@ -506,6 +510,39 @@ impl<'a> ClientOps<'a> {
             two_factor,
             multi_subscriptions: self.services.settings().multi_subscriptions,
         })
+    }
+
+    pub async fn set_receipt_email(
+        &self,
+        id: ClientId,
+        raw: &str,
+        actor: Actor,
+    ) -> ServiceResult<String> {
+        let email = normalize_identity(IdentityKind::Email, raw).map_err(|_| {
+            ServiceError::rejected(
+                RECEIPT_EMAIL_INVALID,
+                "Похоже, в почте опечатка: нужен адрес вида name@example.com",
+            )
+        })?;
+        let mut tx = self.services.store().begin().await?;
+        tx.clients().get(id).await?;
+        let before = tx.clients().receipt_email(id).await?;
+        if before.as_deref() != Some(email.as_str()) {
+            tx.clients().set_receipt_email(id, Some(&email)).await?;
+            tx.audit()
+                .record(&actor.audit(
+                    "client.receipt_email",
+                    "client",
+                    Some(id.0),
+                    serde_json::json!({
+                        "email": sn_domain::client::mask_email(&email),
+                        "changed": before.is_some(),
+                    }),
+                ))
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(email)
     }
 
     pub async fn set_note(

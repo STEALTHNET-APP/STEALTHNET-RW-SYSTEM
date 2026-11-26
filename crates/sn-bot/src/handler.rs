@@ -121,6 +121,7 @@ pub struct Turn<'a> {
     pub locale: Locale,
     pub secret_left: bool,
     pub repeat: bool,
+    pub data: Option<String>,
 }
 
 impl Turn<'_> {
@@ -337,6 +338,7 @@ async fn run_with(
         locale,
         secret_left,
         repeat,
+        data: None,
     };
     let screen = lang::scope(locale, process(&mut turn, action)).await?;
     if screen.spare {
@@ -669,6 +671,7 @@ async fn input(
         Awaiting::EmailProof => email::proof_entered(turn, client, text).await,
         Awaiting::EmailCode => email::code_entered(turn, client, text).await,
         Awaiting::SitePassword => email::password_entered(turn, client, text).await,
+        Awaiting::ReceiptEmail => buy::receipt_email_entered(turn, client, text).await,
     }
 }
 
@@ -676,9 +679,16 @@ pub fn id_arg(rest: &str) -> Option<i64> {
     rest.parse::<i64>().ok().filter(|id| *id > 0)
 }
 
-async fn callback(turn: &mut Turn<'_>, client: &Client, data: &str) -> Result<Screen, BotError> {
+pub(crate) async fn callback(
+    turn: &mut Turn<'_>,
+    client: &Client,
+    data: &str,
+) -> Result<Screen, BotError> {
     let (head, rest) = data.split_once(':').unwrap_or((data, ""));
     turn.session.awaiting = None;
+    turn.session.receipt_resume = None;
+    turn.session.receipt_back = None;
+    turn.data = Some(data.to_string());
     let screen = match head {
         "subs" => account::subscriptions(turn, client).await?,
         "sub" => match id_arg(rest) {
@@ -756,6 +766,7 @@ async fn callback(turn: &mut Turn<'_>, client: &Client, data: &str) -> Result<Sc
             buy::summary(turn, client).await?
         }
         "pay" => buy::pay(turn, client, rest).await?,
+        "rcpt" => buy::change_receipt_email(turn, client, rest).await?,
         "x" => extras::entry(turn, client, rest).await?,
         "pc" => match id_arg(rest) {
             Some(id) => extras::activate_days(turn, client, id).await?,

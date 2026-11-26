@@ -2483,3 +2483,32 @@ a.cb-card[id] {
 .cb-term-old s {
   color: var(--muted);
 }
+
+.cb-receipt {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 4px 0 4px;
+}
+
+.cb-receipt-label {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.cb-receipt input {
+  height: 44px;
+  padding: 0 12px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-weight: 500;
+  box-sizing: border-box;
+  width: 100%;
+}
+
+.cb-receipt input[aria-invalid='true'] {
+  border-color: var(--bad);
+}

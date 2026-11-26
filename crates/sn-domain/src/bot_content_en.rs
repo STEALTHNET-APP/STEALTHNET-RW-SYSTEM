@@ -167,6 +167,15 @@ pub fn default(key: &str) -> Option<&'static str> {
         "buy.btn.promo" => "Enter a promo code",
         "buy.btn.promo_remove" => "Remove promo code",
         "buy.ask_promo" => "Enter your promo code:",
+        "buy.email_ask" => {
+            "{provider} needs an email for this payment: the receipt and payment emails will go there. Send it in one message."
+        }
+        "buy.email_change_ask" => "Send the new email in one message: receipts will go there.",
+        "buy.email_invalid" => {
+            "The email seems to have a typo. Send an address like name@example.com."
+        }
+        "buy.email_line" => "The receipt will go to {email}",
+        "buy.btn.email_change" => "Change email",
         "buy.btn.promo_activate" => "Apply promo code",
         "buy.btn.back_to_payment" => "Back to checkout",
         "buy.btn.promo_other" => "Try another",

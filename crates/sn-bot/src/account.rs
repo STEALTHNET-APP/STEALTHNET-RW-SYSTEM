@@ -769,6 +769,9 @@ pub async fn topup_start(
     let Some(minor) = turn.session.topup_minor else {
         return balance(turn, client).await;
     };
+    if let Some(screen) = crate::buy::receipt_gate(turn, client, provider, method, "bal").await? {
+        return Ok(screen);
+    }
     let services = turn.services().clone();
     let content = services.bot_content_in(lang::current());
     let currency = services.settings().currency;

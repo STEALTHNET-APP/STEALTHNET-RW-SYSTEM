@@ -46,6 +46,7 @@ export type ClientMe = {
   two_factor: TwoFactor;
   payments_count?: number;
   email?: string | null;
+  receipt_email?: string | null;
   email_change?: boolean;
   email_unconfirmed?: boolean;
   has_password?: boolean;
@@ -109,6 +110,7 @@ export type CheckoutMethod = {
   hint: string;
   amount: { minor?: number; currency?: Currency; stars?: number } | number | null;
   unavailable: null | { type: 'insufficient_balance'; balance: Money; missing: Money } | { type: 'no_stars_price' };
+  needs_email?: boolean;
 };
 
 export type Quote = {

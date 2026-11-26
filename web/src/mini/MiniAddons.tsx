@@ -8,6 +8,7 @@ import { addonItem, addonLadder, daysText, doneText, firstKind, leftoverText, of
 import { BackHead, MiniSubSwitch, useMini } from './MiniApp';
 import { openExternal, webApp } from './telegram';
 import { methodKey } from '../lib/methods';
+import { ReceiptEmail, useReceiptEmail } from '../lib/receiptEmail';
 
 function failText(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : fallback;
@@ -15,6 +16,7 @@ function failText(err: unknown, fallback: string): string {
 
 export function MiniAddons() {
   const { me, view, reload } = useMini();
+  const receipt = useReceiptEmail(me);
   const [params] = useSearchParams();
   const [offer, setOffer] = useState<AddonsOffer | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -99,6 +101,10 @@ export function MiniAddons() {
     if (subscriptionId === null || !choice || !chosen) {
       return;
     }
+    const email = receipt.take(chosen);
+    if (email === false) {
+      return;
+    }
     setBusy(true);
     setError(null);
     setNote(null);
@@ -106,7 +112,7 @@ export function MiniAddons() {
     try {
       const res = await api<PayResult>('/api/client/items/checkout', {
         method: 'POST',
-        body: { item: addonItem(subscriptionId, choice), provider: chosen.provider, method: chosen.method ?? undefined },
+        body: { email: email ?? undefined, item: addonItem(subscriptionId, choice), provider: chosen.provider, method: chosen.method ?? undefined },
       });
       if (res.type === 'redirect') {
         if (inTelegramWallet) {
@@ -130,7 +136,9 @@ export function MiniAddons() {
         void load(subscriptionId, true);
       }, 1500);
     } catch (err) {
-      setError(failText(err, t('Оплата не началась')));
+      if (!receipt.refused(err)) {
+        setError(failText(err, t('Оплата не началась')));
+      }
     } finally {
       setBusy(false);
     }
@@ -283,6 +291,7 @@ export function MiniAddons() {
           </p>
         ) : null}
       </div>
+      {receipt.asks(chosen) ? <ReceiptEmail value={receipt.email} onChange={receipt.change} error={receipt.error} disabled={busy} mini /> : null}
       <button type="button" className="mn-main mn-paybtn press" onClick={() => void pay()} disabled={busy || !chosen || !q || !choice}>
         {busy ? t('Открываем оплату…') : inTelegramWallet ? t('Оплатить {amount} в Telegram', { amount: totalText }) : t('Оплатить {amount}', { amount: totalText })}
       </button>

@@ -367,6 +367,29 @@ impl<'c> ClientsRepo<'c> {
         Ok(())
     }
 
+    pub async fn receipt_email(&mut self, id: ClientId) -> StoreResult<Option<String>> {
+        Ok(sqlx::query_scalar::<_, Option<String>>(
+            "SELECT receipt_email FROM clients WHERE id = $1",
+        )
+        .bind(id.0)
+        .fetch_optional(&mut *self.conn)
+        .await?
+        .flatten())
+    }
+
+    pub async fn set_receipt_email(
+        &mut self,
+        id: ClientId,
+        email: Option<&str>,
+    ) -> StoreResult<()> {
+        sqlx::query("UPDATE clients SET receipt_email = $2 WHERE id = $1")
+            .bind(id.0)
+            .bind(email)
+            .execute(&mut *self.conn)
+            .await?;
+        Ok(())
+    }
+
     pub async fn set_locale(&mut self, id: ClientId, locale: Locale) -> StoreResult<()> {
         sqlx::query("UPDATE clients SET locale = $2 WHERE id = $1")
             .bind(id.0)

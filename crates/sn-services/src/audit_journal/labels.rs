@@ -110,6 +110,11 @@ pub const ACTIONS: &[ActionLabel] = &[
     a("client.deleted", "Клиент удалён", Area::Clients),
     a("client.note", "Изменена заметка о клиенте", Area::Clients),
     a(
+        "client.receipt_email",
+        "Указана почта для чеков",
+        Area::Clients,
+    ),
+    a(
         "client.message",
         "Отправлено сообщение в бот",
         Area::Clients,

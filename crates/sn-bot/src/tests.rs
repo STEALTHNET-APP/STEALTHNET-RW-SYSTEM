@@ -38,6 +38,7 @@ mod menu_mode;
 mod miniapp;
 mod photos;
 mod promotions;
+mod receipt_email;
 mod referral_login;
 mod referral_payouts;
 mod renewal_devices;

@@ -439,6 +439,10 @@ impl PaymentProvider for YooKassa {
         Some(self.api_base.clone())
     }
 
+    fn needs_email(&self, config: &ProviderConfig, _method: Option<&str>) -> bool {
+        matches!(code(config, "vat_code", VAT_CODES), Ok(Some(_)))
+    }
+
     fn id(&self) -> &'static str {
         providers::YOOKASSA
     }
@@ -1354,6 +1358,13 @@ mod tests {
             ("tax_system_code", json!(2)),
             ("vat_code", json!("7")),
         ]);
+        assert!(kassa.needs_email(&receipts, None));
+        assert!(kassa.needs_email(&receipts, Some("bank_card")));
+        assert!(
+            !kassa.needs_email(&settings(&[]), None),
+            "без чеков почта не нужна"
+        );
+        assert!(!kassa.needs_email(&settings(&[("vat_code", json!(""))]), None));
         let mut request = invoice(rub(49_900), Some("client@example.com"));
         request.save_payment_method = true;
         let created = kassa.create_invoice(&receipts, &request).await.unwrap();

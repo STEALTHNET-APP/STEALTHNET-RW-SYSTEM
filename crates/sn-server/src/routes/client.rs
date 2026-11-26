@@ -550,6 +550,7 @@ async fn me(
         "two_factor": card.two_factor,
         "payments_count": card.stats.payments_count,
         "email": email,
+        "receipt_email": card.receipt_email,
         "email_change": email_change,
         "email_unconfirmed": email_unconfirmed && state.services.mail().available(),
         "has_password": has_password,
@@ -639,6 +640,33 @@ struct CheckoutBody {
     method: Option<String>,
     #[serde(default)]
     return_url: Option<String>,
+    #[serde(default)]
+    email: Option<String>,
+}
+
+async fn keep_receipt_email(
+    state: &AppState,
+    client: &CurrentClient,
+    email: Option<&str>,
+) -> ApiResult<()> {
+    let Some(raw) = email.map(str::trim).filter(|e| !e.is_empty()) else {
+        return Ok(());
+    };
+    let id = client.0.client_id;
+    if state
+        .services
+        .checkout()
+        .billing_email(id)
+        .await?
+        .editable()
+    {
+        state
+            .services
+            .clients()
+            .set_receipt_email(id, raw, sn_services::Actor::Client(id))
+            .await?;
+    }
+    Ok(())
 }
 
 async fn checkout(
@@ -648,6 +676,7 @@ async fn checkout(
     ApiJson(body): ApiJson<CheckoutBody>,
 ) -> ApiResult<Json<CheckoutResult>> {
     client.require_full()?;
+    keep_receipt_email(&state, &client, body.email.as_deref()).await?;
     let request = CheckoutRequest {
         cart: body.cart,
         provider: body.provider,
@@ -687,6 +716,8 @@ struct ItemCheckoutBody {
     method: Option<String>,
     #[serde(default)]
     return_url: Option<String>,
+    #[serde(default)]
+    email: Option<String>,
 }
 
 async fn item_checkout(
@@ -695,6 +726,7 @@ async fn item_checkout(
     ApiJson(body): ApiJson<ItemCheckoutBody>,
 ) -> ApiResult<Json<CheckoutResult>> {
     client.require_full()?;
+    keep_receipt_email(&state, &client, body.email.as_deref()).await?;
     let request = ItemCheckoutRequest {
         item: body.item,
         provider: body.provider,
@@ -719,6 +751,8 @@ struct TopUpBody {
     method: Option<String>,
     #[serde(default)]
     return_url: Option<String>,
+    #[serde(default)]
+    email: Option<String>,
 }
 
 async fn topup_options(
@@ -741,6 +775,7 @@ async fn topup(
 ) -> ApiResult<Json<CheckoutResult>> {
     client.require_full()?;
     state.services.checkout().topup_open()?;
+    keep_receipt_email(&state, &client, body.email.as_deref()).await?;
     let currency = state.services.settings().currency;
     let minor = parse_units(body.amount.trim(), currency.into()).ok_or_else(|| {
         ApiError::bad_request(
@@ -1332,6 +1367,242 @@ mod tests {
             .await
             .unwrap();
         (client.id, login.token)
+    }
+
+    async fn lava_state(lava: &wiremock::MockServer) -> Option<(TestDb, AppState, i64, i64)> {
+        use sn_domain::payment::providers;
+        use sn_domain::settings::secret_keys;
+        let db = test_store().await?;
+        let services = Services::new(ServiceDeps {
+            store: db.store.clone(),
+            payments: Arc::new(ProviderRegistry::new(vec![
+                Arc::new(sn_payments::providers::Lava::with_api_base(lava.uri())),
+                Arc::new(sn_payments::providers::Balance),
+            ])),
+            modules: Arc::new(ModuleRegistry::catalog_only()),
+            secrets: Some(
+                sn_store::SecretBox::from_base64(&sn_store::SecretBox::generate_key_base64())
+                    .unwrap(),
+            ),
+            clock: Arc::new(SystemClock),
+            env: EnvFallbacks {
+                bot_token: Some(BOT.into()),
+                ..EnvFallbacks::default()
+            },
+        });
+        let (tariff, period) = {
+            let mut tx = db.store.begin().await.unwrap();
+            tx.settings()
+                .set(keys::PUBLIC_URL, &json!(PANEL), None)
+                .await
+                .unwrap();
+            tx.settings()
+                .set(
+                    &keys::provider(providers::LAVA),
+                    &json!({
+                        "enabled": true,
+                        "config": {"offer_id": "836b9fc5-7ae9-4a27-9642-592bc44072b7"},
+                        "methods": [{"code": "card"}]
+                    }),
+                    None,
+                )
+                .await
+                .unwrap();
+            for (field, value) in [
+                ("api_key", "lava-api-key"),
+                ("webhook_key", "lava-webhook-key-123"),
+            ] {
+                sn_services::settings::write_secret(
+                    &mut tx,
+                    services.secrets(),
+                    &secret_keys::provider(providers::LAVA, field),
+                    Some(value),
+                    None,
+                )
+                .await
+                .unwrap();
+            }
+            let category = tx
+                .tariffs()
+                .create_category(&sn_store::NewCategory {
+                    name: "Обычный".into(),
+                    sort: 0,
+                    visible: true,
+                })
+                .await
+                .unwrap();
+            let tariff = tx
+                .tariffs()
+                .create(&sn_store::NewTariff {
+                    traffic_addon: None,
+                    category_id: category.id,
+                    name: "Стандарт".into(),
+                    description: None,
+                    on_sale: true,
+                    sort: 0,
+                    devices: sn_domain::tariff::DevicePolicy {
+                        included: 3,
+                        extra: None,
+                    },
+                    traffic: sn_domain::traffic::TrafficPolicy::UNLIMITED,
+                    squads: vec![sn_domain::ids::SquadId(uuid::Uuid::from_u128(1))],
+                    external_squad: None,
+                    periods: vec![sn_store::NewPeriod {
+                        days: 30,
+                        prices: sn_domain::tariff::CurrencyPrices {
+                            usd: Some(299),
+                            rub: Some(19_900),
+                        },
+                        stars: None,
+                        sort: 0,
+                        active: true,
+                    }],
+                })
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+            (tariff.id.0, tariff.periods[0].id.0)
+        };
+        services.reload().await.unwrap();
+        let remna = Arc::new(sn_remnawave::fake::FakeRemnawave::new());
+        remna.set_squads(vec![sn_remnawave::InternalSquad {
+            uuid: uuid::Uuid::from_u128(1),
+            name: "Германия".into(),
+            view_position: 0,
+            info: sn_remnawave::SquadInfo::default(),
+            inbounds: Vec::new(),
+        }]);
+        services.set_remna(Some(remna));
+        let config = ServerConfig {
+            public_url: Some(PANEL.into()),
+            ..ServerConfig::default()
+        };
+        Some((db, AppState::new(config, services), tariff, period))
+    }
+
+    async fn telegram_session(state: &AppState, id: i64, channel: SessionChannel) -> String {
+        let (client, _) = state
+            .services
+            .clients()
+            .ensure_telegram(
+                &TelegramProfile {
+                    id,
+                    username: None,
+                    first_name: Some("Аня".into()),
+                    last_name: None,
+                    language_code: Some("ru".into()),
+                    is_premium: false,
+                },
+                RegistrationSource::Bot,
+                None,
+            )
+            .await
+            .unwrap();
+        state
+            .services
+            .auth()
+            .client_session_for(client.id, channel, &RequestMeta::default(), false)
+            .await
+            .unwrap()
+            .token
+    }
+
+    #[tokio::test]
+    async fn кабинет_и_мини_приложение_принимают_почту_для_чека_при_оплате() {
+        use wiremock::matchers::{method as http, path};
+        let lava = wiremock::MockServer::start().await;
+        wiremock::Mock::given(http("POST"))
+            .and(path("/api/v3/invoice"))
+            .respond_with(|req: &wiremock::Request| {
+                let body: Value = serde_json::from_slice(&req.body).unwrap();
+                let tail = if body["email"] == "pay@example.com" {
+                    1
+                } else {
+                    2
+                };
+                wiremock::ResponseTemplate::new(201).set_body_json(json!({
+                    "id": format!("7ea82675-4ded-4133-95a7-{tail:012}"),
+                    "status": "in-progress",
+                    "amountTotal": {"currency": "USD", "amount": 2.99},
+                    "paymentUrl": "https://app.lava.top/payment/7ea82675"
+                }))
+            })
+            .mount(&lava)
+            .await;
+        let Some((db, state, tariff, period)) = lava_state(&lava).await else {
+            return;
+        };
+        let cart = json!({"tariff_id": tariff, "period_id": period, "extra_devices": 0});
+        for (id, channel, email) in [
+            (5_093_118_501, SessionChannel::Cabinet, "Pay@Example.com"),
+            (5_093_118_502, SessionChannel::Miniapp, "mini@example.com"),
+        ] {
+            let token = telegram_session(&state, id, channel).await;
+            let auth = format!("Bearer {token}");
+            let headers = [("authorization", auth.as_str())];
+            let (status, _, me) = send(&state, Method::GET, "/api/client/me", &headers, None).await;
+            assert_eq!(status, StatusCode::OK, "{me}");
+            assert_eq!(me["receipt_email"], Value::Null);
+            let (status, _, quote) = send(
+                &state,
+                Method::POST,
+                "/api/client/quote",
+                &headers,
+                Some(cart.clone()),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{quote}");
+            let lava_method = quote["methods"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|m| m["provider"] == "lava")
+                .cloned()
+                .unwrap();
+            assert_eq!(lava_method["needs_email"], true, "{quote}");
+            let (status, _, refused) = send(
+                &state,
+                Method::POST,
+                "/api/client/checkout",
+                &headers,
+                Some(json!({"cart": cart, "provider": "lava", "method": "card"})),
+            )
+            .await;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+            assert_eq!(refused["error"]["code"], "payment.email_required");
+            let (status, _, typo) = send(
+                &state,
+                Method::POST,
+                "/api/client/checkout",
+                &headers,
+                Some(json!({"cart": cart, "provider": "lava", "method": "card", "email": "pay@"})),
+            )
+            .await;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{typo}");
+            assert_eq!(typo["error"]["code"], "receipt.email_invalid");
+            let (status, _, paid) = send(
+                &state,
+                Method::POST,
+                "/api/client/checkout",
+                &headers,
+                Some(json!({"cart": cart, "provider": "lava", "method": "card", "email": email})),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{paid}");
+            assert_eq!(paid["type"], "redirect", "{paid}");
+            let (_, _, me) = send(&state, Method::GET, "/api/client/me", &headers, None).await;
+            assert_eq!(me["receipt_email"], email.to_lowercase());
+        }
+        let sent: Vec<Value> = lava
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter_map(|r| serde_json::from_slice(&r.body).ok())
+            .collect();
+        let emails: Vec<&str> = sent.iter().filter_map(|b| b["email"].as_str()).collect();
+        assert_eq!(emails, vec!["pay@example.com", "mini@example.com"]);
+        db.cleanup().await;
     }
 
     async fn open_ticket(state: &AppState, client: ClientId) -> TicketId {

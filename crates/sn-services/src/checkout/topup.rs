@@ -38,6 +38,8 @@ pub struct TopUpMethod {
     pub amounts: Option<Vec<Money>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bonus: Option<MethodBonus>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub needs_email: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -118,6 +120,7 @@ impl Checkout<'_> {
                         .topup_bonus(method.provider, method.method.as_deref(), currency)
                         .map(|terms| MethodBonus::of(terms, currency)),
                     provider: method.provider,
+                    needs_email: method.needs_email,
                     method: method.method,
                     title: method.title,
                     hint: method.hint,

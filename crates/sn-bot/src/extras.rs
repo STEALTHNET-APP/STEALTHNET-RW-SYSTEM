@@ -873,12 +873,17 @@ pub async fn options_pay(
         (Some(kind), Some(arg)) => Addon::parse(kind, arg),
         _ => None,
     };
-    let (provider, method) = crate::buy::split_target(parts.next().unwrap_or(""));
+    let target = parts.next().unwrap_or("");
+    let (provider, method) = crate::buy::split_target(target);
     let (Some(sub), Some(addon)) = (sub, addon) else {
         return options_start(turn, client).await;
     };
     if provider.is_empty() {
         return addon_summary(turn, client, sub, addon).await;
+    }
+    let back = crate::buy::back_from(turn, target);
+    if let Some(screen) = crate::buy::receipt_gate(turn, client, provider, method, &back).await? {
+        return Ok(screen);
     }
     let services = turn.services().clone();
     let content = services.bot_content_in(lang::current());

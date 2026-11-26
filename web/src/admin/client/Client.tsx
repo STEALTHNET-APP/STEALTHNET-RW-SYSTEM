@@ -508,6 +508,12 @@ function ClientDesktop() {
               <span>{tg ? (tg.meta?.username ? `@${tg.meta.username}` : tg.value) : 'нет'}</span>
             </div>
             <EmailRow email={email} editable={loginOk} onEdit={() => setDialog('email')} />
+            {card.receipt_email ? (
+              <div className="cc-prof">
+                <span className="muted">Почта для чеков</span>
+                <span>{card.receipt_email}</span>
+              </div>
+            ) : null}
             {oauthLogins(card).map((login) => (
               <div className="cc-prof" key={login.title}>
                 <span className="muted">{login.title}</span>

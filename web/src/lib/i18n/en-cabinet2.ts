@@ -317,4 +317,8 @@ export const CABINET2: Record<string, string> = {
   'Отключить автопродление': 'Turn off auto-renewal',
   'Оставить': 'Keep',
   'Дальше платёжная система будет сама списывать эту сумму с карты в начале каждого срока. Отключить можно в кабинете и в боте, подписка доработает оплаченный срок.': 'From now on the payment system will charge this amount to the card at the start of each term. You can turn it off in your account or in the bot, the subscription runs until the paid term ends.',
+  'Почта для чека': 'Email for the receipt',
+  'На неё придут чек и письма об оплате': 'The receipt and payment emails will go there',
+  'Укажите почту: на неё придёт чек': 'Enter an email: the receipt will go there',
+  'Похоже, в почте опечатка: нужен адрес вида name@example.com': 'The email seems to have a typo: use an address like name@example.com',
 };

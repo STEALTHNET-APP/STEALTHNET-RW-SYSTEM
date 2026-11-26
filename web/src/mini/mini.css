@@ -2207,3 +2207,37 @@ button.mn-tab {
   line-height: 1.2;
   color: var(--muted);
 }
+
+.mn-receipt {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 4px 0 12px;
+}
+
+.mn-receipt-label {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.mn-receipt input {
+  height: 44px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 16px;
+  box-sizing: border-box;
+  width: 100%;
+}
+
+.mn-receipt input[aria-invalid='true'] {
+  box-shadow: inset 0 0 0 1px var(--bad);
+}
+
+.mn-receipt-hint {
+  font-size: 13px;
+  color: var(--muted);
+}

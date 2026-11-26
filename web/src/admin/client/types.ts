@@ -49,6 +49,7 @@ export type ClientCard = {
   bot_available: boolean;
   two_factor: { enabled: boolean; enabled_at: string | null };
   multi_subscriptions?: boolean;
+  receipt_email?: string | null;
 };
 
 export type SubscriptionDetails = {

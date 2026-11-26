@@ -190,15 +190,7 @@ pub struct SweepReport {
     pub failed: usize,
 }
 
-pub(crate) fn mask_email(email: &str) -> String {
-    match email.split_once('@') {
-        Some((name, domain)) => {
-            let first: String = name.chars().take(1).collect();
-            format!("{first}***@{domain}")
-        }
-        None => "***".into(),
-    }
-}
+pub(crate) use sn_domain::client::mask_email;
 
 pub(crate) fn title_of(services: &Services, provider: &str) -> String {
     services

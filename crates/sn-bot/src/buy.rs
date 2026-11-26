@@ -8,6 +8,7 @@ use crate::text;
 use crate::ui::{self, Html, Lines, Text};
 use sn_domain::bot_content::Section;
 use sn_domain::client::Client;
+use sn_domain::client::mask_email;
 use sn_domain::ids::{PeriodId, SubscriptionId, TariffId};
 use sn_domain::lang;
 use sn_domain::module::ModuleId;
@@ -17,11 +18,12 @@ use sn_domain::plan::PlanKind;
 use sn_domain::tariff::{DeviceDiscount, ExtraDevices, PeriodOffer, Tariff};
 use sn_modules::catalog::promo::{self, PromoError, Purpose};
 use sn_payments::Unavailable;
-use sn_services::Services;
 use sn_services::bot_content::BotContent;
 use sn_services::checkout::{
     CartRequest, CategoryFull, Channel, CheckoutRequest, CheckoutResult, TariffOffer,
 };
+use sn_services::clients::RECEIPT_EMAIL_INVALID;
+use sn_services::{Actor, ServiceError, Services};
 use sn_store::{Db, StoreError};
 use uuid::Uuid;
 
@@ -679,6 +681,21 @@ pub async fn summary(turn: &mut Turn<'_>, client: &Client) -> Result<Screen, Bot
     if view.methods.iter().all(|m| m.unavailable.is_some()) {
         lines.add(ui::text(c, "buy.no_methods", &[]));
     }
+    if view
+        .methods
+        .iter()
+        .any(|m| m.needs_email && m.unavailable.is_none())
+    {
+        let billing = services.checkout().billing_email(client.id).await?;
+        if let (true, Some(email)) = (billing.editable(), billing.receipt.as_deref()) {
+            lines.add(ui::text(
+                c,
+                "buy.email_line",
+                &[("email", Text(&mask_email(email)))],
+            ));
+            keyboard = keyboard.push(ui::button(c, "buy.btn.email_change", &[], "rcpt:sum"));
+        }
+    }
     if let Some(promotion) = &view.promotion {
         if promotion.code_skipped {
             notes.push(ui::text(
@@ -828,6 +845,98 @@ async fn period_term(services: &Services, cart: &Cart) -> String {
         .unwrap_or_default()
 }
 
+pub(crate) fn back_from(turn: &Turn<'_>, target: &str) -> String {
+    turn.data
+        .as_deref()
+        .and_then(|data| data.strip_suffix(target))
+        .map(|data| data.trim_end_matches(':').to_string())
+        .filter(|data| !data.is_empty())
+        .unwrap_or_else(|| "m".to_string())
+}
+
+pub(crate) async fn receipt_gate(
+    turn: &mut Turn<'_>,
+    client: &Client,
+    provider: &str,
+    method: Option<&str>,
+    back: &str,
+) -> Result<Option<Screen>, BotError> {
+    let services = turn.services().clone();
+    if !services
+        .checkout()
+        .email_needed(client.id, provider, method)
+        .await?
+    {
+        return Ok(None);
+    }
+    turn.session.receipt_resume = turn.data.clone();
+    turn.session.receipt_back = Some(back.to_string());
+    turn.session.wait_for(Awaiting::ReceiptEmail);
+    let content = turn.content();
+    let title = services
+        .payments()
+        .get(provider)
+        .map_or_else(|| provider.to_string(), |p| p.title().to_string());
+    Ok(Some(
+        Screen::new(ui::text(
+            &content,
+            "buy.email_ask",
+            &[("provider", Text(&title))],
+        ))
+        .keyboard(Keyboard::new().push(ui::cancel(&content, back.to_string())))
+        .section(Section::Buy),
+    ))
+}
+
+pub async fn receipt_email_entered(
+    turn: &mut Turn<'_>,
+    client: &Client,
+    raw: &str,
+) -> Result<Screen, BotError> {
+    let services = turn.services().clone();
+    match services
+        .clients()
+        .set_receipt_email(client.id, raw, Actor::Client(client.id))
+        .await
+    {
+        Ok(_) => {
+            turn.session.receipt_back = None;
+            match turn.session.receipt_resume.take() {
+                Some(data) => crate::handler::callback(turn, client, &data).await,
+                None => crate::handler::main_menu(turn.ctx, client).await,
+            }
+        }
+        Err(ServiceError::Rejected { code, .. }) if code == RECEIPT_EMAIL_INVALID => {
+            turn.session.wait_for(Awaiting::ReceiptEmail);
+            let content = turn.content();
+            let back = turn
+                .session
+                .receipt_back
+                .clone()
+                .unwrap_or_else(|| "m".to_string());
+            Ok(Screen::new(ui::text(&content, "buy.email_invalid", &[]))
+                .keyboard(Keyboard::new().push(ui::cancel(&content, back)))
+                .section(Section::Buy))
+        }
+        Err(err) => Err(err.into()),
+    }
+}
+
+pub async fn change_receipt_email(
+    turn: &mut Turn<'_>,
+    _client: &Client,
+    back: &str,
+) -> Result<Screen, BotError> {
+    let back = if back.is_empty() { "sum" } else { back };
+    turn.session.receipt_resume = Some(back.to_string());
+    turn.session.receipt_back = Some(back.to_string());
+    turn.session.wait_for(Awaiting::ReceiptEmail);
+    let content = turn.content();
+    Ok(Screen::new(ui::text(&content, "buy.email_change_ask", &[]))
+        .keyboard(Keyboard::new().push(ui::cancel(&content, back.to_string())))
+        .section(Section::Buy))
+}
+
 pub async fn pay(turn: &mut Turn<'_>, client: &Client, target: &str) -> Result<Screen, BotError> {
     let (provider, method) = split_target(target);
     let Some(cart) = turn.session.cart.clone() else {
@@ -836,6 +945,9 @@ pub async fn pay(turn: &mut Turn<'_>, client: &Client, target: &str) -> Result<S
     let Some(cart_request) = request(&cart, turn.session.promo.clone()) else {
         return catalog(turn).await;
     };
+    if let Some(screen) = receipt_gate(turn, client, provider, method, "sum").await? {
+        return Ok(screen);
+    }
     let services = turn.services().clone();
     let content = services.bot_content_in(lang::current());
     let title = tariff_name(&services, cart.tariff_id).await;

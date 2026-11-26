@@ -338,6 +338,14 @@ sn-egress — без зависимостей от других крейтов �
 - Заказ хранит `quote` целиком, поэтому оплата счёта после конца акции идёт по сумме счёта. Способ `subscription` (Lava.top) пропадает сам: сумма счёта не равна сумме привязки.
 - Показ: `PeriodOffer.price` и `stars` — уже со скидкой, `PeriodOffer.promotion` (`OfferPromotion`: полная цена и звёзды, процент, `ends_at`, `until` на языке запроса по поясу панели) — в каталоге, на лендинге (`/api/public/catalog`) и в подарках. Бот: `buy.tariff_line_promo`, `buy.promotion`, `buy.promotion_period` (зачёркивание `<s>`), `buy.btn.period_promo`, `gift.btn.period_promo`, `buy.promo_beaten`, `buy.promotion_beaten`. Веб — `web/src/lib/promo.ts`, окно админки — `web/src/admin/tariffs/Promotions.tsx`. ИИ-поддержка получает цены по акции в фактах (`ai/prompt.rs`).
 
+## Почта для чеков
+
+- `clients.receipt_email` (миграция 0680) — почта для чеков: не `client_identities`, без кода и без входа, не участвует в слиянии аккаунтов. `ClientsOps::set_receipt_email` проверяет адрес как почту входа (`normalize_identity`, нижний регистр), пишет аудит `client.receipt_email` с маской (`sn_domain::client::mask_email`); неверный адрес — `receipt.email_invalid`.
+- Для счёта (`checkout::client_ref`, им пользуются оформление и автопродление с карты) берётся почта входа, если она есть, иначе почта для чеков. `Checkout::billing_email` отдаёт обе, `email_needed(client, provider, method)` — нужна ли почта до счёта.
+- `PaymentProvider::needs_email(config, method)`: Lava.top — всегда, ЮKassa — когда задана «Ставка НДС» (чеки), остальные — нет. `ProviderRegistry::checkout_methods` кладёт это в `CheckoutMethod.needs_email`, пополнение — в `TopUpMethod.needs_email`.
+- API клиента: `POST /api/client/checkout`, `/items/checkout` и `/topup` принимают `email`; если у клиента нет почты входа, адрес сохраняется как почта для чеков до выставления счёта. `GET /api/client/me` отдаёт `receipt_email`. Без почты провайдер по-прежнему отвечает `payment.email_required`, и кабинет с мини-приложением показывают поле почты (`web/src/lib/receiptEmail.tsx`).
+- Бот: перед счётом (`buy::receipt_gate` в оплате подписки, пополнении, докупке и подарках) при нужной почте ставит `Awaiting::ReceiptEmail` и запоминает колбэк оплаты (`Session::receipt_resume`, `Turn::data`). Введённый адрес сохраняется, и тот же колбэк выполняется снова; другой колбэк или команда сбрасывают ожидание. В сводке подписки — `buy.email_line` и кнопка `rcpt:sum`.
+
 ## Автопродление через платёжную систему
 
 Клиент оформляет подписку у платёжной системы, она сама списывает деньги раз в срок, панель продлевает подписку по её уведомлению. Сейчас так умеет только Lava.top. Общая часть — `sn-services/src/renewals.rs` и `inbox/renewal.rs`, часть Lava.top — `sn-payments/src/providers/lava.rs`. Без настройки ничего не меняется.

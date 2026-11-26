@@ -10,6 +10,7 @@ import { codeDaysText, failText, firstTarget, giftItem, giftState, GIFTS, limitN
 import { stars } from '../cabinet/model';
 import { BackHead, useMini } from './MiniApp';
 import { openExternal, webApp } from './telegram';
+import { ReceiptEmail, useReceiptEmail } from '../lib/receiptEmail';
 
 function Redeem({ code, onClose }: { code: string; onClose: () => void }) {
   const { reload } = useMini();
@@ -151,6 +152,7 @@ function Mine({ mine }: { mine: MyGift[] }) {
 
 export function MiniGifts() {
   const { me } = useMini();
+  const receipt = useReceiptEmail(me);
   const [params, setParams] = useSearchParams();
   const code = params.get('code');
   const [offers, setOffers] = useState<GiftOffers | null>(null);
@@ -229,13 +231,17 @@ export function MiniGifts() {
     if (!offer || !periodOffer || !chosen) {
       return;
     }
+    const email = receipt.take(chosen);
+    if (email === false) {
+      return;
+    }
     setBusy(true);
     setError(null);
     setNote(null);
     try {
       const res = await api<PayResult>('/api/client/items/checkout', {
         method: 'POST',
-        body: { item: giftItem(offer.tariff.id, periodOffer.period_id), provider: chosen.provider, method: chosen.method ?? undefined },
+        body: { email: email ?? undefined, item: giftItem(offer.tariff.id, periodOffer.period_id), provider: chosen.provider, method: chosen.method ?? undefined },
       });
       if (res.type === 'redirect') {
         if (inTelegramWallet) {
@@ -255,7 +261,9 @@ export function MiniGifts() {
       setNote(t('Оплачено с баланса. Код подарка появится ниже через несколько секунд и придёт в чат с ботом.'));
       window.setTimeout(() => void loadMine(), 2500);
     } catch (err) {
-      setError(failText(err, t('Оплата не началась')));
+      if (!receipt.refused(err)) {
+        setError(failText(err, t('Оплата не началась')));
+      }
     } finally {
       setBusy(false);
     }
@@ -370,6 +378,7 @@ export function MiniGifts() {
               </p>
             ) : null}
           </div>
+          {receipt.asks(chosen) ? <ReceiptEmail value={receipt.email} onChange={receipt.change} error={receipt.error} disabled={busy} mini /> : null}
           <button type="button" className="mn-main mn-paybtn press" onClick={() => void pay()} disabled={busy || !chosen || !q}>
             {busy ? t('Открываем оплату…') : inTelegramWallet ? t('Подарить за {amount} в Telegram', { amount: totalText }) : t('Подарить за {amount}', { amount: totalText })}
           </button>

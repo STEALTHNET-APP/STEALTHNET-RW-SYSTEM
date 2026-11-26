@@ -304,6 +304,16 @@ impl NewIdentity {
     }
 }
 
+pub fn mask_email(email: &str) -> String {
+    match email.split_once('@') {
+        Some((name, domain)) => {
+            let first: String = name.chars().take(1).collect();
+            format!("{first}***@{domain}")
+        }
+        None => "***".into(),
+    }
+}
+
 pub fn normalize_identity(kind: IdentityKind, raw: &str) -> Result<String, DomainError> {
     let value = raw.trim();
     match kind {

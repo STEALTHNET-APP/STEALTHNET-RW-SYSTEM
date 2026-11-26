@@ -20,6 +20,7 @@ pub enum Awaiting {
     EmailProof,
     EmailCode,
     SitePassword,
+    ReceiptEmail,
 }
 
 impl Awaiting {
@@ -78,6 +79,10 @@ pub struct Session {
     pub media_group: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receipt_resume: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receipt_back: Option<String>,
 }
 
 impl Session {

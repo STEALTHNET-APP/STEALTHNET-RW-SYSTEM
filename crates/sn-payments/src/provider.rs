@@ -702,6 +702,10 @@ pub trait PaymentProvider: Send + Sync + 'static {
         true
     }
 
+    fn needs_email(&self, _config: &ProviderConfig, _method: Option<&str>) -> bool {
+        false
+    }
+
     async fn cancel_renewal(
         &self,
         _config: &ProviderConfig,

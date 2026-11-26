@@ -11,6 +11,7 @@ import { openExternal, webApp } from './telegram';
 import { methodKey } from '../lib/methods';
 import { promoCut, promoOf, promoQuoteNote, promoTitle } from '../lib/promo';
 import { categoryOffers, categoryPick, firstPick, offerById, offerCategories, renewsCurrent, tariffPick, targetPick, type OfferPick } from '../lib/offers';
+import { ReceiptEmail, useReceiptEmail } from '../lib/receiptEmail';
 
 function failText(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : fallback;
@@ -29,6 +30,7 @@ function payLabel(transition: boolean, total: string, telegram: boolean): string
 
 export function MiniPlans() {
   const { me, subs, view: shown, choose, reload } = useMini();
+  const receipt = useReceiptEmail(me);
   const location = useLocation();
   const navigate = useNavigate();
   const multi = me.multi_subscriptions === true;
@@ -206,6 +208,10 @@ export function MiniPlans() {
     if (!offer || !periodOffer || !chosen) {
       return;
     }
+    const email = receipt.take(chosen);
+    if (email === false) {
+      return;
+    }
     setBusy(true);
     setError(null);
     setOtherWallet(null);
@@ -216,6 +222,7 @@ export function MiniPlans() {
       const res = await api<{ type: 'redirect'; payment_id: string; pay_url: string } | { type: 'completed'; order_id: string }>('/api/client/checkout', {
         method: 'POST',
         body: {
+          email: email ?? undefined,
           cart: { tariff_id: offer.tariff.id, period_id: periodOffer.period_id, extra_devices: Math.max(0, devices - included), subscription_id: subscriptionId, promo_code: promo },
           provider: chosen.provider,
           method: chosen.method ?? undefined,
@@ -240,7 +247,9 @@ export function MiniPlans() {
       setNote(t('Оплачено. Обновляем подписку…'));
       window.setTimeout(() => void reload(), 2000);
     } catch (err) {
-      setError(failText(err, t('Оплата не началась')));
+      if (!receipt.refused(err)) {
+        setError(failText(err, t('Оплата не началась')));
+      }
     } finally {
       setBusy(false);
     }
@@ -454,6 +463,7 @@ export function MiniPlans() {
           </p>
         ) : null}
       </div>
+      {receipt.asks(chosen) ? <ReceiptEmail value={receipt.email} onChange={receipt.change} error={receipt.error} disabled={busy} mini /> : null}
       <button type="button" className="mn-main mn-paybtn press" onClick={() => void pay()} disabled={busy || !chosen || !q}>
         {busy ? t('Открываем оплату…') : payLabel(transition, totalText, inTelegramWallet)}
       </button>

@@ -273,6 +273,10 @@ export function historyLine(item: HistoryItem, index: number, referrer: Person |
       const details = item.details ?? {};
       const actor = actorNote(item);
       switch (item.action) {
+        case 'client.receipt_email': {
+          const email = str(details.email);
+          return { ...base, what: details.changed === true ? 'Изменена почта для чеков' : 'Указана почта для чеков', note: email ? `${email}${actor ? ` · ${actor}` : ''}` : actor, sum: '' };
+        }
         case 'subscription.add_days': {
           const n = num(details.days);
           return { ...base, what: n ? `Добавлено ${days(n)}` : 'Добавлены дни', note: actor, sum: '' };

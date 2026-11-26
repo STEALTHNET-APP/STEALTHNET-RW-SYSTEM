@@ -686,6 +686,12 @@ export function ClientPhone() {
           <dt>Регистрация</dt>
           <dd>{registrationText(card.client.registration_source, card.client.created_at)}</dd>
         </div>
+        {card.receipt_email ? (
+          <div className="pc-fact">
+            <dt>Почта для чеков</dt>
+            <dd>{card.receipt_email}</dd>
+          </div>
+        ) : null}
         {utm ? (
           <div className="pc-fact">
             <dt>Метка</dt>

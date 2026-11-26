@@ -8,6 +8,7 @@ import { Card, useCabinet } from './CabinetApp';
 import { heldBalance } from './model';
 import { bonusMark, bonusText, finished, limitsText, parseAmount, topUpBonus, wireAmount, type PaymentProgress, type TopUpOptions } from './payments';
 import { methodKey } from '../lib/methods';
+import { ReceiptEmail, useReceiptEmail } from '../lib/receiptEmail';
 
 const TOPUP_KEY = 'sn.cabinet.topup';
 
@@ -33,6 +34,7 @@ function forgetKey(): void {
 
 export function TopUpPage() {
   const { me, reload } = useCabinet();
+  const receipt = useReceiptEmail(me);
   const held = heldBalance(me);
   const [params, setParams] = useSearchParams();
   const [asked] = useState(() => params.get('amount') ?? '');
@@ -143,12 +145,16 @@ export function TopUpPage() {
     if (!options || amount === null || !inRange || !chosen) {
       return;
     }
+    const email = receipt.take(chosen);
+    if (email === false) {
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
       const res = await api<{ type: 'redirect'; payment_id: string; pay_url: string } | { type: 'completed'; order_id: string }>('/api/client/topup', {
         method: 'POST',
-        body: { amount: wireAmount(amount, currency), provider: chosen.provider, method: chosen.method ?? undefined, return_url: `${window.location.origin}/cabinet/topup` },
+        body: { email: email ?? undefined, amount: wireAmount(amount, currency), provider: chosen.provider, method: chosen.method ?? undefined, return_url: `${window.location.origin}/cabinet/topup` },
       });
       if (res.type === 'redirect') {
         try {
@@ -161,7 +167,9 @@ export function TopUpPage() {
       }
       await reload();
     } catch (err) {
-      setError(failText(err, t('Оплата не началась')));
+      if (!receipt.refused(err)) {
+        setError(failText(err, t('Оплата не началась')));
+      }
     } finally {
       setBusy(false);
     }
@@ -339,6 +347,7 @@ export function TopUpPage() {
                 {error}
               </p>
             ) : null}
+            {receipt.asks(chosen) ? <ReceiptEmail value={receipt.email} onChange={receipt.change} error={receipt.error} disabled={busy} /> : null}
             <button type="button" className="cb-main big" onClick={() => void pay()} disabled={busy || !sum || !chosen}>
               {busy ? t('Открываем оплату…') : sum ? t('Пополнить на {amount}', { amount: sum }) : t('Пополнить')}
             </button>

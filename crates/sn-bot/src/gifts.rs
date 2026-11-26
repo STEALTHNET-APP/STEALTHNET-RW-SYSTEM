@@ -260,6 +260,14 @@ pub async fn pay(turn: &mut Turn<'_>, client: &Client, rest: &str) -> Result<Scr
         return tariffs(turn, client).await;
     };
     let (provider, method) = crate::buy::split_target(target);
+    if !provider.is_empty() {
+        let back = crate::buy::back_from(turn, target);
+        if let Some(screen) =
+            crate::buy::receipt_gate(turn, client, provider, method, &back).await?
+        {
+            return Ok(screen);
+        }
+    }
     if provider.is_empty() {
         return summary(turn, client, rest).await;
     }

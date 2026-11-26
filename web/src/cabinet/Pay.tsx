@@ -12,6 +12,7 @@ import { CABINET_SUB_KEY, useSubs } from './SubSwitch';
 import { fullCategory, fullNote, NEWEST, newTargetNote, payTargets, remember, resolveTarget, subName, subState, targetView, type PayTarget } from './subs';
 import { methodKey } from '../lib/methods';
 import { categoryOffers, categoryPick, firstPick, offerById, offerCategories, renewsCurrent, tariffPick, targetPick, type OfferPick } from '../lib/offers';
+import { ReceiptEmail, useReceiptEmail } from '../lib/receiptEmail';
 
 type Payment = { payment_id: string; status: string; order_status: string; pay_url: string | null };
 
@@ -38,6 +39,7 @@ function methodAmount(method: CheckoutMethod): number | null {
 
 export function Pay() {
   const { me, site, reload } = useCabinet();
+  const receipt = useReceiptEmail(me);
   const navigate = useNavigate();
   const location = useLocation();
   const [params, setParams] = useSearchParams();
@@ -340,12 +342,17 @@ export function Pay() {
     if (!offer || !periodOffer || !chosen) {
       return;
     }
+    const email = receipt.take(chosen);
+    if (email === false) {
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
       const res = await api<{ type: 'redirect'; payment_id: string; pay_url: string } | { type: 'completed'; order_id: string }>('/api/client/checkout', {
         method: 'POST',
         body: {
+          email: email ?? undefined,
           cart: { tariff_id: offer.tariff.id, period_id: periodOffer.period_id, extra_devices: Math.max(0, devices - included), subscription_id: subscriptionId, promo_code: promo },
           provider: chosen.provider,
           method: chosen.method ?? undefined,
@@ -367,7 +374,9 @@ export function Pay() {
       await reload();
       navigate('/cabinet');
     } catch (err) {
-      setError(failText(err, t('Оплата не началась')));
+      if (!receipt.refused(err)) {
+        setError(failText(err, t('Оплата не началась')));
+      }
     } finally {
       setBusy(false);
     }
@@ -657,6 +666,7 @@ export function Pay() {
                 {error}
               </p>
             ) : null}
+            {receipt.asks(chosen) ? <ReceiptEmail value={receipt.email} onChange={receipt.change} error={receipt.error} disabled={busy} /> : null}
             {blocked ? (
               supportTickets(site) ? (
                 <Link className="cb-main big" to="/cabinet/help">

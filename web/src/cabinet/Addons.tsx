@@ -10,6 +10,7 @@ import { finished, type PaymentProgress } from './payments';
 import { SubSwitch, useSubs } from './SubSwitch';
 import { subName } from './subs';
 import { methodKey } from '../lib/methods';
+import { ReceiptEmail, useReceiptEmail } from '../lib/receiptEmail';
 
 const ADDON_KEY = 'sn.cabinet.addon';
 
@@ -35,6 +36,7 @@ function forgetKey(): void {
 
 export function AddonsPage() {
   const { me, reload } = useCabinet();
+  const receipt = useReceiptEmail(me);
   const [params, setParams] = useSearchParams();
   const [asked] = useState(() => params.get('kind'));
   const subs = useSubs();
@@ -158,13 +160,17 @@ export function AddonsPage() {
     if (subscriptionId === null || !choice || !chosen) {
       return;
     }
+    const email = receipt.take(chosen);
+    if (email === false) {
+      return;
+    }
     setBusy(true);
     setError(null);
     setDone(null);
     try {
       const res = await api<PayResult>('/api/client/items/checkout', {
         method: 'POST',
-        body: { item: addonItem(subscriptionId, choice), provider: chosen.provider, method: chosen.method ?? undefined, return_url: `${window.location.origin}/cabinet/addons` },
+        body: { email: email ?? undefined, item: addonItem(subscriptionId, choice), provider: chosen.provider, method: chosen.method ?? undefined, return_url: `${window.location.origin}/cabinet/addons` },
       });
       if (res.type === 'redirect') {
         try {
@@ -181,7 +187,9 @@ export function AddonsPage() {
       setOffer(next);
       setCount(1);
     } catch (err) {
-      setError(failText(err, t('Оплата не началась')));
+      if (!receipt.refused(err)) {
+        setError(failText(err, t('Оплата не началась')));
+      }
     } finally {
       setBusy(false);
     }
@@ -438,6 +446,7 @@ export function AddonsPage() {
                 {done}
               </p>
             ) : null}
+            {receipt.asks(chosen) ? <ReceiptEmail value={receipt.email} onChange={receipt.change} error={receipt.error} disabled={busy} /> : null}
             <button type="button" className="cb-main big" onClick={() => void pay()} disabled={busy || !chosen || !q || !choice}>
               {busy ? t('Открываем оплату…') : t('Оплатить {amount}', { amount: totalText })}
             </button>

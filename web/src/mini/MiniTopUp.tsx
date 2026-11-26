@@ -8,6 +8,7 @@ import { bonusMark, bonusText, finished, limitsText, parseAmount, wireAmount, ty
 import { BackHead, useMini } from './MiniApp';
 import { openExternal, webApp } from './telegram';
 import { methodKey } from '../lib/methods';
+import { ReceiptEmail, useReceiptEmail } from '../lib/receiptEmail';
 
 function failText(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : fallback;
@@ -15,6 +16,7 @@ function failText(err: unknown, fallback: string): string {
 
 export function MiniTopUp() {
   const { me, reload } = useMini();
+  const receipt = useReceiptEmail(me);
   const held = heldBalance(me);
   const [options, setOptions] = useState<TopUpOptions | null>(null);
   const [loadError, setLoadError] = useState<{ code: string; message: string } | null>(null);
@@ -127,6 +129,10 @@ export function MiniTopUp() {
     if (!options || amount === null || !inRange || !chosen) {
       return;
     }
+    const email = receipt.take(chosen);
+    if (email === false) {
+      return;
+    }
     setBusy(true);
     setError(null);
     setNote(null);
@@ -134,7 +140,7 @@ export function MiniTopUp() {
     try {
       const res = await api<{ type: 'redirect'; payment_id: string; pay_url: string } | { type: 'completed'; order_id: string }>('/api/client/topup', {
         method: 'POST',
-        body: { amount: wireAmount(amount, currency), provider: chosen.provider, method: chosen.method ?? undefined },
+        body: { email: email ?? undefined, amount: wireAmount(amount, currency), provider: chosen.provider, method: chosen.method ?? undefined },
       });
       if (res.type !== 'redirect') {
         await reload();
@@ -156,7 +162,9 @@ export function MiniTopUp() {
       openExternal(res.pay_url);
       setNote(t('Оплата открылась в новом окне. Деньги поступят на баланс сами, как только платёжная система подтвердит оплату.'));
     } catch (err) {
-      setError(failText(err, t('Оплата не началась')));
+      if (!receipt.refused(err)) {
+        setError(failText(err, t('Оплата не началась')));
+      }
     } finally {
       setBusy(false);
     }
@@ -260,6 +268,7 @@ export function MiniTopUp() {
           ) : null}
         </div>
       ) : null}
+      {receipt.asks(chosen) ? <ReceiptEmail value={receipt.email} onChange={receipt.change} error={receipt.error} disabled={busy} mini /> : null}
       {options ? (
         <button type="button" className="mn-main mn-paybtn press" onClick={() => void pay()} disabled={busy || !sum || !chosen}>
           {busy ? t('Открываем оплату…') : sum ? (inTelegramWallet ? t('Пополнить на {amount} в Telegram', { amount: sum }) : t('Пополнить на {amount}', { amount: sum })) : t('Пополнить')}

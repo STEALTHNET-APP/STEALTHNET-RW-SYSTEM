@@ -386,6 +386,22 @@ pub(crate) async fn category_full(
         .then_some(CategoryFull { category, held }))
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct BillingEmail {
+    pub login: Option<String>,
+    pub receipt: Option<String>,
+}
+
+impl BillingEmail {
+    pub fn shown(&self) -> Option<&str> {
+        self.login.as_deref().or(self.receipt.as_deref())
+    }
+
+    pub fn editable(&self) -> bool {
+        self.login.is_none()
+    }
+}
+
 pub(crate) struct PaidOrder {
     pub order: Order,
     pub payment: Payment,
@@ -399,6 +415,14 @@ struct OrderHooks<'h> {
 
 pub(crate) async fn client_ref(db: &mut impl Db, client: &Client) -> ServiceResult<ClientRef> {
     let identities = db.clients().identities(client.id).await?;
+    let login = identities
+        .iter()
+        .find(|i| i.kind == IdentityKind::Email)
+        .map(|i| i.value.clone());
+    let email = match login {
+        Some(email) => Some(email),
+        None => db.clients().receipt_email(client.id).await?,
+    };
     Ok(ClientRef {
         client_id: client.id,
         public_id: client.public_id,
@@ -406,11 +430,21 @@ pub(crate) async fn client_ref(db: &mut impl Db, client: &Client) -> ServiceResu
             .iter()
             .find(|i| i.kind == IdentityKind::Telegram)
             .and_then(|i| i.value.parse().ok()),
-        email: identities
-            .iter()
-            .find(|i| i.kind == IdentityKind::Email)
-            .map(|i| i.value.clone()),
+        email,
     })
+}
+
+pub(crate) async fn login_email(
+    db: &mut impl Db,
+    client_id: ClientId,
+) -> ServiceResult<Option<String>> {
+    Ok(db
+        .clients()
+        .identities(client_id)
+        .await?
+        .into_iter()
+        .find(|i| i.kind == IdentityKind::Email)
+        .map(|i| i.value))
 }
 
 pub(crate) async fn telegram_linked(db: &mut impl Db, client_id: ClientId) -> ServiceResult<bool> {
@@ -1116,6 +1150,30 @@ impl<'a> Checkout<'a> {
             tariff.category_id,
         )
         .await
+    }
+
+    pub async fn billing_email(&self, client_id: ClientId) -> ServiceResult<BillingEmail> {
+        let mut conn = self.services.store().conn().await?;
+        Ok(BillingEmail {
+            login: login_email(&mut conn, client_id).await?,
+            receipt: conn.clients().receipt_email(client_id).await?,
+        })
+    }
+
+    pub async fn email_needed(
+        &self,
+        client_id: ClientId,
+        provider: &str,
+        method: Option<&str>,
+    ) -> ServiceResult<bool> {
+        let registry = self.services.payments();
+        let Some(found) = registry.get(provider) else {
+            return Ok(false);
+        };
+        if !found.needs_email(&registry.config(found.id()), method) {
+            return Ok(false);
+        }
+        Ok(self.billing_email(client_id).await?.shown().is_none())
     }
 
     pub async fn quote(&self, client_id: ClientId, cart: &CartRequest) -> ServiceResult<QuoteView> {

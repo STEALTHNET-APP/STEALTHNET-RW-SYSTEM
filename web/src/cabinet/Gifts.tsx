@@ -9,6 +9,7 @@ import { Card, useCabinet } from './CabinetApp';
 import type { ItemQuote, PayResult } from './extras';
 import { codeDaysText, failText, firstTarget, giftItem, giftState, GIFTS, limitNote, planText, shareLink, targetBody, term, type GiftOffers, type GiftTarget, type MyGift, type RedeemPreview, type Redeemed } from './gifting';
 import { stars, type CheckoutMethod, type QuoteLineView } from './model';
+import { ReceiptEmail, useReceiptEmail } from '../lib/receiptEmail';
 
 const PAYMENT_KEY = 'sn.cabinet.gift';
 
@@ -332,6 +333,7 @@ function PaidCard({ payment, newest, onAgain }: { payment: Payment; newest: MyGi
 
 export function GiftsPage() {
   const { me, reload } = useCabinet();
+  const receipt = useReceiptEmail(me);
   const [params, setParams] = useSearchParams();
   const code = params.get('code');
   const { mine, error: mineError, load: loadMine } = useMine();
@@ -437,12 +439,17 @@ export function GiftsPage() {
     if (!offer || !periodOffer || !chosen) {
       return;
     }
+    const email = receipt.take(chosen);
+    if (email === false) {
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
       const res = await api<PayResult>('/api/client/items/checkout', {
         method: 'POST',
         body: {
+          email: email ?? undefined,
           item: giftItem(offer.tariff.id, periodOffer.period_id),
           provider: chosen.provider,
           method: chosen.method ?? undefined,
@@ -476,7 +483,9 @@ export function GiftsPage() {
         );
       }, 2500);
     } catch (err) {
-      setError(failText(err, t('Оплата не началась')));
+      if (!receipt.refused(err)) {
+        setError(failText(err, t('Оплата не началась')));
+      }
     } finally {
       setBusy(false);
     }
@@ -624,6 +633,7 @@ export function GiftsPage() {
                       {error ?? quoteError}
                     </p>
                   ) : null}
+                  {receipt.asks(chosen) ? <ReceiptEmail value={receipt.email} onChange={receipt.change} error={receipt.error} disabled={busy} /> : null}
                   <button type="button" className="cb-main big" onClick={() => void pay()} disabled={busy || blocked || !chosen || !q}>
                     {busy ? t('Открываем оплату…') : t('Оплатить подарок {amount}', { amount: totalText })}
                   </button>

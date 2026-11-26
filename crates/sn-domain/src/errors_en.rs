@@ -157,6 +157,9 @@ pub fn by_code(code: &str) -> Option<&'static str> {
             "Couldn't create the invoice. Try another payment method or try again later."
         }
         "promo.disabled" => "Promo codes aren't accepted right now.",
+        "receipt.email_invalid" => {
+            "The email seems to have a typo: use an address like name@example.com."
+        }
         "remnawave.not_configured" | "remnawave.unavailable" | "remnawave.error" => {
             "The VPN service is unavailable right now. Try again in a few minutes."
         }
@@ -254,6 +257,7 @@ mod tests {
             "signup.limit",
             "signup.busy",
             "payment.error",
+            "receipt.email_invalid",
             "support.closed",
             "support.files_quota",
             "remnawave.error",
