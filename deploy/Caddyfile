@@ -1,6 +1,6 @@
-{$SN_SITE} {$SN_SITE_WWW} {
-	@www host www.{$SN_SITE}
-	redir @www https://{$SN_SITE}{uri} permanent
+{$SN_SITE} {$SN_SITE_WWW} {$SN_SITE_ALIASES} {
+	@other not host {$SN_SITE}
+	redir @other https://{$SN_SITE}{uri} permanent
 	encode zstd gzip
 	reverse_proxy 127.0.0.1:{$SN_HTTP_PORT}
 }

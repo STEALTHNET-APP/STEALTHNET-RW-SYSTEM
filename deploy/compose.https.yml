@@ -6,6 +6,7 @@ services:
     environment:
       SN_SITE: ${SN_SITE:?}
       SN_SITE_WWW: ${SN_SITE_WWW:-}
+      SN_SITE_ALIASES: ${SN_SITE_ALIASES:-}
       SN_HTTP_PORT: ${SN_HTTP_PORT:-8080}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
