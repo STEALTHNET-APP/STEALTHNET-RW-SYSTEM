@@ -1218,6 +1218,7 @@ const FIELDS: &[(&str, &str)] = &[
     ("node", "Нода"),
     ("node_name", "Нода"),
     ("address", "Адрес"),
+    ("api_url", "Адрес API"),
     ("port", "Порт"),
     ("remark", "Название"),
     ("squad", "Сквад"),

@@ -6,6 +6,7 @@ use chrono::{DateTime, Utc};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use sn_domain::access::Permission;
 use sn_domain::cabinet_css::CabinetCss;
 use sn_domain::client::Languages;
 use sn_domain::format;
@@ -51,6 +52,7 @@ pub const MAX_REMARK_CHARS: usize = 200;
 pub const PROVIDER_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(40);
 pub const CHECK_UNCONFIGURED: &str = "settings.provider_check_unconfigured";
 pub const SECRETS_AGAIN: &str = "settings.secrets_again";
+pub const FIELD_FORBIDDEN: &str = "settings.field_forbidden";
 pub const TOPUP_BONUS_LIMIT: i64 = 100_000_000;
 pub const INBOX_TRACE_DAYS: i64 = 30;
 
@@ -473,6 +475,25 @@ fn address<'a>(field: &'a SettingField, config: &'a Map<String, Value>) -> &'a s
         .or(field.default)
         .unwrap_or_default()
         .trim_end_matches('/')
+}
+
+fn guarded_changes<'f>(
+    schema: &'f [SettingField],
+    before: &Map<String, Value>,
+    after: &Map<String, Value>,
+) -> Vec<(&'f SettingField, String, String)> {
+    schema
+        .iter()
+        .filter(|field| field.need.is_some())
+        .map(|field| {
+            (
+                field,
+                address(field, before).to_string(),
+                address(field, after).to_string(),
+            )
+        })
+        .filter(|(_, old, new)| old != new)
+        .collect()
 }
 
 pub fn secrets_again(
@@ -1118,6 +1139,11 @@ fn checked_value(field: &SettingField, value: &Value) -> ServiceResult<Value> {
                 || raw.len() > MAX_TEXT_FIELD
             {
                 return Err(field_error(field.key, "адрес должен начинаться с https://"));
+            }
+            if field.origin {
+                return sn_payments::api_origin(raw)
+                    .map(Value::String)
+                    .map_err(|rule| field_error(field.key, rule));
             }
             Ok(Value::String(raw.to_string()))
         }
@@ -2171,6 +2197,17 @@ impl<'a> SettingsOps<'a> {
         update: &ProviderUpdate,
         admin: AdminId,
     ) -> ServiceResult<ProviderDetails> {
+        self.update_provider_as(id, update, admin, &Permission::ALL)
+            .await
+    }
+
+    pub async fn update_provider_as(
+        &self,
+        id: &str,
+        update: &ProviderUpdate,
+        admin: AdminId,
+        granted: &[Permission],
+    ) -> ServiceResult<ProviderDetails> {
         let provider = self
             .services
             .payments()
@@ -2201,6 +2238,23 @@ impl<'a> SettingsOps<'a> {
         let mut stored = self.stored_provider(&mut tx, id).await?;
         let before = stored.config.clone();
         let changes = apply_fields(&schema, &update.config, &update.clear, &mut stored.config)?;
+        let guarded = guarded_changes(&schema, &before, &stored.config);
+        if let Some((field, need)) = guarded.iter().find_map(|(field, ..)| {
+            field
+                .need
+                .filter(|need| !granted.contains(need))
+                .map(|need| (field, need))
+        }) {
+            return Err(ServiceError::rejected(
+                FIELD_FORBIDDEN,
+                format!(
+                    "«{}» у {} может менять только владелец или администратор с правами «Настройки» и «{}»",
+                    field.label,
+                    provider.title(),
+                    crate::ext_modules::manifest::permission_title(need)
+                ),
+            ));
+        }
         if let Some(enabled) = update.enabled {
             stored.enabled = Some(enabled);
         }
@@ -2316,6 +2370,12 @@ impl<'a> SettingsOps<'a> {
             "fields": update.config.keys().collect::<Vec<_>>(),
             "secrets": changed_secrets,
         });
+        if let Some(details) = details.as_object_mut() {
+            for (field, old, new) in &guarded {
+                details.insert(format!("{}_before", field.key), Value::String(old.clone()));
+                details.insert(field.key.to_string(), Value::String(new.clone()));
+            }
+        }
         if update.topup_bonus.is_some()
             && let Some(details) = details.as_object_mut()
         {

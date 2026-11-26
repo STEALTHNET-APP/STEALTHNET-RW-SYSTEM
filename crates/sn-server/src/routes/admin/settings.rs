@@ -423,11 +423,15 @@ async fn update_provider(
     ApiJson(body): ApiJson<ProviderUpdate>,
 ) -> ApiResult<Json<ProviderDetails>> {
     admin.require(Permission::Settings)?;
+    let granted: Vec<Permission> = Permission::ALL
+        .into_iter()
+        .filter(|permission| admin.can(*permission))
+        .collect();
     Ok(Json(
         state
             .services
             .settings_ops()
-            .update_provider(&id, &body, admin.0.admin_id)
+            .update_provider_as(&id, &body, admin.0.admin_id, &granted)
             .await?,
     ))
 }

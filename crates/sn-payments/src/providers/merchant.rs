@@ -1,4 +1,4 @@
-use crate::error::PaymentResult;
+use crate::error::{PaymentError, PaymentResult};
 use crate::json::{self, Json};
 use crate::md5;
 use crate::provider::{
@@ -103,7 +103,15 @@ pub(crate) async fn call(
     }
 }
 
-fn received_usd(info: &Json) -> Option<Amount> {
+pub(crate) fn invoice_currency(currency: PayCurrency) -> PaymentResult<&'static str> {
+    match currency {
+        PayCurrency::Usd => Ok("USD"),
+        PayCurrency::Rub => Ok("RUB"),
+        other => Err(PaymentError::UnsupportedCurrency(other.code().into())),
+    }
+}
+
+pub(crate) fn received_usd(info: &Json) -> Option<Amount> {
     let raw = info
         .get("payment_amount_usd")
         .and_then(Json::scalar_text)?

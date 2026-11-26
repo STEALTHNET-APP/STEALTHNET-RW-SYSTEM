@@ -1,3 +1,4 @@
+use crate::access::Permission;
 use crate::cabinet_css::CabinetCss;
 use crate::client::Languages;
 use crate::ids::SquadId;
@@ -78,6 +79,10 @@ pub struct SettingField {
     pub labels: Option<&'static [&'static str]>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub depends: Option<FieldDepends>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub need: Option<Permission>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub origin: bool,
 }
 
 impl SettingField {
@@ -98,6 +103,8 @@ impl SettingField {
             large: false,
             labels: None,
             depends: None,
+            need: None,
+            origin: false,
         }
     }
 
@@ -161,6 +168,16 @@ impl SettingField {
         reset: bool,
     ) -> Self {
         self.depends = Some(FieldDepends { on, cases, reset });
+        self
+    }
+
+    pub const fn need(mut self, permission: Permission) -> Self {
+        self.need = Some(permission);
+        self
+    }
+
+    pub const fn origin(mut self) -> Self {
+        self.origin = true;
         self
     }
 

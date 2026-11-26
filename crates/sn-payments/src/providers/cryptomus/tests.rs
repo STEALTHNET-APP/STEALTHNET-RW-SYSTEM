@@ -1,7 +1,7 @@
 use super::*;
 use crate::test_support::*;
 use serde_json::json;
-use sn_domain::money::Amount;
+use sn_domain::money::{Amount, PayCurrency};
 use sn_domain::payment::{AmountCheck, check_paid_amount};
 use wiremock::matchers::{body_string, header, method, path};
 use wiremock::{Match, Mock, MockServer, Request, ResponseTemplate};

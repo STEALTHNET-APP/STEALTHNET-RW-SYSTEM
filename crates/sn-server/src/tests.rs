@@ -50,6 +50,7 @@ mod email_signup;
 mod ext_modules;
 mod freekassa;
 mod gram;
+mod heleket;
 mod hosts;
 mod import;
 mod landing;
@@ -832,7 +833,7 @@ async fn настройки_ядра_оплаты_и_remnawave_через_http()
             Method::PUT,
             "/api/admin/settings/payments",
             &owner,
-            json!({ "order": ["heleket"] }),
+            json!({ "order": ["paybox"] }),
         )
         .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);

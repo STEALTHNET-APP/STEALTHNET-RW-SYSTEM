@@ -150,6 +150,7 @@ pub struct ProviderView {
     pub custom_label: ButtonLabel,
     pub topup_bonus: BTreeMap<Currency, TopupBonusView>,
     pub check: Option<CheckRecord>,
+    pub own_api_url: Option<String>,
 }
 
 pub struct ProviderRegistry {
@@ -357,6 +358,7 @@ impl ProviderRegistry {
                         .map(|c| (*c, state.topup_bonus.get(*c).view(*c)))
                         .collect(),
                     check: self.check(p.id()),
+                    own_api_url: p.own_api_url(&state.config),
                 }
             })
             .collect()

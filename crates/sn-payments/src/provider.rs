@@ -676,6 +676,10 @@ pub trait PaymentProvider: Send + Sync + 'static {
     fn api_url(&self, _config: &ProviderConfig) -> Option<String> {
         None
     }
+
+    fn own_api_url(&self, _config: &ProviderConfig) -> Option<String> {
+        None
+    }
 }
 
 pub fn http_builder() -> reqwest::ClientBuilder {

@@ -72,3 +72,55 @@ pub(crate) async fn failing_api(status: u16) -> wiremock::MockServer {
         .await;
     server
 }
+
+pub(crate) const TEST_CA: &str = include_str!("providers/overpay/testdata/ca.pem");
+
+pub(crate) async fn https_front(target: &str) -> String {
+    use tokio_rustls::rustls;
+    use tokio_rustls::rustls::pki_types::pem::PemObject;
+    use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
+    let provider = std::sync::Arc::new(rustls::crypto::ring::default_provider());
+    let config = rustls::ServerConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![
+                CertificateDer::from_pem_slice(
+                    include_str!("providers/overpay/testdata/server.crt").as_bytes(),
+                )
+                .unwrap(),
+            ],
+            PrivateKeyDer::from_pem_slice(
+                include_str!("providers/overpay/testdata/server.key").as_bytes(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(config));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let front = format!(
+        "https://127.0.0.1:{}",
+        listener.local_addr().unwrap().port()
+    );
+    let upstream = target
+        .trim_start_matches("http://")
+        .trim_end_matches('/')
+        .to_string();
+    tokio::spawn(async move {
+        while let Ok((tcp, _)) = listener.accept().await {
+            let acceptor = acceptor.clone();
+            let upstream = upstream.clone();
+            tokio::spawn(async move {
+                let Ok(mut tls) = acceptor.accept(tcp).await else {
+                    return;
+                };
+                let Ok(mut plain) = tokio::net::TcpStream::connect(upstream).await else {
+                    return;
+                };
+                let _ = tokio::io::copy_bidirectional(&mut tls, &mut plain).await;
+            });
+        }
+    });
+    front
+}

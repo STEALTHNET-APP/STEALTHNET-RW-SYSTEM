@@ -26,7 +26,7 @@ const NEED_TITLE: Record<Permission, string> = {
   audit_log: 'Журнал действий',
 };
 
-function needText(need: Permission[]): string {
+export function needText(need: Permission[]): string {
   const names = need.map((p) => `«${NEED_TITLE[p]}»`);
   return names.length > 1 ? `с правами ${names.join(' и ')}` : `с правом ${names[0]}`;
 }

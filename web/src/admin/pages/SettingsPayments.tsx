@@ -9,7 +9,7 @@ import { changedConfig, initialValues, missingRequired, SchemaFields, type Field
 import { useSession } from '../session';
 import { Switch } from '../ui';
 import '../form.css';
-import { SettingsLayout } from './SettingsLayout';
+import { needText, SettingsLayout } from './SettingsLayout';
 import { TributeSetup, tributeValue, type TributeValue } from './TributeSetup';
 
 type Channels = { cabinet: boolean; bot: boolean; miniapp: boolean };
@@ -118,6 +118,7 @@ type Provider = {
   custom_label?: { title?: string | null; hint?: string | null };
   topup_bonus?: TopupBonuses;
   check?: CheckRecord | null;
+  own_api_url?: string | null;
 };
 
 const CHECK_HEADS: Record<CheckStatus, string> = {
@@ -592,6 +593,9 @@ export function SettingsPayments() {
               {channelLine(p.id, p.title)}
               {methodLine(p)}
               {bonusSummary(p, work.currency) ? <p className="pay-mline muted">{bonusSummary(p, work.currency)}</p> : null}
+              {p.own_api_url ? (
+                <p className="pay-mline warn-line">Свой адрес API: {p.own_api_url}</p>
+              ) : null}
               {p.issue ? (
                 <p className="pay-issue" role="status">
                   <span className="pay-issue-at">Проверка оплат, {issueTime(p.issue.at)}</span>
@@ -784,6 +788,7 @@ type SetupProps = {
 };
 
 function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved, onChecked }: SetupProps) {
+  const { can } = useSession();
   const [schema, setSchema] = useState<SettingField[] | null>(null);
   const [config, setConfig] = useState<Record<string, unknown>>({});
   const [values, setValues] = useState<FieldValues>({});
@@ -992,7 +997,17 @@ function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved, onChec
         <p className="muted">Звёзды принимает бот сервиса: отдельных ключей не нужно. Система станет «Подключена», когда в настройках будет указан токен бота.</p>
       ) : null}
       {schema && schema.length > 0 ? (
-        <SchemaFields schema={schema} config={config} values={values} onChange={setValues} secrets={secrets} onSecrets={setSecrets} busy={busy} idPrefix={`pay-${provider.id}`} />
+        <SchemaFields
+          schema={schema}
+          config={config}
+          values={values}
+          onChange={setValues}
+          secrets={secrets}
+          onSecrets={setSecrets}
+          busy={busy}
+          idPrefix={`pay-${provider.id}`}
+          locked={(field) => (field.need && !can(field.need) ? `Менять может только владелец или администратор ${needText(['settings', field.need])}` : null)}
+        />
       ) : null}
       {schema && withTribute ? <TributeSetup value={tribute} onChange={setTribute} busy={busy} connected={connected} currency={currency} /> : null}
       {rows.length ? (

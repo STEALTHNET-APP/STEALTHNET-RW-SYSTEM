@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import type { Permission } from '../lib/types';
 import { Switch } from './ui';
 import './form.css';
 
@@ -16,6 +17,8 @@ export type SettingField = {
   large?: boolean;
   labels?: string[];
   depends?: { on: string; cases: FieldCase[]; reset: boolean };
+  need?: Permission;
+  origin?: boolean;
 };
 
 export type FieldValues = Record<string, string | boolean>;
@@ -112,9 +115,10 @@ type Props = {
   busy: boolean;
   idPrefix: string;
   custom?: Partial<Record<string, (slot: FieldSlot) => ReactNode>>;
+  locked?: (field: SettingField) => string | null;
 };
 
-export function SchemaFields({ schema, config, values, onChange, secrets, onSecrets, busy, idPrefix, custom }: Props) {
+export function SchemaFields({ schema, config, values, onChange, secrets, onSecrets, busy, idPrefix, custom, locked }: Props) {
   const set = (key: string, value: string | boolean) => {
     const next: FieldValues = { ...values, [key]: value };
     const changer = schema.find((f) => f.key === key);
@@ -143,10 +147,11 @@ export function SchemaFields({ schema, config, values, onChange, secrets, onSecr
     const variant = fieldCase(field, values);
     const hintText = variant?.hint ?? field.hint;
     const placeholder = variant?.placeholder;
-    const hintId = hintText ? `${id}-hint` : undefined;
-    const hint = hintText ? (
+    const lock = locked?.(field) ?? null;
+    const hintId = hintText || lock ? `${id}-hint` : undefined;
+    const hint = hintId ? (
       <span id={hintId} className="cap">
-        {hintText}
+        {[hintText, lock].filter(Boolean).join('. ')}
       </span>
     ) : null;
     const own = custom?.[field.key];
@@ -222,10 +227,10 @@ export function SchemaFields({ schema, config, values, onChange, secrets, onSecr
             value={String(value ?? '')}
             onChange={(e) => set(field.key, e.target.value)}
             aria-describedby={hintId}
-            disabled={busy}
+            disabled={busy || lock !== null}
           />
         ) : field.kind.type === 'select' ? (
-          <select id={id} className="field" value={String(value ?? '')} onChange={(e) => set(field.key, e.target.value)} aria-describedby={hintId} disabled={busy}>
+          <select id={id} className="field" value={String(value ?? '')} onChange={(e) => set(field.key, e.target.value)} aria-describedby={hintId} disabled={busy || lock !== null}>
             {field.required ? null : <option value="">Не выбрано</option>}
             {field.kind.options.map((option, index) => (
               <option key={option} value={option}>
@@ -244,7 +249,7 @@ export function SchemaFields({ schema, config, values, onChange, secrets, onSecr
             aria-describedby={hintId}
             placeholder={placeholder}
             spellCheck={placeholder ? false : undefined}
-            disabled={busy}
+            disabled={busy || lock !== null}
           />
         )}
         {hint}

@@ -5,7 +5,7 @@ use crate::provider::*;
 use crate::util;
 use async_trait::async_trait;
 use chrono::DateTime;
-use sn_domain::money::{Currency, PayCurrency};
+use sn_domain::money::Currency;
 use sn_domain::payment::{NoticeKind, providers};
 use sn_domain::settings::SettingField;
 use std::sync::Mutex;
@@ -223,14 +223,6 @@ fn coin(code: &str) -> PaymentResult<Option<&'static Coin>> {
         .ok_or_else(|| PaymentError::Rejected("этот способ оплаты недоступен".into()))
 }
 
-fn invoice_currency(currency: PayCurrency) -> PaymentResult<&'static str> {
-    match currency {
-        PayCurrency::Usd => Ok("USD"),
-        PayCurrency::Rub => Ok("RUB"),
-        other => Err(PaymentError::UnsupportedCurrency(other.code().into())),
-    }
-}
-
 const REFUND_NOTE: &str = "Cryptomus сообщил о возврате денег по этому платежу, но сумму возврата \
                            в уведомлении не прислал. Сверьте возврат в кабинете Cryptomus и отметьте \
                            его в панели как сделанный вне панели";
@@ -340,7 +332,7 @@ impl PaymentProvider for Cryptomus {
         config: &ProviderConfig,
         request: &InvoiceRequest,
     ) -> PaymentResult<Invoice> {
-        let currency = invoice_currency(request.amount.currency)?;
+        let currency = merchant::invoice_currency(request.amount.currency)?;
         let coin = match request.method.as_deref() {
             Some(code) => coin(code)?,
             None => None,

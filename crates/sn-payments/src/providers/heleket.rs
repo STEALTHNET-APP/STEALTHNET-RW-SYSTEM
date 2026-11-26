@@ -1,4 +1,5 @@
 use super::merchant;
+use crate::api_address::{API_URL, ApiAddress};
 use crate::error::{PaymentError, PaymentResult};
 use crate::json::Json;
 use crate::provider::*;
@@ -12,7 +13,8 @@ use uuid::Uuid;
 
 pub use merchant::signature;
 
-const API: &str = "https://api.heleket.hk";
+const ADDRESS: ApiAddress = ApiAddress::new("https://api.heleket.hk");
+const BRAND: &str = "Heleket";
 
 const PAGE: PayMethod = PayMethod::new(
     "page",
@@ -88,12 +90,7 @@ impl Heleket {
     fn base(&self, config: &ProviderConfig) -> String {
         match &self.api_base {
             Some(base) => base.trim_end_matches('/').to_string(),
-            None => config
-                .get("api_url")
-                .filter(|url| util::is_https(url))
-                .unwrap_or(API)
-                .trim_end_matches('/')
-                .to_string(),
+            None => ADDRESS.resolve(config),
         }
     }
 
@@ -105,6 +102,11 @@ impl Heleket {
             body,
         )
         .await
+    }
+
+    async fn read(&self, config: &ProviderConfig, info: &Json) -> PaymentResult<WebhookOutcome> {
+        let outcome = surplus(info, merchant::outcome(info, REFUND_NOTE)?);
+        Ok(self.explained(config, outcome).await)
     }
 
     async fn explained(&self, config: &ProviderConfig, outcome: WebhookOutcome) -> WebhookOutcome {
@@ -127,6 +129,39 @@ impl Heleket {
         };
         outcome.with_notice(NoticeKind::AmlCheck, aml_note(links.as_ref()))
     }
+
+    async fn connection(&self, config: &ProviderConfig) -> ConnectionCheck {
+        let services = match merchant::services(
+            &self.http,
+            format!("{}/v1/payment/services", self.base(config)),
+            config,
+            BRAND,
+        )
+        .await
+        {
+            Ok(services) => services,
+            Err(check) => return check,
+        };
+        let closed: Vec<&str> = COINS
+            .iter()
+            .filter(|coin| {
+                services.iter().any(|service| {
+                    merchant::serves(service, &[coin.currency], &[coin.network])
+                        && merchant::service_closed(service)
+                })
+            })
+            .map(|coin| coin.method.title)
+            .collect();
+        let check = ConnectionCheck::ok("ID мерчанта и платёжный ключ приняты Heleket");
+        if closed.is_empty() {
+            check
+        } else {
+            check.detail(format!(
+                "Сейчас Heleket не принимает: {}",
+                closed.join(", ")
+            ))
+        }
+    }
 }
 
 fn coin(code: &str) -> PaymentResult<Option<&'static Coin>> {
@@ -143,6 +178,31 @@ fn coin(code: &str) -> PaymentResult<Option<&'static Coin>> {
 const REFUND_NOTE: &str = "Heleket сообщил о возврате денег по этому платежу, но сумму возврата \
                            в уведомлении не прислал. Сверьте возврат в кабинете Heleket и отметьте \
                            его в панели как сделанный вне панели";
+
+fn surplus(info: &Json, outcome: WebhookOutcome) -> WebhookOutcome {
+    let status = info
+        .get("status")
+        .or_else(|| info.get("payment_status"))
+        .and_then(Json::as_str);
+    let foreign = outcome
+        .amount
+        .is_some_and(|amount| amount.currency != PayCurrency::Usd);
+    if status != Some("paid_over") || outcome.status != ProviderStatus::Paid || !foreign {
+        return outcome;
+    }
+    let head = "Heleket сообщил о переплате по счёту в рублях: заказ оплачен";
+    let tail = "Сумму излишка в рублях Heleket не присылает, поэтому на баланс клиента он сам \
+                не зачислился: сверьте платёж в кабинете Heleket и зачислите излишек вручную \
+                или верните его клиенту";
+    let note = match merchant::received_usd(info).filter(|paid| paid.minor > 0) {
+        Some(paid) => format!(
+            "{head}, по данным Heleket всего получено {}. {tail}",
+            util::amount_text(paid)
+        ),
+        None => format!("{head}. {tail}"),
+    };
+    outcome.with_notice(NoticeKind::ManualCredit, note)
+}
 
 fn aml_note(links: Option<&Json>) -> String {
     let head = "Heleket задержал оплату для проверки AML: деньги заблокированы, пока клиент \
@@ -176,10 +236,33 @@ fn aml_note(links: Option<&Json>) -> String {
     }
 }
 
+fn issued_as_asked(result: &Json, request: &InvoiceRequest) -> PaymentResult<()> {
+    if let Some(order) = result.get("order_id").and_then(Json::as_str)
+        && order != request.payment_public_id.to_string()
+    {
+        return Err(util::bad("Heleket вернул счёт другого заказа"));
+    }
+    let amount = result.get("amount").filter(|a| a.scalar_text().is_some());
+    let currency = result.get("currency").filter(|c| c.as_str().is_some());
+    if amount.is_some()
+        && currency.is_some()
+        && util::json_amount(amount, currency)? != request.amount
+    {
+        return Err(util::bad(
+            "Heleket выставил счёт не на ту сумму или не в той валюте",
+        ));
+    }
+    Ok(())
+}
+
 #[async_trait]
 impl PaymentProvider for Heleket {
     fn api_url(&self, config: &ProviderConfig) -> Option<String> {
         Some(self.base(config))
+    }
+
+    fn own_api_url(&self, config: &ProviderConfig) -> Option<String> {
+        ADDRESS.own(config)
     }
 
     fn id(&self) -> &'static str {
@@ -187,11 +270,11 @@ impl PaymentProvider for Heleket {
     }
 
     fn title(&self) -> &'static str {
-        "Heleket"
+        BRAND
     }
 
     fn currencies(&self) -> &'static [Currency] {
-        &[Currency::Usd]
+        &[Currency::Usd, Currency::Rub]
     }
 
     fn client_label(&self, _currency: Currency, _config: &ProviderConfig) -> ClientLabel {
@@ -201,13 +284,10 @@ impl PaymentProvider for Heleket {
         }
     }
 
-    fn methods(&self, currency: Currency) -> Vec<PayMethod> {
-        match currency {
-            Currency::Usd => std::iter::once(PAGE)
-                .chain(COINS.iter().map(|coin| coin.method))
-                .collect(),
-            Currency::Rub => Vec::new(),
-        }
+    fn methods(&self, _currency: Currency) -> Vec<PayMethod> {
+        std::iter::once(PAGE)
+            .chain(COINS.iter().map(|coin| coin.method))
+            .collect()
     }
 
     fn settings_schema(&self) -> Vec<SettingField> {
@@ -221,13 +301,11 @@ impl PaymentProvider for Heleket {
                 "api_key",
                 "Платёжный API-ключ",
                 "Личный кабинет Heleket → API",
-            ),
-            SettingField::url(
-                "api_url",
-                "Адрес API",
-                "Оставьте пустым, тогда используется https://api.heleket.hk. Меняйте, только если Heleket объявит новый адрес",
             )
-            .optional(),
+            .depends(API_URL, &[], true),
+            ADDRESS.field(
+                "Меняйте, только если Heleket объявит новый адрес. Нужно только имя сервера с https://, без пути. Пустое поле — стандартный адрес",
+            ),
         ]
     }
 
@@ -237,14 +315,7 @@ impl PaymentProvider for Heleket {
 
     fn validate_settings(&self, config: &ProviderConfig) -> PaymentResult<()> {
         util::require_fields(&self.settings_schema(), config)?;
-        if config
-            .get("api_url")
-            .is_some_and(|url| !util::is_https(url))
-        {
-            return Err(PaymentError::NotConfigured(
-                "адрес API Heleket должен начинаться с https://".into(),
-            ));
-        }
+        ADDRESS.validate(config, BRAND)?;
         match config.get("merchant_id").map(Uuid::parse_str) {
             Some(Ok(_)) => Ok(()),
             _ => Err(PaymentError::NotConfigured(
@@ -262,14 +333,14 @@ impl PaymentProvider for Heleket {
         config: &ProviderConfig,
         request: &InvoiceRequest,
     ) -> PaymentResult<Invoice> {
-        util::require_currency(request.amount, PayCurrency::Usd)?;
+        let currency = merchant::invoice_currency(request.amount.currency)?;
         let coin = match request.method.as_deref() {
             Some(code) => coin(code)?,
             None => None,
         };
         let mut body = Json::object([
             ("amount", Json::from(request.amount.units())),
-            ("currency", Json::from("USD")),
+            ("currency", Json::from(currency)),
             (
                 "order_id",
                 Json::from(request.payment_public_id.to_string()),
@@ -305,6 +376,7 @@ impl PaymentProvider for Heleket {
             .and_then(Json::as_str)
             .filter(|u| util::is_https(u))
             .ok_or_else(|| util::bad("Heleket не вернул ссылку на оплату"))?;
+        issued_as_asked(&result, request)?;
         let expires_at = result
             .get("expired_at")
             .and_then(Json::scalar_text)
@@ -329,9 +401,7 @@ impl PaymentProvider for Heleket {
             return Err(PaymentError::BadSignature);
         }
         match body.get("type").and_then(Json::as_str) {
-            Some("payment") | None => Ok(self
-                .explained(config, merchant::outcome(&body, REFUND_NOTE)?)
-                .await),
+            Some("payment") | None => self.read(config, &body).await,
             Some(other) => Ok(merchant::skipped_type(&body, other)),
         }
     }
@@ -349,11 +419,8 @@ impl PaymentProvider for Heleket {
                 &Json::object([("uuid", Json::from(uuid))]),
             )
             .await?;
-        let result = merchant::requested(result, uuid, "Heleket")?;
-        Ok(Some(
-            self.explained(config, merchant::outcome(&result, REFUND_NOTE)?)
-                .await,
-        ))
+        let result = merchant::requested(result, uuid, BRAND)?;
+        self.read(config, &result).await.map(Some)
     }
 
     async fn check_connection(
@@ -361,35 +428,13 @@ impl PaymentProvider for Heleket {
         config: &ProviderConfig,
         _context: &CheckContext,
     ) -> ConnectionCheck {
-        let services = match merchant::services(
-            &self.http,
-            format!("{}/v1/payment/services", self.base(config)),
-            config,
-            "Heleket",
-        )
-        .await
-        {
-            Ok(services) => services,
-            Err(check) => return check,
-        };
-        let closed: Vec<&str> = COINS
-            .iter()
-            .filter(|coin| {
-                services.iter().any(|service| {
-                    merchant::serves(service, &[coin.currency], &[coin.network])
-                        && merchant::service_closed(service)
-                })
-            })
-            .map(|coin| coin.method.title)
-            .collect();
-        let check = ConnectionCheck::ok("ID мерчанта и платёжный ключ приняты Heleket");
-        if closed.is_empty() {
-            check
-        } else {
-            check.detail(format!(
-                "Сейчас Heleket не принимает: {}",
-                closed.join(", ")
-            ))
+        let check = self.connection(config).await;
+        match ADDRESS.own(config).filter(|_| self.api_base.is_none()) {
+            Some(own) => check.detail(format!(
+                "Запрос ушёл на свой адрес API {own}, а не на стандартный {}",
+                ADDRESS.standard
+            )),
+            None => check,
         }
     }
 }
@@ -400,9 +445,11 @@ mod tests {
     use crate::md5;
     use crate::test_support::*;
     use serde_json::json;
+    use sn_domain::access::Permission;
+    use sn_domain::money::Amount;
     use sn_domain::payment::{AmountCheck, check_paid_amount};
     use wiremock::matchers::{header, method, path};
-    use wiremock::{Match, Mock, MockServer, Request, ResponseTemplate};
+    use wiremock::{Match, Mock, MockServer, Request, Respond, ResponseTemplate};
 
     const KEY: &str = "heleket-payment-key";
     const MERCHANT: &str = "8b03432e-385b-4670-8d06-064591096795";
@@ -822,10 +869,14 @@ mod tests {
         assert_eq!(body["is_payment_multiple"], true);
         assert!(matches!(
             provider
-                .create_invoice(&settings(), &invoice(rub(49_900), None))
+                .create_invoice(
+                    &settings(),
+                    &invoice(Amount::new(350, PayCurrency::Xtr), None)
+                )
                 .await,
             Err(PaymentError::UnsupportedCurrency(_))
         ));
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
     }
 
     #[test]
@@ -861,8 +912,13 @@ mod tests {
             heleket.method(Currency::Usd, "btc").map(|m| m.title),
             Some("Bitcoin")
         );
-        assert!(heleket.methods(Currency::Rub).is_empty());
-        assert_eq!(heleket.method(Currency::Rub, "btc"), None);
+        assert_eq!(heleket.methods(Currency::Rub), methods);
+        assert_eq!(
+            heleket.method(Currency::Rub, "usdt_trc20").map(|m| m.title),
+            Some("USDT TRC-20")
+        );
+        assert!(methods.iter().all(|m| m.min_minor.is_none()));
+        assert_eq!(heleket.currencies(), &[Currency::Usd, Currency::Rub]);
     }
 
     #[tokio::test]
@@ -978,16 +1034,503 @@ mod tests {
     }
 
     #[test]
-    fn адрес_api_новый_и_меняется_в_настройках() {
+    fn старые_настройки_без_адреса_идут_на_стандартный_адрес() {
         let heleket = Heleket::new();
-        assert_eq!(heleket.base(&settings()), "https://api.heleket.hk");
+        let old = settings();
+        assert!(old.get("api_url").is_none());
+        assert!(heleket.is_configured(&old));
+        assert_eq!(heleket.base(&old), "https://api.heleket.hk");
+        assert_eq!(
+            heleket.api_url(&old).as_deref(),
+            Some("https://api.heleket.hk")
+        );
+        assert_eq!(heleket.own_api_url(&old), None);
+        let mut blank = settings();
+        blank.set("api_url", json!(""));
+        assert!(heleket.is_configured(&blank));
+        assert_eq!(heleket.base(&blank), "https://api.heleket.hk");
+    }
+
+    #[test]
+    fn адрес_api_меняется_только_на_https_без_пути() {
+        let heleket = Heleket::new();
         let mut custom = settings();
-        custom.set("api_url", json!("https://api.heleket.example/"));
+        custom.set("api_url", json!("https://API.heleket.example/"));
         assert_eq!(heleket.base(&custom), "https://api.heleket.example");
+        assert_eq!(
+            heleket.api_url(&custom).as_deref(),
+            Some("https://api.heleket.example")
+        );
+        assert_eq!(
+            heleket.own_api_url(&custom).as_deref(),
+            Some("https://api.heleket.example")
+        );
         assert!(heleket.is_configured(&custom));
-        custom.set("api_url", json!("http://api.heleket.example"));
-        assert!(!heleket.is_configured(&custom));
-        assert_eq!(heleket.base(&custom), "https://api.heleket.hk");
+        for wrong in [
+            "http://api.heleket.example",
+            "https://api.heleket.example/v1",
+            "https://user:secret@api.heleket.example",
+            "https://api.heleket.example?merchant=1",
+        ] {
+            custom.set("api_url", json!(wrong));
+            assert!(
+                matches!(
+                    heleket.validate_settings(&custom),
+                    Err(PaymentError::NotConfigured(text)) if text.contains("без пути, логина и пароля")
+                ),
+                "{wrong}"
+            );
+            assert!(!heleket.is_configured(&custom), "{wrong}");
+            assert_eq!(heleket.base(&custom), "https://api.heleket.hk", "{wrong}");
+            assert_eq!(heleket.own_api_url(&custom), None, "{wrong}");
+        }
+        custom.set("api_url", json!("https://api.heleket.hk/"));
+        assert_eq!(heleket.own_api_url(&custom), None);
+        let schema = heleket.settings_schema();
+        let url = schema.iter().find(|f| f.key == "api_url").unwrap();
+        assert_eq!(url.need, Some(Permission::Money));
+        assert!(url.origin && !url.required);
+        assert_eq!(url.default, Some("https://api.heleket.hk"));
+        let key = schema.iter().find(|f| f.key == "api_key").unwrap();
+        assert!(key.depends.is_some_and(|d| d.on == "api_url" && d.reset));
+        assert!(
+            schema
+                .iter()
+                .filter(|f| f.key != "api_url")
+                .all(|f| f.need.is_none() && !f.origin)
+        );
+    }
+
+    struct Issued {
+        amount: Option<&'static str>,
+        currency: Option<&'static str>,
+        order: Option<&'static str>,
+    }
+
+    const ECHO: Issued = Issued {
+        amount: None,
+        currency: None,
+        order: None,
+    };
+
+    impl Respond for Issued {
+        fn respond(&self, request: &Request) -> ResponseTemplate {
+            let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+            ResponseTemplate::new(200).set_body_json(json!({
+                "state": 0,
+                "result": {
+                    "uuid": "a3f1c2d4-1b2c-4d5e-8f90-1a2b3c4d5e6f",
+                    "order_id": self.order.map_or_else(|| body["order_id"].clone(), |o| json!(o)),
+                    "amount": self.amount.map_or_else(|| body["amount"].clone(), |a| json!(a)),
+                    "currency": self.currency.map_or_else(|| body["currency"].clone(), |c| json!(c)),
+                    "payer_currency": null,
+                    "url": "https://pay.heleket.hk/pay/a3f1c2d4",
+                    "expired_at": 1_763_308_800,
+                    "payment_status": "check",
+                    "status": "check",
+                    "is_final": false
+                }
+            }))
+        }
+    }
+
+    async fn issuing(answer: Issued) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/payment"))
+            .and(header("merchant", MERCHANT))
+            .and(SignedBody)
+            .respond_with(answer)
+            .mount(&server)
+            .await;
+        server
+    }
+
+    #[tokio::test]
+    async fn счёт_в_рублях_выставляется_в_рублях() {
+        let server = issuing(ECHO).await;
+        let provider = Heleket::with_api_base(server.uri());
+        let created = provider
+            .create_invoice(&settings(), &invoice(rub(49_900), None))
+            .await
+            .unwrap();
+        assert_eq!(
+            created.external_id.as_deref(),
+            Some("a3f1c2d4-1b2c-4d5e-8f90-1a2b3c4d5e6f")
+        );
+        assert_eq!(created.pay_url, "https://pay.heleket.hk/pay/a3f1c2d4");
+        let body = last_body(&server).await;
+        assert_eq!(body["amount"], "499.00");
+        assert_eq!(body["currency"], "RUB");
+        assert_eq!(body["order_id"], PAYMENT.to_string());
+        assert!(body.get("to_currency").is_none());
+        assert!(body.get("currencies").is_none());
+        let request = InvoiceRequest {
+            method: Some("usdt_trc20".into()),
+            ..invoice(rub(150_050), None)
+        };
+        provider
+            .create_invoice(&settings(), &request)
+            .await
+            .unwrap();
+        let body = last_body(&server).await;
+        assert_eq!(body["amount"], "1500.50");
+        assert_eq!(body["currency"], "RUB");
+        assert_eq!(
+            body["currencies"],
+            json!([{"currency": "USDT", "network": "tron"}])
+        );
+        provider
+            .create_invoice(&settings(), &invoice(usd(699), None))
+            .await
+            .unwrap();
+        let body = last_body(&server).await;
+        assert_eq!(body["amount"], "6.99");
+        assert_eq!(body["currency"], "USD");
+    }
+
+    #[tokio::test]
+    async fn счёт_не_на_ту_сумму_валюту_или_заказ_не_принимается() {
+        for answer in [
+            Issued {
+                amount: Some("6.99"),
+                currency: Some("USD"),
+                ..ECHO
+            },
+            Issued {
+                currency: Some("USD"),
+                ..ECHO
+            },
+            Issued {
+                amount: Some("500.00"),
+                ..ECHO
+            },
+            Issued {
+                order: Some("9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d"),
+                ..ECHO
+            },
+        ] {
+            let server = issuing(answer).await;
+            let result = Heleket::with_api_base(server.uri())
+                .create_invoice(&settings(), &invoice(rub(49_900), None))
+                .await;
+            assert!(
+                matches!(result, Err(PaymentError::BadPayload(_))),
+                "{result:?}"
+            );
+        }
+        let longer = issuing(Issued {
+            amount: Some("499.00000000"),
+            ..ECHO
+        })
+        .await;
+        assert!(
+            Heleket::with_api_base(longer.uri())
+                .create_invoice(&settings(), &invoice(rub(49_900), None))
+                .await
+                .is_ok()
+        );
+        let blank = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/payment"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "state": 0,
+                "result": {
+                    "uuid": "a3f1c2d4", "order_id": null, "amount": null, "currency": "RUB",
+                    "url": "https://pay.heleket.hk/pay/a3f1c2d4"
+                }
+            })))
+            .mount(&blank)
+            .await;
+        assert!(
+            Heleket::with_api_base(blank.uri())
+                .create_invoice(&settings(), &invoice(rub(49_900), None))
+                .await
+                .is_ok()
+        );
+    }
+
+    fn rub_event(status: &str, paid_usd: Option<&str>) -> String {
+        let body = data(status, "499.00", "RUB");
+        let body = match paid_usd {
+            Some(paid) => body.replace(
+                "\"payment_amount_usd\":\"6.99\"",
+                &format!("\"payment_amount_usd\":\"{paid}\""),
+            ),
+            None => body.replace("\"payment_amount_usd\":\"6.99\",", ""),
+        };
+        signed(&body, KEY)
+    }
+
+    #[tokio::test]
+    async fn рублёвый_счёт_засчитывается_в_рублях() {
+        let paid = parse(rub_event("paid", Some("6.31"))).await.unwrap();
+        assert_eq!(paid.status, ProviderStatus::Paid);
+        assert_eq!(paid.amount, Some(rub(49_900)));
+        assert_eq!(paid.payment, Some(PaymentRef::PublicId(PAYMENT)));
+        assert_eq!(paid.signal, None);
+        assert_eq!(check_paid_amount(rub(49_900), paid.amount), AmountCheck::Ok);
+        assert!(matches!(
+            check_paid_amount(rub(50_000), paid.amount),
+            AmountCheck::Underpaid { .. }
+        ));
+        assert!(matches!(
+            check_paid_amount(usd(49_900), paid.amount),
+            AmountCheck::CurrencyMismatch { .. }
+        ));
+        let eight = parse(signed(&data("paid", "499.00000000", "RUB"), KEY))
+            .await
+            .unwrap();
+        assert_eq!(eight.amount, Some(rub(49_900)));
+    }
+
+    #[tokio::test]
+    async fn излишек_по_рублёвому_счёту_ждёт_ручного_решения() {
+        let over = parse(rub_event("paid_over", Some("7.519"))).await.unwrap();
+        assert_eq!(over.status, ProviderStatus::Paid);
+        assert_eq!(over.amount, Some(rub(49_900)));
+        assert_eq!(
+            over.event_key,
+            "62f88b36-a9d5-4fa6-aa26-e040c3dbf26d:paid_over"
+        );
+        let notice = over.notice().unwrap();
+        assert_eq!(notice.kind, NoticeKind::ManualCredit);
+        assert!(
+            notice.text.contains("$7.51") && notice.text.contains("вручную"),
+            "{}",
+            notice.text
+        );
+        let unknown = parse(rub_event("paid_over", None)).await.unwrap();
+        assert_eq!(unknown.status, ProviderStatus::Paid);
+        let notice = unknown.notice().unwrap();
+        assert_eq!(notice.kind, NoticeKind::ManualCredit);
+        assert!(!notice.text.contains('$'), "{}", notice.text);
+        let usd_over = parse(with_usd("paid_over", "6.99", Some("7.519")))
+            .await
+            .unwrap();
+        assert_eq!(
+            usd_over.status,
+            ProviderStatus::Overpaid { received: usd(751) }
+        );
+        assert_eq!(usd_over.signal, None);
+        for status in ["paid", "check", "cancel"] {
+            assert_eq!(
+                parse(rub_event(status, Some("7.519")))
+                    .await
+                    .unwrap()
+                    .signal,
+                None,
+                "{status}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn недоплата_по_рублёвому_счёту_несёт_полученное_в_долларах() {
+        let under = parse(rub_event("wrong_amount", Some("3.2049")))
+            .await
+            .unwrap();
+        assert_eq!(
+            under.status,
+            ProviderStatus::Underpaid { received: usd(320) }
+        );
+        assert_eq!(under.amount, Some(usd(320)));
+        assert_eq!(under.payment, Some(PaymentRef::PublicId(PAYMENT)));
+        assert_eq!(under.signal, None);
+        assert!(matches!(
+            check_paid_amount(rub(49_900), under.amount),
+            AmountCheck::CurrencyMismatch { .. }
+        ));
+        let waiting = parse(rub_event("wrong_amount_waiting", Some("3.20")))
+            .await
+            .unwrap();
+        assert_eq!(waiting.status, ProviderStatus::Pending);
+        let nothing = parse(rub_event("wrong_amount", None)).await.unwrap();
+        assert_eq!(nothing.status, ProviderStatus::Failed);
+        assert_eq!(nothing.amount, None);
+    }
+
+    #[tokio::test]
+    async fn сверка_рублёвого_счёта_по_uuid() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/payment/info"))
+            .and(SignedBody)
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "state": 0,
+                "result": {
+                    "uuid": "26109ba0", "order_id": PAYMENT.to_string(), "amount": "499.00",
+                    "currency": "RUB", "payer_currency": "USDT", "payment_amount": "6.70000000",
+                    "payment_amount_usd": "6.70", "payment_status": "paid_over", "is_final": true
+                }
+            })))
+            .mount(&server)
+            .await;
+        let outcome = Heleket::with_api_base(server.uri())
+            .fetch_status(&settings(), "26109ba0")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(outcome.status, ProviderStatus::Paid);
+        assert_eq!(outcome.amount, Some(rub(49_900)));
+        assert_eq!(
+            check_paid_amount(rub(49_900), outcome.amount),
+            AmountCheck::Ok
+        );
+        let notice = outcome.notice().unwrap();
+        assert_eq!(notice.kind, NoticeKind::ManualCredit);
+        assert!(notice.text.contains("$6.70"), "{}", notice.text);
+        let dollars = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/payment/info"))
+            .and(SignedBody)
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "state": 0,
+                "result": {
+                    "uuid": "26109ba0", "order_id": PAYMENT.to_string(), "amount": "499.00",
+                    "currency": "USD", "payment_status": "paid", "is_final": true
+                }
+            })))
+            .mount(&dollars)
+            .await;
+        let foreign = Heleket::with_api_base(dollars.uri())
+            .fetch_status(&settings(), "26109ba0")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            check_paid_amount(rub(49_900), foreign.amount),
+            AmountCheck::CurrencyMismatch { .. }
+        ));
+    }
+
+    fn trusting() -> reqwest::ClientBuilder {
+        http_builder()
+            .add_root_certificate(reqwest::Certificate::from_pem(TEST_CA.as_bytes()).unwrap())
+    }
+
+    static TRUSTING: sn_egress::Profile = sn_egress::Profile {
+        name: "payments",
+        build: trusting,
+    };
+
+    fn relayed() -> Heleket {
+        Heleket {
+            http: sn_egress::Http::new(
+                &TRUSTING,
+                sn_egress::Route::Payments,
+                Some(providers::HELEKET),
+            ),
+            api_base: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn свой_адрес_api_получает_все_запросы_heleket() {
+        let api = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/payment"))
+            .and(header("merchant", MERCHANT))
+            .and(SignedBody)
+            .respond_with(ECHO)
+            .mount(&api)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/payment/info"))
+            .and(SignedBody)
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "state": 0,
+                "result": {
+                    "uuid": "26109ba0", "order_id": PAYMENT.to_string(), "amount": "499.00",
+                    "currency": "RUB", "payment_status": "paid", "is_final": true
+                }
+            })))
+            .mount(&api)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/payment/services"))
+            .and(header("merchant", MERCHANT))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "state": 0,
+                "result": [{"network": "TRON", "currency": "USDT", "is_available": true}]
+            })))
+            .mount(&api)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/payment/aml-links"))
+            .and(SignedBody)
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "state": 0,
+                "result": [{"link": "https://aml.heleket.hk/form/9c1d", "status": "init"}]
+            })))
+            .mount(&api)
+            .await;
+        let front = https_front(&api.uri()).await;
+        let mut custom = settings();
+        custom.set("api_url", json!(format!("{front}/")));
+        let heleket = relayed();
+        assert!(heleket.is_configured(&custom));
+        assert_eq!(heleket.api_url(&custom).as_deref(), Some(front.as_str()));
+        assert_eq!(
+            heleket.own_api_url(&custom).as_deref(),
+            Some(front.as_str())
+        );
+        let created = heleket
+            .create_invoice(&custom, &invoice(rub(49_900), None))
+            .await
+            .unwrap();
+        assert_eq!(created.pay_url, "https://pay.heleket.hk/pay/a3f1c2d4");
+        let polled = heleket
+            .fetch_status(&custom, "26109ba0")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(polled.amount, Some(rub(49_900)));
+        let check = heleket
+            .check_connection(&custom, &CheckContext::default())
+            .await;
+        assert_eq!(check.status, CheckStatus::Ok, "{}", check.summary);
+        assert!(
+            check
+                .details
+                .iter()
+                .any(|line| line.contains(&front) && line.contains("https://api.heleket.hk")),
+            "{:?}",
+            check.details
+        );
+        let held = heleket
+            .parse_webhook(
+                &custom,
+                &hook(&[], with_usd("locked", "6.99", Some("6.99"))),
+            )
+            .await
+            .unwrap();
+        assert!(
+            held.notice()
+                .unwrap()
+                .text
+                .contains("https://aml.heleket.hk/form/9c1d")
+        );
+        let paths: Vec<String> = api
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .map(|request| request.url.path().to_string())
+            .collect();
+        assert_eq!(
+            paths,
+            [
+                "/v1/payment",
+                "/v1/payment/info",
+                "/v1/payment/services",
+                "/v1/payment/aml-links"
+            ]
+        );
+        let standard = Heleket::with_api_base(api.uri())
+            .check_connection(&custom, &CheckContext::default())
+            .await;
+        assert!(standard.details.is_empty(), "{:?}", standard.details);
     }
 
     #[tokio::test]

@@ -252,6 +252,7 @@ mod tests {
                     providers::CLOUDPAYMENTS,
                     providers::OVERPAY,
                     providers::CRYPTOPAY,
+                    providers::HELEKET,
                     providers::CRYPTOMUS,
                     providers::LAVA,
                     providers::ROLLYPAY,
@@ -292,6 +293,9 @@ mod tests {
             assert!(registry.is_available(providers::CRYPTOMUS, Currency::Rub));
             assert!(registry.is_available(providers::CRYPTOMUS, Currency::Usd));
             assert!(registry.accepts_webhooks(providers::CRYPTOMUS));
+            assert!(registry.is_available(providers::HELEKET, Currency::Rub));
+            assert!(registry.is_available(providers::HELEKET, Currency::Usd));
+            assert!(registry.accepts_webhooks(providers::HELEKET));
             for id in [
                 providers::MULENPAY,
                 providers::PAL24,

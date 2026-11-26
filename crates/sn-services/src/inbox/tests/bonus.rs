@@ -1248,8 +1248,8 @@ async fn бонус_задаётся_для_каждой_валюты_отдел
     );
     let refused = save_in(
         &kit,
-        providers::HELEKET,
-        Currency::Rub,
+        providers::OVERPAY,
+        Currency::Usd,
         ProviderUpdate {
             topup_bonus: Some(percent(5)),
             ..Default::default()
@@ -1258,11 +1258,35 @@ async fn бонус_задаётся_для_каждой_валюты_отдел
     .await
     .unwrap_err();
     assert_eq!(refused.code(), "settings.provider_currency");
-    assert!(refused.to_string().contains("рубли"), "{refused}");
+    assert!(refused.to_string().contains("доллары"), "{refused}");
     save_in(
         &kit,
         providers::HELEKET,
         Currency::Rub,
+        ProviderUpdate {
+            topup_bonus: Some(percent(5)),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        kit.services
+            .payments()
+            .topup_bonus(providers::HELEKET, None, Currency::Rub)
+            .map(|t| t.percent),
+        Some(5)
+    );
+    assert_eq!(
+        kit.services
+            .payments()
+            .topup_bonus(providers::HELEKET, None, Currency::Usd),
+        None
+    );
+    save_in(
+        &kit,
+        providers::OVERPAY,
+        Currency::Usd,
         ProviderUpdate {
             channels: Some(sn_domain::payment::PaymentChannels::ALL),
             ..Default::default()
