@@ -5,10 +5,11 @@ use crate::state::AppState;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::Response;
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use serde::Deserialize;
 use sn_domain::access::Permission;
+use sn_services::maintenance::TelegramUpdate;
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -19,7 +20,22 @@ pub fn routes() -> Router<AppState> {
         .route("/auth/2fa/setup", post(totp_setup))
         .route("/auth/2fa/enable", post(totp_enable))
         .route("/auth/2fa/disable", post(totp_disable))
+        .route("/auth/telegram", put(set_telegram))
         .route("/me", get(me))
+}
+
+async fn set_telegram(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    ApiJson(body): ApiJson<TelegramUpdate>,
+) -> ApiResult<Json<serde_json::Value>> {
+    admin.require_session()?;
+    let telegram_id = state
+        .services
+        .maintenance()
+        .set_telegram(admin.0.admin_id, &body)
+        .await?;
+    Ok(Json(serde_json::json!({ "telegram_id": telegram_id })))
 }
 
 #[derive(Deserialize)]
@@ -212,5 +228,6 @@ async fn me(
         "logo_url": settings.logo_url(),
         "appearance": settings.appearance,
         "remnawave": state.services.remna().is_ok(),
+        "maintenance": settings.maintenance.enabled,
     })))
 }

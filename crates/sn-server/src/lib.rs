@@ -3,6 +3,7 @@ pub mod cookies;
 pub mod error;
 pub mod extract;
 pub mod lang;
+pub mod maintenance;
 pub mod routes;
 pub mod security;
 pub mod state;

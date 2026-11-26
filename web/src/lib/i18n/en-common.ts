@@ -132,4 +132,6 @@ export const COMMON: Record<string, string> = {
   'Убрать {name}': 'Remove {name}',
   'Открыть {name}': 'Open {name}',
   'удалён по сроку хранения': 'removed after the storage period',
+  'Технические работы': 'Maintenance',
+  'Закончим примерно {when}': 'We expect to finish around {when}',
 };

@@ -7,6 +7,7 @@ import { useSession } from '../session';
 import { fromRaw, toRaw } from '../tariffs/model';
 import { Switch } from '../ui';
 import '../form.css';
+import { MaintenanceSection, maintenanceChanged, maintenanceForm, maintenanceProblem, saveMaintenance, type MaintenanceForm, type MaintenanceView } from './MaintenanceSettings';
 import { ProxySection, proxyChanged, proxyForm, proxyProblem, saveProxy, type ProxyForm, type ProxyView } from './ProxySettings';
 import { SettingsLayout } from './SettingsLayout';
 
@@ -89,14 +90,17 @@ export function SettingsGeneral() {
   const [busy, setBusy] = useState(false);
   const [proxyView, setProxyView] = useState<ProxyView | null>(null);
   const [proxy, setProxy] = useState<ProxyForm | null>(null);
+  const [maintView, setMaintView] = useState<MaintenanceView | null>(null);
+  const [maint, setMaint] = useState<MaintenanceForm | null>(null);
   const scrolled = useRef(false);
 
   const load = useCallback(async () => {
     try {
-      const [data, site, egress] = await Promise.all([
+      const [data, site, egress, works] = await Promise.all([
         api<Core>('/api/admin/settings/core'),
         api<SiteData>('/api/admin/settings/site'),
         api<ProxyView>('/api/admin/settings/proxy'),
+        api<MaintenanceView>('/api/admin/settings/maintenance'),
       ]);
       const s = data.settings;
       const next: Work = {
@@ -114,6 +118,8 @@ export function SettingsGeneral() {
       setLimits({ title: site.title_max, desc: site.description_max });
       setProxyView(egress);
       setProxy(proxyForm(egress));
+      setMaintView(works);
+      setMaint(maintenanceForm(works));
       setCore(s);
       setBase(next);
       setWork(next);
@@ -128,13 +134,14 @@ export function SettingsGeneral() {
   }, [load]);
 
   useEffect(() => {
-    if (proxyView && !scrolled.current && window.location.hash === '#proxy') {
+    const target = window.location.hash.slice(1);
+    if (proxyView && maintView && !scrolled.current && (target === 'proxy' || target === 'maintenance')) {
       scrolled.current = true;
-      document.getElementById('proxy')?.scrollIntoView({ block: 'start' });
+      document.getElementById(target)?.scrollIntoView({ block: 'start' });
     }
-  }, [proxyView]);
+  }, [proxyView, maintView]);
 
-  if (!core || !work || !base || !proxy || !proxyView) {
+  if (!core || !work || !base || !proxy || !proxyView || !maint || !maintView) {
     return (
       <SettingsLayout>
         {error ? (
@@ -151,7 +158,10 @@ export function SettingsGeneral() {
   const currency = core.currency;
   const proxyDirty = proxyChanged(proxy, proxyView);
   const proxyBad = proxyDirty ? proxyProblem(proxy) : null;
-  const dirty = JSON.stringify(work) !== JSON.stringify(base) || proxyDirty;
+  const maintBase = maintenanceForm(maintView);
+  const maintDirty = maintenanceChanged(maint, maintBase);
+  const maintBad = maintDirty ? maintenanceProblem(maint, maintBase, maintView) : null;
+  const dirty = JSON.stringify(work) !== JSON.stringify(base) || proxyDirty || maintDirty;
   const edit = (patch: Partial<Work>) => {
     setWork({ ...work, ...patch });
     setStatus(null);
@@ -177,6 +187,10 @@ export function SettingsGeneral() {
     }
     if (brandBad || supportBad || ttlBad || topupBad || titleBad || descBad) {
       setStatus({ text: 'Исправьте поля, отмеченные красным', bad: true });
+      return;
+    }
+    if (maintBad) {
+      setStatus({ text: maintBad, bad: true });
       return;
     }
     if (proxyBad) {
@@ -217,8 +231,9 @@ export function SettingsGeneral() {
       if (proxyDirty) {
         await saveProxy(proxy);
       }
+      const switched = maintDirty ? await saveMaintenance(maint, maintBase) : false;
       await load();
-      if (work.brand !== base.brand) {
+      if (work.brand !== base.brand || switched) {
         await reload();
       }
       setStatus({ text: 'Сохранено', bad: false });
@@ -287,6 +302,16 @@ export function SettingsGeneral() {
           </div>
         </div>
       </section>
+
+      <MaintenanceSection
+        view={maintView}
+        form={maint}
+        onChange={(next) => {
+          setMaint(next);
+          setStatus(null);
+        }}
+        busy={busy}
+      />
 
       <section className="sec" aria-labelledby="sup-h">
         <div className="sec-head">
@@ -508,6 +533,7 @@ export function SettingsGeneral() {
           onClick={() => {
             setWork(base);
             setProxy(proxyForm(proxyView));
+            setMaint(maintBase);
             setStatus(null);
           }}
         >

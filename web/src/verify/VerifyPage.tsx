@@ -26,7 +26,7 @@ const NO_CHECK = msg('Не получилось проверить. Провер
 const NO_PAGE = msg('Не получилось открыть проверку. Проверьте интернет и обновите страницу.');
 
 function lost(err: unknown): boolean {
-  return !(err instanceof ApiError) || err.status === 0 || err.status >= 500;
+  return !(err instanceof ApiError) || err.status === 0 || (err.status >= 500 && err.code !== 'maintenance');
 }
 
 function reason(err: unknown, fallback: string): string {

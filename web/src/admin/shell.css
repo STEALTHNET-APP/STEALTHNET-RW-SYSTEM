@@ -484,6 +484,30 @@
   padding: 30px 24px 48px;
 }
 
+.maint-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 16px;
+  margin: 0;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--warn);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.maint-strip-link {
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+.maint-strip-link:hover {
+  text-decoration: underline;
+}
+
 .page-title {
   font-size: 26px;
   line-height: 1.45;

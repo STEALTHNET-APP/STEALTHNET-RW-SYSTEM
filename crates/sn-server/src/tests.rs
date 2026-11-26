@@ -57,6 +57,7 @@ mod languages;
 mod legacy_webhooks;
 mod mail;
 mod mail_errors;
+mod maintenance;
 mod migrated_providers;
 mod mini_account;
 mod mini_support;

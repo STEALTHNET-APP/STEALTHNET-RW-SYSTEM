@@ -1067,16 +1067,32 @@ pub async fn due(db: &mut impl Db, limit: i64) -> StoreResult<Vec<(i64, Audience
         .collect()
 }
 
-pub async fn next_sending(db: &mut impl Db, lane: Lane) -> StoreResult<Option<i64>> {
+pub async fn next_sending(
+    db: &mut impl Db,
+    lane: Lane,
+    manual_only: bool,
+) -> StoreResult<Option<i64>> {
     Ok(sqlx::query_scalar(
-        "SELECT b.id FROM broadcasts b WHERE b.status = 'sending' AND EXISTS ( \
+        "SELECT b.id FROM broadcasts b WHERE b.status = 'sending' \
+         AND (NOT $2 OR (b.rule_id IS NULL AND b.contest_message_id IS NULL)) AND EXISTS ( \
              SELECT 1 FROM broadcast_recipients r WHERE r.broadcast_id = b.id AND r.channel = $1 \
              AND r.state IN ('pending', 'sending')) \
          ORDER BY b.started_at, b.id LIMIT 1",
     )
     .bind(lane.as_str())
+    .bind(manual_only)
     .fetch_optional(db.conn())
     .await?)
+}
+
+pub async fn automatic(db: &mut impl Db, id: i64) -> StoreResult<bool> {
+    Ok(sqlx::query_scalar(
+        "SELECT rule_id IS NOT NULL OR contest_message_id IS NOT NULL FROM broadcasts WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(db.conn())
+    .await?
+    .unwrap_or(false))
 }
 
 pub struct Message {

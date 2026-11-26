@@ -11,6 +11,7 @@ use sn_domain::money::{Currency, Money};
 use sn_store::Store;
 use sn_store::testing::{TestDb, test_store};
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
@@ -103,6 +104,7 @@ impl BotSender for FakeSender {
 struct Core {
     sender: Option<Arc<dyn BotSender>>,
     mail: Option<Arc<dyn MailSender>>,
+    held: Arc<AtomicBool>,
 }
 
 #[async_trait]
@@ -139,17 +141,16 @@ impl CoreApi for Core {
     fn mail_sender(&self) -> Option<Arc<dyn MailSender>> {
         self.mail.clone()
     }
+
+    fn core_settings(&self) -> Arc<sn_domain::settings::CoreSettings> {
+        let mut settings = sn_domain::settings::CoreSettings::default();
+        settings.maintenance.enabled = self.held.load(Ordering::SeqCst);
+        Arc::new(settings)
+    }
 }
 
 fn context(store: &Store, sender: Option<Arc<FakeSender>>) -> ModuleContext {
-    ModuleContext {
-        store: store.clone(),
-        core: Arc::new(Core {
-            sender: sender.map(|s| s as Arc<dyn BotSender>),
-            mail: None,
-        }),
-        currency: Currency::Usd,
-    }
+    context_with(store, sender, None)
 }
 
 pub(super) fn context_with(
@@ -157,11 +158,21 @@ pub(super) fn context_with(
     sender: Option<Arc<FakeSender>>,
     mail: Option<Arc<FakeMail>>,
 ) -> ModuleContext {
+    held_context(store, sender, mail, Arc::new(AtomicBool::new(false)))
+}
+
+pub(super) fn held_context(
+    store: &Store,
+    sender: Option<Arc<FakeSender>>,
+    mail: Option<Arc<FakeMail>>,
+    held: Arc<AtomicBool>,
+) -> ModuleContext {
     ModuleContext {
         store: store.clone(),
         core: Arc::new(Core {
             sender: sender.map(|s| s as Arc<dyn BotSender>),
             mail: mail.map(|m| m as Arc<dyn MailSender>),
+            held,
         }),
         currency: Currency::Usd,
     }
@@ -281,7 +292,7 @@ pub(super) fn spawn_engine(
     Running { stop, handle }
 }
 
-async fn wait_status(store: &Store, id: i64, wanted: Status) -> Broadcast {
+pub(super) async fn wait_status(store: &Store, id: i64, wanted: Status) -> Broadcast {
     let started = Instant::now();
     loop {
         let mut conn = store.conn().await.unwrap();
@@ -376,7 +387,7 @@ async fn exec(store: &Store, sql: &str, id: i64) {
         .unwrap();
 }
 
-fn draft(text: &str, audience: Audience) -> Draft {
+pub(super) fn draft(text: &str, audience: Audience) -> Draft {
     Draft {
         channel: Channel::Bot,
         subject: None,

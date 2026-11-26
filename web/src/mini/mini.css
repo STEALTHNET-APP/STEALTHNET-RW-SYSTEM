@@ -2175,3 +2175,17 @@ button.mn-tab {
   color: var(--muted);
   text-align: center;
 }
+
+.mn-maint .mn-logo {
+  flex: 0 0 auto;
+  width: 56px;
+  height: 56px;
+  border-radius: 16px;
+  font-size: 28px;
+}
+
+.mn-maint-text {
+  max-width: 420px;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}

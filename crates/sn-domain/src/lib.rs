@@ -20,6 +20,7 @@ pub mod landing_css;
 pub mod lang;
 pub mod ledger;
 pub mod mail_letters;
+pub mod maintenance;
 pub mod miniapp;
 pub mod miniapp_css;
 pub mod module;

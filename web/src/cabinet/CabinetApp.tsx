@@ -8,6 +8,7 @@ import { Icon } from '../lib/icons';
 import { applyLang, guessLang, msg, NATIVE, otherLang, rememberLang, siteLangs, t, useApplied, useLang, type Lang } from '../lib/i18n';
 import { usePhone } from '../lib/media';
 import { styleFile, useOwnStyles } from '../lib/ownStyles';
+import { maintenanceOf, useMaintenanceWatch } from '../lib/maintenance';
 import { DEFAULT_SITE, showTitle, useSite } from '../lib/site';
 import { supportLink, supportTickets } from '../lib/support';
 import { useSupportUnread } from '../lib/supportUnread';
@@ -19,6 +20,7 @@ import { FriendsPage } from './Friends';
 import { GiftsPage } from './Gifts';
 import { HelpPage } from './Help';
 import { Login } from './Login';
+import { CabinetMaintenance } from './Maintenance';
 import { partOf, type Part } from './parts';
 import { photoUrl, type ClientMe } from './model';
 import { Pay } from './Pay';
@@ -70,7 +72,8 @@ export function CabinetApp() {
   const phone = usePhone();
   const { pathname } = useLocation();
   const [state, setState] = useState<State>({ kind: 'loading' });
-  const [unread, setUnread] = useSupportUnread(state.kind === 'in' && supportTickets(site), pathname);
+  const maintenance = maintenanceOf(loadedSite);
+  const [unread, setUnread] = useSupportUnread(state.kind === 'in' && !maintenance && supportTickets(site), pathname);
   const [personal, setPersonal] = useState<Theme | null>(storedTheme);
   const [picked, setPicked] = useState<Lang | null>(null);
   const langs = siteLangs(loadedSite);
@@ -80,6 +83,7 @@ export function CabinetApp() {
   const lang = useLang();
   const styled = useOwnStyles(styleFile(loadedSite?.cabinet?.css, 'cabinet'));
   const opened = ready && styled && state.kind !== 'loading';
+  useMaintenanceWatch(maintenance !== null);
   useEffect(() => {
     if (opened) {
       showTitle(loadedSite, (known) => t('Личный кабинет — {brand}', { brand: known.brand_name }));
@@ -153,6 +157,9 @@ export function CabinetApp() {
 
   if (state.kind === 'loading' || !ready || !styled) {
     return <div className="cb-blank" aria-busy="true" />;
+  }
+  if (maintenance) {
+    return <CabinetMaintenance site={site} mode={maintenance} />;
   }
   if (state.kind === 'guest') {
     return <Login key={lang} site={site} onDone={() => void load()} langSwitch={nextLang ? { lang: nextLang, onPick: () => switchLang(nextLang) } : null} />;

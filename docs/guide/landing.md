@@ -111,6 +111,7 @@ background: #e8f3f1;
 | Вопросы и ответы | `details`, `summary` (вопрос), `details p` (ответ) |
 | Призыв в конце | `.ld-band` (плашка), `.ld-band h2`, `.ld-band p` |
 | Подвал | `.ld-foot`, `.ld-foot-brand`, `.ld-foot-nav a` |
+| Строка о технических работах | `.ld-notice`, видна, только пока они включены |
 
 Переменные цветов: `--bg` (фон), `--surface` и `--surface-2` (карточки), `--line` и `--card-line` (линии), `--ink`, `--ink-2` и `--muted` (текст), `--accent`, `--accent-ink` (ссылки), `--btn` и `--btn-ink` (главная кнопка), `--band` (плашка в конце), `--btn-dark` и `--btn-dark-ink` (кнопка на плашке).
 

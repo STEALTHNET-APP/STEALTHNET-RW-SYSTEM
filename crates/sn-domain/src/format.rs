@@ -4,7 +4,7 @@ use crate::traffic::{GIB, TIB};
 
 pub const NBSP: char = '\u{a0}';
 
-const MONTHS_RU: [&str; 12] = [
+pub const MONTHS_RU: [&str; 12] = [
     "января",
     "февраля",
     "марта",
@@ -19,7 +19,7 @@ const MONTHS_RU: [&str; 12] = [
     "декабря",
 ];
 
-const MONTHS_EN: [&str; 12] = [
+pub const MONTHS_EN: [&str; 12] = [
     "January",
     "February",
     "March",
@@ -40,6 +40,20 @@ pub fn date_in(date: chrono::NaiveDate, locale: Locale) -> String {
     match locale {
         Locale::Ru => format!("{}{NBSP}{} {}", date.day(), MONTHS_RU[index], date.year()),
         Locale::En => format!("{}{NBSP}{}, {}", MONTHS_EN[index], date.day(), date.year()),
+    }
+}
+
+pub fn utc_label(offset: chrono::FixedOffset) -> String {
+    let minutes = offset.local_minus_utc() / 60;
+    if minutes == 0 {
+        return "UTC".into();
+    }
+    let sign = if minutes < 0 { '−' } else { '+' };
+    let (h, m) = (minutes.abs() / 60, minutes.abs() % 60);
+    if m == 0 {
+        format!("UTC{sign}{h}")
+    } else {
+        format!("UTC{sign}{h}:{m:02}")
     }
 }
 

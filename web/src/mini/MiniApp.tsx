@@ -5,6 +5,7 @@ import { BrandMark } from '../lib/brand';
 import { applyLang, guessLang, likelyLang, otherLang, rememberLang, siteLangs, t, useApplied, useLang, type Lang } from '../lib/i18n';
 import { Icon } from '../lib/icons';
 import { styleFile, useOwnStyles } from '../lib/ownStyles';
+import { maintenanceOf, maintenanceText, untilText, useMaintenanceWatch } from '../lib/maintenance';
 import { DEFAULT_SITE, useSite } from '../lib/site';
 import { supportTickets } from '../lib/support';
 import { useSupportUnread } from '../lib/supportUnread';
@@ -110,7 +111,8 @@ export function MiniApp() {
   const [chosenId, setChosenId] = useState<number | null>(null);
   const cache = useRef(new Map<number, Detail>());
   const [, setTick] = useState(0);
-  const [unread, setUnread] = useSupportUnread(state.kind === 'in' && supportTickets(site));
+  const maintenance = maintenanceOf(loadedSite);
+  const [unread, setUnread] = useSupportUnread(state.kind === 'in' && !maintenance && supportTickets(site));
   const [tg, setTg] = useState<WebApp | null>(null);
   const [tgScheme, setTgScheme] = useState<Theme | null>(null);
   const [personal, setPersonal] = useState<Theme | null>(() => {
@@ -218,6 +220,7 @@ export function MiniApp() {
   }, [start]);
 
   const styled = useOwnStyles(styleFile((site.miniapp as { css?: unknown } | null | undefined)?.css, 'miniapp'));
+  useMaintenanceWatch(maintenance !== null);
   const shown = state.kind !== 'loading' && applied && styled;
 
   const choice = site.appearance.client_theme;
@@ -281,6 +284,23 @@ export function MiniApp() {
 
   if (!shown) {
     return <div className="mn-blank" aria-busy="true" />;
+  }
+  if (maintenance) {
+    const until = untilText(maintenance.until);
+    const support = site.support_url;
+    return (
+      <div className="mn mn-solo mn-maint" role="status">
+        <BrandMark name={site.brand_name} logo={site.logo_url} className="mn-logo" />
+        <h1>{t('Технические работы')}</h1>
+        <p className="mn-maint-text">{maintenanceText(maintenance)}</p>
+        {until ? <p>{until}</p> : null}
+        {support ? (
+          <button type="button" className="mn-link" onClick={() => openExternal(support)}>
+            {t('Написать в поддержку')}
+          </button>
+        ) : null}
+      </div>
+    );
   }
   if (!ctx) {
     const text =

@@ -1407,6 +1407,10 @@ impl Module for BroadcastModule {
                 }
                 Ok(())
             }
+            AUTO_TASK if ctx.core.core_settings().maintenance.enabled => {
+                tracing::debug!("рассылки: идут технические работы, правила ждут");
+                Ok(())
+            }
             AUTO_TASK => {
                 let now = {
                     let mut conn = ctx.store.conn().await?;

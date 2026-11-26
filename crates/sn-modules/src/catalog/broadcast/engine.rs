@@ -221,6 +221,7 @@ struct Prepared {
     body: Body,
     rejected: u32,
     notice: bool,
+    automatic: bool,
 }
 
 impl Prepared {
@@ -275,6 +276,10 @@ impl Engine {
 
     fn lane(&self) -> Lane {
         self.sender.lane()
+    }
+
+    fn held(&self) -> bool {
+        self.ctx.core.core_settings().maintenance.enabled
     }
 
     pub async fn run(self, shutdown: impl Future<Output = ()> + Send + 'static) {
@@ -371,12 +376,15 @@ impl Engine {
         if !(self.enabled)() || !self.lead(&mut state.lead).await? {
             return Ok(self.config.idle);
         }
-        self.start_due().await?;
+        let held = self.held();
+        if !held {
+            self.start_due().await?;
+        }
         let mut conn = self.ctx.store.conn().await?;
         for id in store::complete_finished(&mut conn).await? {
             tracing::info!(broadcast = id, "рассылка отправлена");
         }
-        let Some(id) = store::next_sending(&mut conn, self.lane()).await? else {
+        let Some(id) = store::next_sending(&mut conn, self.lane(), held).await? else {
             state.prepared = None;
             return Ok(self.config.idle);
         };
@@ -433,6 +441,7 @@ impl Engine {
             body,
             rejected: 0,
             notice: true,
+            automatic: store::automatic(conn, id).await?,
         }))
     }
 
@@ -503,7 +512,10 @@ impl Engine {
                 self.settle(id, joined, prepared, pace).await?;
             }
             if stopping_since.is_none()
-                && (*stop.borrow() || !(self.enabled)() || !self.lead(lead).await?)
+                && (*stop.borrow()
+                    || !(self.enabled)()
+                    || (prepared.automatic && self.held())
+                    || !self.lead(lead).await?)
             {
                 stopping_since = Some(Instant::now());
             }

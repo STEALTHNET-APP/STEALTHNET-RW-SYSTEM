@@ -33,6 +33,7 @@ mod gifts;
 mod gram_wallet;
 mod languages;
 mod layout;
+mod maintenance;
 mod menu_mode;
 mod miniapp;
 mod photos;

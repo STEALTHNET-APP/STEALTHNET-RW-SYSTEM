@@ -9,6 +9,7 @@ import { applyLang, guessLang, otherLang, rememberLang, siteLangs, t, useApplied
 import { Icon } from '../lib/icons';
 import { usePhone } from '../lib/media';
 import { styleFile, useOwnStyles, usePreviewStyles } from '../lib/ownStyles';
+import { maintenanceOf, maintenanceText, untilText } from '../lib/maintenance';
 import { DEFAULT_SITE, showTitle, useSite } from '../lib/site';
 import { readStored, useSurface, useSystemTheme, writeStored, type Theme } from '../lib/theme';
 import './landing.css';
@@ -195,6 +196,7 @@ function LandingPage({ mode }: { mode: Mode }) {
   const theme: Theme = forced ?? fixed ?? personal ?? system;
   useSurface('landing', theme, site.appearance.client === 'mono' ? 'b' : 'a');
   const styled = useOwnStyles(cssHref);
+  const maintenance = mode === 'live' ? maintenanceOf(loadedSite) : null;
   usePreviewStyles(draftCss);
   const [opened, setOpened] = useState(false);
   const visible = blocks !== null && ready && (styled || opened);
@@ -630,6 +632,11 @@ function LandingPage({ mode }: { mode: Mode }) {
 
   return (
     <div className={rootClass} id="top" onClickCapture={framed ? onPreviewClick : undefined}>
+      {maintenance ? (
+        <p className="ld-notice" role="status">
+          {[maintenanceText(maintenance), untilText(maintenance.until)].filter(Boolean).join(' ')}
+        </p>
+      ) : null}
       {header}
       <main>{blocks.map(render)}</main>
       <footer className="ld-foot" data-block="footer">

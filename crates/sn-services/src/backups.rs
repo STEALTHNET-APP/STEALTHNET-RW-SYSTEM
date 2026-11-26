@@ -500,19 +500,7 @@ pub fn kind_title(kind: RunKind) -> &'static str {
     }
 }
 
-pub fn utc_label(offset: chrono::FixedOffset) -> String {
-    let minutes = offset.local_minus_utc() / 60;
-    if minutes == 0 {
-        return "UTC".into();
-    }
-    let sign = if minutes < 0 { '−' } else { '+' };
-    let (h, m) = (minutes.abs() / 60, minutes.abs() % 60);
-    if m == 0 {
-        format!("UTC{sign}{h}")
-    } else {
-        format!("UTC{sign}{h}:{m:02}")
-    }
-}
+pub use sn_domain::format::utc_label;
 
 pub fn escape_html(raw: &str) -> String {
     raw.replace('&', "&amp;")

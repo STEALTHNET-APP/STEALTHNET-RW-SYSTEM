@@ -607,6 +607,8 @@ pub struct CoreSettings {
     pub bot_updates: BotDelivery,
     #[serde(default)]
     pub bot_flood: FloodSettings,
+    #[serde(default)]
+    pub maintenance: crate::maintenance::Maintenance,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -815,6 +817,7 @@ impl Default for CoreSettings {
             languages: Languages::default(),
             bot_updates: BotDelivery::default(),
             bot_flood: FloodSettings::default(),
+            maintenance: crate::maintenance::Maintenance::default(),
         }
     }
 }
@@ -904,6 +907,7 @@ pub mod keys {
     pub const LANGUAGES: &str = "core.languages";
     pub const BOT_UPDATES: &str = "bot.updates";
     pub const BOT_FLOOD: &str = "bot.flood";
+    pub const MAINTENANCE: &str = "core.maintenance";
 
     pub fn provider(id: &str) -> String {
         format!("payments.{id}")

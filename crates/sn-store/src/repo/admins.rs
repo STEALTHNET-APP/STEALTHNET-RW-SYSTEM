@@ -135,6 +135,36 @@ impl<'c> AdminsRepo<'c> {
         )
     }
 
+    pub async fn set_telegram(&mut self, id: AdminId, telegram_id: Option<i64>) -> StoreResult<()> {
+        let done = sqlx::query("UPDATE admins SET telegram_id = $2 WHERE id = $1")
+            .bind(id.0)
+            .bind(telegram_id)
+            .execute(&mut *self.conn)
+            .await?;
+        if done.rows_affected() == 0 {
+            return Err(StoreError::NotFound("администратор"));
+        }
+        Ok(())
+    }
+
+    pub async fn is_active_telegram(&mut self, telegram_id: i64) -> StoreResult<bool> {
+        Ok(sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM admins WHERE telegram_id = $1 AND disabled_at IS NULL)",
+        )
+        .bind(telegram_id)
+        .fetch_one(&mut *self.conn)
+        .await?)
+    }
+
+    pub async fn count_telegram_besides(&mut self, id: AdminId) -> StoreResult<i64> {
+        Ok(sqlx::query_scalar(
+            "SELECT count(*) FROM admins WHERE telegram_id IS NOT NULL AND disabled_at IS NULL AND id <> $1",
+        )
+        .bind(id.0)
+        .fetch_one(&mut *self.conn)
+        .await?)
+    }
+
     pub async fn set_password(
         &mut self,
         id: AdminId,

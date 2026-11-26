@@ -1566,3 +1566,33 @@ async fn продление_с_баланса_предупреждает_тол�
     assert!(!autorenew_enabled(&kit, &subscriptions[1]).await);
     kit.db.cleanup().await;
 }
+
+#[tokio::test]
+async fn автопродление_во_время_технических_работ_списывает_как_обычно() {
+    let Some(kit) = kit().await else { return };
+    let mut settings = (*kit.services.settings()).clone();
+    settings.maintenance.enabled = true;
+    kit.services.replace_settings(settings);
+    assert!(kit.services.maintenance().active());
+    let client_id = client(&kit.services, 309).await;
+    let subscription =
+        due_subscription(&kit, client_id, Days::hours(12), SubscriptionStatus::Active).await;
+    let before = balance(&kit.services, client_id).await;
+    let report = kit
+        .services
+        .autorenew()
+        .run_due(kit.services.now())
+        .await
+        .unwrap();
+    assert_eq!((report.due, report.charged, report.failed), (1, 1, 0));
+    assert_eq!(balance(&kit.services, client_id).await, before - 699);
+    let renewals = renewals(&kit, &subscription).await;
+    let (order, _) = &renewals[0];
+    let expire = subscription.mirror.expire_at.unwrap();
+    kit.services.fulfillment().run(order.id).await.unwrap();
+    assert_eq!(
+        remna_user(&kit, &subscription).await.expire_at,
+        expire + Days::days(90)
+    );
+    kit.db.cleanup().await;
+}

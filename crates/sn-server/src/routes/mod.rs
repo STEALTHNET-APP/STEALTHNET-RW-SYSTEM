@@ -173,6 +173,7 @@ pub fn router(state: AppState) -> Router {
         .nest_service("/api/public/m", public_modules)
         .fallback(crate::web::fallback)
         .layer(axum::middleware::from_fn(crate::error::client_facing))
+        .layer(from_fn_with_state(state.clone(), crate::maintenance::gate))
         .layer(from_fn_with_state(
             state.clone(),
             crate::lang::client_language,

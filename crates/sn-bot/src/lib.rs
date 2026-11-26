@@ -12,6 +12,7 @@ pub mod handler;
 pub mod lanes;
 pub mod link;
 pub mod login;
+pub mod maintenance;
 pub mod media;
 pub mod notify;
 pub mod pacer;

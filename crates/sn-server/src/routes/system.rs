@@ -211,6 +211,7 @@ async fn site(State(state): State<AppState>, headers: HeaderMap) -> Response {
             },
             "miniapp": state.services.miniapp().public().await,
             "cabinet": { "css": state.services.cabinet().style().map(|style| style.path()) },
+            "maintenance": state.services.maintenance().public(),
         }),
     )
 }

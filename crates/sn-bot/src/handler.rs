@@ -226,6 +226,9 @@ async fn dispatch(ctx: &BotCtx, update: Update) -> Result<(), BotError> {
             }
         };
     }
+    if crate::maintenance::closed_for(ctx, &user).await? {
+        return crate::maintenance::notify(ctx, &user, target.chat_id).await;
+    }
     if let Some(file) = crate::support_files::incoming(&message) {
         let session = Session::load(&ctx.services, target.chat_id).await?;
         return run(ctx, &user, target, session, Action::File(file)).await;
@@ -267,6 +270,17 @@ async fn forget(ctx: &BotCtx, chat_id: i64, message_id: i64) -> bool {
 }
 
 async fn on_callback(ctx: &BotCtx, callback: CallbackQuery) -> Result<(), BotError> {
+    let private = callback
+        .message
+        .as_ref()
+        .is_some_and(|m| m.chat.is_private());
+    if private && crate::maintenance::closed_for(ctx, &callback.from).await? {
+        let text = crate::maintenance::text_for(ctx, &callback.from).await?;
+        if let Err(err) = ctx.api.answer_alert(&callback.id, &text).await {
+            tracing::debug!(error = %err, "окно о технических работах не показано");
+        }
+        return Ok(());
+    }
     if let Err(err) = ctx.api.answer_callback(&callback.id, None).await {
         tracing::debug!(error = %err, "ответ на нажатие кнопки не отправлен");
     }
@@ -1149,6 +1163,11 @@ async fn login_decision(turn: &mut Turn<'_>, rest: &str) -> Result<Screen, BotEr
 }
 
 async fn pre_checkout(ctx: &BotCtx, query: &PreCheckoutQuery) -> Result<(), BotError> {
+    if crate::maintenance::closed_for(ctx, &query.from).await? {
+        let text = crate::maintenance::text_for(ctx, &query.from).await?;
+        ctx.api.answer_pre_checkout(&query.id, Some(&text)).await?;
+        return Ok(());
+    }
     let request = StarsPreCheckout {
         query_id: query.id.clone(),
         invoice_payload: query.invoice_payload.clone(),

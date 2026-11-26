@@ -44,6 +44,7 @@ mod email_link;
 mod ext_modules;
 mod limits;
 mod mail;
+mod maintenance;
 mod nodes;
 mod one_connection;
 mod paces;

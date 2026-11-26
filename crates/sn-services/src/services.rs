@@ -617,6 +617,10 @@ impl Services {
         crate::cabinet::CabinetOps::new(self)
     }
 
+    pub fn maintenance(&self) -> crate::maintenance::MaintenanceOps<'_> {
+        crate::maintenance::MaintenanceOps::new(self)
+    }
+
     pub fn connect_apps(&self) -> crate::connect_apps::ConnectAppsOps<'_> {
         crate::connect_apps::ConnectAppsOps::new(self)
     }

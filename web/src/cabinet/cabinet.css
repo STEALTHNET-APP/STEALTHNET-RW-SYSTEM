@@ -2450,3 +2450,12 @@ a.cb-card[id] {
 .cb-logins .cb-error {
   margin: 8px 0 0;
 }
+
+.cb-maint .cb-brand {
+  height: auto;
+}
+
+.cb-maint-text {
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}

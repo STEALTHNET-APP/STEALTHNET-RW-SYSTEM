@@ -18,6 +18,7 @@ use sn_modules::ModuleView;
 use sn_services::bot_buttons::ButtonsView;
 use sn_services::branding::{ImageView, SiteUpdate};
 use sn_services::egress::{CheckView, ProxyCheckRequest, ProxyUpdate, ProxyView};
+use sn_services::maintenance::MaintenanceUpdate;
 use sn_services::settings::{
     BotUpdate, CoreUpdate, ModuleConfigUpdate, ModuleConfigView, PaymentsUpdate, ProviderDetails,
     ProviderUpdate, RemnaCheck, RemnaCheckRequest, RemnaUpdate, SubscriptionSettingsUpdate,
@@ -85,6 +86,7 @@ async fn read(
         "bot" => json(&ops.bot().await?)?,
         "site" => json(&state.services.branding().site())?,
         "proxy" => json(&state.services.egress_ops().view().await?)?,
+        "maintenance" => json(&state.services.maintenance().view(admin.0.admin_id).await?)?,
         _ => return Err(ApiError::not_found()),
     };
     Ok(Json(value))
@@ -154,6 +156,13 @@ async fn write(
                 .services
                 .branding()
                 .update_site(&decode::<SiteUpdate>(body)?, by)
+                .await?,
+        )?,
+        "maintenance" => json(
+            &state
+                .services
+                .maintenance()
+                .update(&decode::<MaintenanceUpdate>(body)?, by)
                 .await?,
         )?,
         _ => return Err(ApiError::not_found()),

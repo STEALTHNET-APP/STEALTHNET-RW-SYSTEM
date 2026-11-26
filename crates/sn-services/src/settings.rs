@@ -12,6 +12,7 @@ use sn_domain::format;
 use sn_domain::ids::AdminId;
 use sn_domain::landing::LandingConfig;
 use sn_domain::ledger::Wallet;
+use sn_domain::maintenance::Maintenance;
 use sn_domain::miniapp::MiniAppConfig;
 use sn_domain::module::ModuleId;
 use sn_domain::money::{Currency, Money};
@@ -191,6 +192,11 @@ pub async fn load_core(db: &mut impl Db) -> ServiceResult<CoreSettings> {
             keys::LANGUAGES => {
                 if let Some(v) = parse::<Languages>(&key, value) {
                     settings.languages = v;
+                }
+            }
+            keys::MAINTENANCE => {
+                if let Some(v) = parse::<Maintenance>(&key, value) {
+                    settings.maintenance = v;
                 }
             }
             _ => {}

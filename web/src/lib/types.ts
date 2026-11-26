@@ -39,7 +39,10 @@ export type Site = {
   languages?: { list: Array<'ru' | 'en'>; default: 'ru' | 'en' };
   miniapp?: unknown;
   cabinet?: { css?: string | null } | null;
+  maintenance?: Maintenance | null;
 };
+
+export type Maintenance = { message: { ru: string; en: string }; until: string | null };
 
 export type Permission =
   | 'clients_read'
@@ -82,4 +85,5 @@ export type Me = {
   logo_url?: string | null;
   appearance: Appearance;
   remnawave?: boolean;
+  maintenance?: boolean;
 };

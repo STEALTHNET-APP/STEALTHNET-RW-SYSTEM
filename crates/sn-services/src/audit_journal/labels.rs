@@ -530,6 +530,21 @@ pub const ACTIONS: &[ActionLabel] = &[
     ),
     a("settings.languages", "Изменены языки", Area::Settings),
     a(
+        "settings.maintenance_on",
+        "Включены технические работы",
+        Area::Settings,
+    ),
+    a(
+        "settings.maintenance_off",
+        "Выключены технические работы",
+        Area::Settings,
+    ),
+    a(
+        "settings.maintenance",
+        "Изменено сообщение о технических работах",
+        Area::Settings,
+    ),
+    a(
         "settings.multi_subscriptions",
         "Изменена настройка нескольких подписок",
         Area::Settings,
@@ -822,6 +837,11 @@ pub const ACTIONS: &[ActionLabel] = &[
     a("admin.disabled", "Администратор отключён", Area::Admins),
     a("admin.enabled", "Администратор снова включён", Area::Admins),
     a(
+        "admin.telegram",
+        "Изменён Telegram ID администратора",
+        Area::Admins,
+    ),
+    a(
         "admin.password_reset",
         "Администратору выдан временный пароль",
         Area::Admins,
@@ -1111,6 +1131,9 @@ const FIELDS: &[(&str, &str)] = &[
     ("comment", "Комментарий"),
     ("note", "Заметка"),
     ("text", "Текст"),
+    ("message_ru", "Сообщение на русском"),
+    ("message_en", "Сообщение на английском"),
+    ("until", "Закончим примерно"),
     ("days", "Дней"),
     ("module", "Модуль"),
     ("name", "Название"),

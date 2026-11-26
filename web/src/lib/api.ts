@@ -16,6 +16,8 @@ export class ApiError extends Error {
 
 type Method = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
+export const MAINTENANCE_EVENT = 'sn:maintenance';
+
 type Options = {
   method?: Method;
   body?: unknown;
@@ -104,7 +106,11 @@ async function read<T>(response: Response): Promise<T> {
     }
   }
   if (!response.ok) {
-    throw errorFrom(response.status, data);
+    const error = errorFrom(response.status, data);
+    if (error.code === 'maintenance' && typeof window !== 'undefined') {
+      window.dispatchEvent(new Event(MAINTENANCE_EVENT));
+    }
+    throw error;
   }
   return data as T;
 }

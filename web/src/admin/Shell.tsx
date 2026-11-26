@@ -372,6 +372,23 @@ function PhoneNav({ items, path, theme, onFlipTheme, build }: MenuProps) {
   );
 }
 
+function MaintenanceStrip() {
+  const { me, can } = useSession();
+  if (!me.maintenance) {
+    return null;
+  }
+  return (
+    <p className="maint-strip" role="status">
+      <span>Включены технические работы</span>
+      {can('settings') ? (
+        <Link to="/admin/settings/general#maintenance" className="maint-strip-link">
+          Открыть настройку
+        </Link>
+      ) : null}
+    </p>
+  );
+}
+
 export function Shell({ theme, onFlipTheme, supportBadge, moneyBadge, build = null, children }: Props) {
   const { me, can } = useSession();
   const location = useLocation();
@@ -382,7 +399,10 @@ export function Shell({ theme, onFlipTheme, supportBadge, moneyBadge, build = nu
   if (phone) {
     return (
       <div className="adm" data-layout="phone">
-        <main className="page">{children}</main>
+        <main className="page">
+          <MaintenanceStrip />
+          {children}
+        </main>
         <PhoneNav items={items} path={location.pathname} theme={theme} onFlipTheme={onFlipTheme} build={build} />
       </div>
     );
@@ -394,7 +414,10 @@ export function Shell({ theme, onFlipTheme, supportBadge, moneyBadge, build = nu
       ) : (
         <TopBar items={items} path={location.pathname} theme={theme} onFlipTheme={onFlipTheme} build={build} />
       )}
-      <main className="page">{children}</main>
+      <main className="page">
+        <MaintenanceStrip />
+        {children}
+      </main>
     </div>
   );
 }

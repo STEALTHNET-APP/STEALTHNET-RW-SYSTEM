@@ -1,7 +1,7 @@
 use super::auto::{self, Delay, Localized, RuleDraft, Trigger, Unit};
 use super::tests::{
-    FakeMail, FakeSender, admin, code, context_with, fast, fast_mail, json_of, mail_client, owner,
-    png, spawn_engine, spawn_mail, tg_client,
+    FakeMail, FakeSender, admin, code, context_with, draft, fast, fast_mail, held_context, json_of,
+    mail_client, owner, png, spawn_engine, spawn_mail, tg_client, wait_status,
 };
 use super::*;
 use crate::registry::ModuleRegistry;
@@ -2155,5 +2155,85 @@ async fn трафик_закончился_полностью_при_порог�
     assert_eq!(rule.percent, Some(100));
     auto::check(&ctx, now).await.unwrap();
     assert_eq!(fired(store, rule.id).await, ids(&[out]));
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn во_время_технических_работ_уходят_только_рассылки_запущенные_вручную() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let store = &db.store;
+    let sender = FakeSender::new();
+    let held = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let ctx = held_context(store, Some(sender.clone()), None, held.clone());
+    let now = now_of(store).await;
+    let due = tg_client(store, 9701).await;
+    let later = tg_client(store, 9702).await;
+    sub(store, due, "paid", now + Span::days(3) - Span::hours(1)).await;
+    let rule = create_rule(&ctx, &rule_draft(Trigger::Expiring, 3, Channel::Bot), None)
+        .await
+        .unwrap();
+    assert_eq!(auto::check(&ctx, now).await.unwrap().queued, 1);
+
+    held.store(true, std::sync::atomic::Ordering::SeqCst);
+    sub(store, later, "paid", now + Span::days(3) - Span::hours(2)).await;
+    BroadcastModule.run_task(&ctx, AUTO_TASK).await.unwrap();
+    assert_eq!(
+        fired(store, rule.id).await,
+        ids(&[due]),
+        "правила не срабатывают во время работ"
+    );
+    let manual = create(&ctx, &draft("Идут технические работы", Audience::All), None)
+        .await
+        .unwrap();
+    start(&ctx, manual.id, None, None).await.unwrap();
+    let planned = create(&ctx, &draft("Скидка до пятницы", Audience::All), None)
+        .await
+        .unwrap();
+    start(&ctx, planned.id, Some(now + Span::hours(2)), None)
+        .await
+        .unwrap();
+    run(
+        store,
+        "UPDATE broadcasts SET send_at = now() - interval '1 minute' WHERE id = $1",
+        planned.id,
+    )
+    .await;
+
+    let engine = spawn_engine(&ctx, &sender, fast());
+    wait_status(store, manual.id, Status::Done).await;
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let texts: Vec<String> = sender.sent().into_iter().map(|s| s.html).collect();
+    assert_eq!(
+        texts,
+        vec!["Идут технические работы".to_string(); 2],
+        "во время работ ушло что-то кроме ручной рассылки"
+    );
+    let mut conn = store.conn().await.unwrap();
+    assert_eq!(
+        store::view(&mut conn, planned.id).await.unwrap().status,
+        Status::Scheduled
+    );
+    drop(conn);
+
+    held.store(false, std::sync::atomic::Ordering::SeqCst);
+    settle(store, rule.id).await;
+    wait_status(store, planned.id, Status::Done).await;
+    engine.stop().await;
+    let sent = sender.sent();
+    assert_eq!(sent.len(), 5, "{sent:?}");
+    assert_eq!(
+        sent.iter()
+            .filter(|s| s.html.contains("Правило") && s.chat == 9701)
+            .count(),
+        1
+    );
+    assert_eq!(
+        sent.iter()
+            .filter(|s| s.html == "Скидка до пятницы")
+            .count(),
+        2
+    );
     db.cleanup().await;
 }

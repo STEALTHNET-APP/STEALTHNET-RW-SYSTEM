@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { api } from './api';
+import { api, MAINTENANCE_EVENT } from './api';
 import { servedBrand, servedLanguages, tabTitle } from './tabTitle';
 import type { Site } from './types';
 
@@ -45,6 +45,10 @@ export function useSiteData(): SiteData {
     return () => controller.abort();
   }, [turn]);
   const retry = useCallback(() => setTurn((value) => value + 1), []);
+  useEffect(() => {
+    window.addEventListener(MAINTENANCE_EVENT, retry);
+    return () => window.removeEventListener(MAINTENANCE_EVENT, retry);
+  }, [retry]);
   return { site, failed: site === DEFAULT_SITE, loading, retry };
 }
 

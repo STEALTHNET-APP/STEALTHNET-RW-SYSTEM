@@ -1209,6 +1209,17 @@ impl TelegramApi {
             .map(|_| ())
     }
 
+    pub async fn answer_alert(&self, callback_id: &str, text: &str) -> Result<(), TelegramError> {
+        let body = serde_json::json!({
+            "callback_query_id": callback_id,
+            "text": truncate(text, 200),
+            "show_alert": true,
+        });
+        self.call::<bool>("answerCallbackQuery", &body)
+            .await
+            .map(|_| ())
+    }
+
     fn widget_body(chat_id: i64, widget: &WidgetMessage, html: bool) -> serde_json::Value {
         let caption = if html {
             truncate(&widget.caption, 1_024)
