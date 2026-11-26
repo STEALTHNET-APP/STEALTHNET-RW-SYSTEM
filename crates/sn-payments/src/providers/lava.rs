@@ -543,7 +543,7 @@ impl PaymentProvider for Lava {
     }
 
     fn title(&self) -> &'static str {
-        "Lava"
+        "Lava.top"
     }
 
     fn currencies(&self) -> &'static [Currency] {
@@ -569,7 +569,7 @@ impl PaymentProvider for Lava {
             SettingField::secret(
                 "api_key",
                 "API-ключ",
-                "Кабинет Lava → Интеграции → API → Настроить API key",
+                "Кабинет Lava.top → Интеграции → API → Настроить API key",
             ),
             SettingField::text(
                 "offer_id",
@@ -579,7 +579,7 @@ impl PaymentProvider for Lava {
             SettingField::secret(
                 "webhook_key",
                 "Ключ вебхука",
-                "Придумайте ключ от 16 до 80 латинских букв и цифр. В Lava: Интеграции → API → Добавить Webhook. URL — «Адрес для уведомлений» ниже. Тип события: «Успешная оплата», «Неуспешная оплата», «Успешный возврат», «Получен запрос на чарджбэк». Аутентификация: «API key вашего сервиса» с этим ключом или Basic: логин любой, пароль — этот ключ",
+                "Придумайте ключ от 16 до 80 латинских букв и цифр. В Lava.top: Интеграции → API → Добавить Webhook. URL — «Адрес для уведомлений» ниже. Тип события: «Успешная оплата», «Неуспешная оплата», «Успешный возврат», «Получен запрос на чарджбэк». Аутентификация: «API key вашего сервиса» с этим ключом или Basic: логин любой, пароль — этот ключ",
             ),
         ]
     }
@@ -768,13 +768,13 @@ impl PaymentProvider for Lava {
             ));
         };
         let refused = || {
-            ConnectionCheck::new(CheckStatus::KeysRejected, "Lava не приняла API-ключ")
-                .detail("Ключ создаётся в кабинете Lava: Интеграции → API → Настроить API key")
+            ConnectionCheck::new(CheckStatus::KeysRejected, "Lava.top не приняла API-ключ")
+                .detail("Ключ создаётся в кабинете Lava.top: Интеграции → API → Настроить API key")
         };
         match self.offer_product(config, offer, "ONLY_HIDDEN").await {
             Ok(Some(title)) => {
                 return ConnectionCheck::ok(if title.is_empty() {
-                    "API-ключ принят, оффер найден в Lava".to_string()
+                    "API-ключ принят, оффер найден в Lava.top".to_string()
                 } else {
                     format!("API-ключ принят, оффер найден: продукт «{title}»")
                 });
@@ -792,10 +792,10 @@ impl PaymentProvider for Lava {
                     format!("API-ключ принят, но у продукта «{title}» не включена «Цена по запросу API»")
                 },
             )
-            .detail("Продукты с ценой по запросу API Lava прячет со страницы автора, а этот продукт виден. Без неё Lava не примет сумму из панели"),
+            .detail("Продукты с ценой по запросу API Lava.top прячет со страницы автора, а этот продукт виден. Без неё Lava не примет сумму из панели"),
             Ok(None) => ConnectionCheck::new(
                 CheckStatus::SettingsRejected,
-                "API-ключ принят, но оффера с таким ID нет среди продуктов Lava",
+                "API-ключ принят, но оффера с таким ID нет среди продуктов Lava.top",
             )
             .detail("Скопируйте ID оффера из продукта с включённой «Ценой по запросу API»"),
             Err(err) if util::keys_refused(&err) => refused(),

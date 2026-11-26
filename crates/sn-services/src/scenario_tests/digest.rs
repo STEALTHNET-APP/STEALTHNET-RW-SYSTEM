@@ -213,7 +213,7 @@ async fn новые_оплаты_приходят_пачкой_со_способ
     let name = format!("«{}»", tariff.name);
     assert_eq!(
         lines[1],
-        format!("$7.99 · {name} на 3\u{a0}месяца · Алексей (@morozov_a) · Lava, PayPal")
+        format!("$7.99 · {name} на 3\u{a0}месяца · Алексей (@morozov_a) · Lava.top, PayPal")
     );
     assert!(
         lines[2].ends_with("· Crypto Pay · автопродление"),
