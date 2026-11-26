@@ -110,6 +110,16 @@ pub const ACTIONS: &[ActionLabel] = &[
     a("client.deleted", "Клиент удалён", Area::Clients),
     a("client.note", "Изменена заметка о клиенте", Area::Clients),
     a(
+        "client.referrer_set",
+        "Назначен пригласивший",
+        Area::Clients,
+    ),
+    a(
+        "client.referrer_removed",
+        "Убран пригласивший",
+        Area::Clients,
+    ),
+    a(
         "client.receipt_email",
         "Указана почта для чеков",
         Area::Clients,
@@ -1199,6 +1209,10 @@ const FIELDS: &[(&str, &str)] = &[
     ("amount", "Сумма"),
     ("currency", "Валюта"),
     ("client_id", "Клиент №"),
+    ("referrer", "Пригласивший"),
+    ("invitee", "Приглашённый"),
+    ("referrer_id", "Пригласивший №"),
+    ("previous_referrer_id", "Прежний пригласивший №"),
     ("payment_id", "Платёж №"),
     ("order_id", "Заказ №"),
     ("subscription_id", "Подписка №"),

@@ -13,6 +13,7 @@ import { EmailDialog, EmailRow } from './EmailDialog';
 import { eventsCount, historyLine } from './history';
 import { PasswordDialog } from './PasswordDialog';
 import { RefundDialog } from './RefundDialog';
+import { ClientReferrals } from './Referrals';
 import { RemnaAddButton } from './RemnaLink';
 import { emailOf, liveSubscriptions, nextReset, oauthLogins, personName, seenText, sinceText, tariffOf, telegramOf, visitText } from './model';
 import { SubscriptionBlock } from './SubscriptionBlock';
@@ -317,7 +318,7 @@ function ClientDesktop() {
     void loadCard();
     refreshHistory();
   };
-  const lines = (history?.items ?? []).map((item, index) => historyLine(item, index, card.stats.referrer));
+  const lines = (history?.items ?? []).map((item, index) => historyLine(item, index, { clientId: card.client.id, referrer: card.stats.referrer, referrerManual: card.stats.referrer_manual }));
   const stats = card.stats;
   const locale = card.client.locale === 'en' ? 'English' : 'Русский';
 
@@ -428,6 +429,8 @@ function ClientDesktop() {
           ) : null}
           {writable && !blocked && sub && card.multi_subscriptions ? <RemnaAddButton more clientId={clientId} onAdded={onRemnaAdded} /> : null}
 
+          <ClientReferrals clientId={clientId} onChanged={refreshHistory} />
+
           <section aria-labelledby="his-h" className="cc-sec cc-list">
             <h2 id="his-h" className="cc-h2" style={{ marginBottom: 8 }}>
               История
@@ -524,18 +527,6 @@ function ClientDesktop() {
               <span className="muted">Язык</span>
               <span>{locale}</span>
             </div>
-            <div className="cc-prof">
-              <span className="muted">Приглашённые</span>
-              <span>{stats.referrals_count > 0 ? count(stats.referrals_count, 'друг', 'друга', 'друзей') : 'никого'}</span>
-            </div>
-            {stats.referrer ? (
-              <div className="cc-prof">
-                <span className="muted">Пригласивший</span>
-                <Link to={`/admin/clients/${stats.referrer.client_id}`}>
-                  {stats.referrer.telegram_username ? `@${stats.referrer.telegram_username}` : (stats.referrer.name ?? `клиент ${stats.referrer.client_id}`)}
-                </Link>
-              </div>
-            ) : null}
             <div className="cc-prof">
               <span className="muted">Регистрация</span>
               <span>{registrationText(card.client.registration_source, card.client.created_at)}</span>

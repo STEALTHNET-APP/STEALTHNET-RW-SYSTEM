@@ -3,6 +3,7 @@ use super::clients::{ClientsRepo, display_name};
 use super::events::{EventsRepo, StoredEvent};
 use super::orders::OrdersRepo;
 use super::payments::{PaymentsRepo, charge_review_filter};
+use super::referrals::referral_audit;
 use super::subscriptions::PAID_LIKE;
 use crate::error::{StoreError, StoreResult};
 use chrono::{DateTime, Utc};
@@ -70,7 +71,9 @@ fn feed_sql(money: bool) -> String {
                  UNION ALL SELECT '{order}', id FROM orders WHERE client_id = $1 \
                  {payment_audit} \
                  UNION ALL SELECT '{ticket}', id FROM tickets WHERE client_id = $1) \
-             UNION ALL SELECT x.id FROM audit_log x WHERE x.actor_kind = 'client' AND x.actor_id = $1) \
+             UNION ALL SELECT x.id FROM audit_log x WHERE x.actor_kind = 'client' AND x.actor_id = $1 \
+             UNION ALL SELECT x.id FROM audit_log x WHERE x.action IN ('{referrer_set}', '{referrer_removed}') \
+                 AND $1::bigint::text IN (x.details ->> 'referrer_id', x.details ->> 'previous_referrer_id')) \
          UNION ALL SELECT {SOURCE_EVENT}, e.id, e.occurred_at FROM domain_events e WHERE e.client_id = $1 \
              AND e.kind NOT IN {REPEATED_EVENTS} \
              AND NOT (e.kind = 'subscription_status_changed' \
@@ -84,6 +87,8 @@ fn feed_sql(money: bool) -> String {
         subscription = audit_entity::SUBSCRIPTION,
         order = audit_entity::ORDER,
         ticket = audit_entity::TICKET,
+        referrer_set = referral_audit::REFERRER_SET,
+        referrer_removed = referral_audit::REFERRER_REMOVED,
     )
 }
 
@@ -112,6 +117,7 @@ pub struct ClientCardStats {
     pub payments_count: i64,
     pub referrals_count: i64,
     pub referrer: Option<ClientPerson>,
+    pub referrer_manual: bool,
     pub cabinet_seen_at: Option<DateTime<Utc>>,
     pub miniapp_seen_at: Option<DateTime<Utc>>,
 }
@@ -122,6 +128,7 @@ struct StatsRow {
     payments_count: i64,
     referrals_count: i64,
     referrer_id: Option<i64>,
+    referrer_manual: Option<bool>,
     referrer_username: Option<String>,
     referrer_first_name: Option<String>,
     referrer_last_name: Option<String>,
@@ -234,12 +241,12 @@ impl<'c> ClientsRepo<'c> {
              (SELECT count(*) FROM payments p WHERE p.client_id = $1 \
                  AND p.currency = $2 AND p.status IN {PAID_LIKE} AND p.provider <> 'balance') AS payments_count, \
              (SELECT count(*) FROM referral_links r WHERE r.referrer_id = $1) AS referrals_count, \
-             ref.referrer_id, ref.meta ->> 'username' AS referrer_username, \
+             ref.referrer_id, ref.manual AS referrer_manual, ref.meta ->> 'username' AS referrer_username, \
              ref.meta ->> 'first_name' AS referrer_first_name, ref.meta ->> 'last_name' AS referrer_last_name, \
              (SELECT max(s.last_seen_at) FROM client_sessions s WHERE s.client_id = $1 AND s.channel = 'cabinet') AS cabinet_seen_at, \
              (SELECT max(s.last_seen_at) FROM client_sessions s WHERE s.client_id = $1 AND s.channel = 'miniapp') AS miniapp_seen_at \
              FROM (SELECT 1) one \
-             LEFT JOIN LATERAL (SELECT r.referrer_id, i.meta FROM referral_links r \
+             LEFT JOIN LATERAL (SELECT r.referrer_id, r.set_at IS NOT NULL AS manual, i.meta FROM referral_links r \
                  LEFT JOIN LATERAL (SELECT meta FROM client_identities WHERE client_id = r.referrer_id \
                      AND kind = 'telegram' ORDER BY id LIMIT 1) i ON true \
                  WHERE r.client_id = $1) ref ON true"
@@ -262,6 +269,7 @@ impl<'c> ClientsRepo<'c> {
                 telegram_id: None,
                 email: None,
             }),
+            referrer_manual: row.referrer_manual.unwrap_or(false),
             cabinet_seen_at: row.cabinet_seen_at,
             miniapp_seen_at: row.miniapp_seen_at,
         })

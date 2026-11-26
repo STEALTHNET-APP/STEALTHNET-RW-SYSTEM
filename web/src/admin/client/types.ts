@@ -34,6 +34,7 @@ export type CardStats = {
   payments_count?: number;
   referrals_count: number;
   referrer: Person | null;
+  referrer_manual?: boolean;
   cabinet_seen_at: string | null;
   miniapp_seen_at: string | null;
 };

@@ -42,6 +42,7 @@ mod client_access;
 mod client_email;
 mod client_errors;
 mod client_payments;
+mod client_referrals;
 mod config_warnings;
 mod connect_apps;
 mod cryptomus;

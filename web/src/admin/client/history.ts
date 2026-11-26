@@ -1,8 +1,11 @@
 import { count, dateLong, days, money, moneyExact, periodLabel, timeHM, type Money } from '../../lib/format';
 import { START_VIA_TEXT, startMark, startVia } from '../../lib/utmTags';
+import { referralCode, referralHistory } from './referralModel';
 import type { Amount, HistoryItem, OrderBrief, Person } from './types';
 
 export type HistoryLine = { key: string; when: string; what: string; note: string; sum: string; refund?: number };
+
+export type HistoryWho = { clientId: number; referrer: Person | null; referrerManual?: boolean };
 
 function startOfDay(date: Date): number {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
@@ -184,7 +187,7 @@ function personText(person: Person): string {
   return person.name ?? `клиент ${person.client_id}`;
 }
 
-export function historyLine(item: HistoryItem, index: number, referrer: Person | null): HistoryLine {
+export function historyLine(item: HistoryItem, index: number, who: HistoryWho): HistoryLine {
   const base = { key: `${item.type}-${item.at}-${index}`, when: historyWhen(item.at) };
   switch (item.type) {
     case 'payment': {
@@ -231,8 +234,10 @@ export function historyLine(item: HistoryItem, index: number, referrer: Person |
       switch (item.kind) {
         case 'client_registered': {
           const source = SOURCE_TEXT[String(event.source)] ?? 'Регистрация';
-          if (referrer) {
-            return { ...base, what: `${source} по приглашению`, note: `Приглашение от ${personText(referrer)}`, sum: '' };
+          const inviter = who.referrer && !who.referrerManual ? who.referrer : null;
+          const code = referralCode(event.start_param);
+          if (inviter || code) {
+            return { ...base, what: `${source} по приглашению`, note: inviter ? `Приглашение от ${personText(inviter)}` : `Код приглашения ${code}`, sum: '' };
           }
           const mark = startMark(event.start_param);
           const via = startVia(event.start_param);
@@ -272,6 +277,10 @@ export function historyLine(item: HistoryItem, index: number, referrer: Person |
     case 'audit': {
       const details = item.details ?? {};
       const actor = actorNote(item);
+      const referral = referralHistory(item, who.clientId, actor);
+      if (referral) {
+        return { ...base, ...referral, sum: '' };
+      }
       switch (item.action) {
         case 'client.receipt_email': {
           const email = str(details.email);

@@ -22,6 +22,7 @@ mod miniapp;
 mod money;
 mod overview;
 pub(crate) mod photos;
+mod referrals;
 mod remna_link;
 mod remna_sync;
 #[cfg(test)]
@@ -49,6 +50,7 @@ pub fn routes() -> Router<AppState> {
         .merge(alerts::routes())
         .merge(overview::routes())
         .merge(clients::routes())
+        .merge(referrals::routes())
         .merge(photos::routes())
         .merge(money::routes())
         .merge(stars::routes())

@@ -8,6 +8,7 @@ import { PhoneHeader } from '../phone';
 import { useSession } from '../session';
 import { BalanceDialog, BlockDialog, ConfirmDialog, GrantDialog, LimitsDialog, MessageDialog } from './dialogs';
 import { historyLine } from './history';
+import { ClientReferrals } from './Referrals';
 import { PasswordDialog } from './PasswordDialog';
 import { EmailDialog } from './EmailDialog';
 import { RefundDialog } from './RefundDialog';
@@ -355,7 +356,7 @@ export function ClientPhone() {
       ? `${traffic(details.traffic_30d_bytes)} за 30${NBSP}дней, без лимита`
       : `${traffic(used)}, без лимита`;
   const trafficTail = limitBytes && reset ? `, сброс ${reset}` : '';
-  const lines = (history?.items ?? []).map((item, index) => historyLine(item, index, card.stats.referrer));
+  const lines = (history?.items ?? []).map((item, index) => historyLine(item, index, { clientId: card.client.id, referrer: card.stats.referrer, referrerManual: card.stats.referrer_manual }));
   const deviceCount = devices ? devices.length : (mirror?.devices_count ?? 0);
 
   const sheetItems: SheetItem[] = [];
@@ -775,6 +776,8 @@ export function ClientPhone() {
           </div>
         </section>
       ) : null}
+
+      <ClientReferrals phone clientId={clientId} onChanged={() => void loadHistory()} />
 
       {lines.length ? (
         <section className="pc-group" aria-labelledby="pc-hist">

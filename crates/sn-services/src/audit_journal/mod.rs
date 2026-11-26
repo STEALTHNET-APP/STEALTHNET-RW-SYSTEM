@@ -521,6 +521,14 @@ pub fn title_for(action: &str, details: &Value) -> String {
             None => labels::title_of(action).into(),
         },
         "client.note" if flag("cleared") == Some(true) => "Удалена заметка о клиенте".into(),
+        "client.referrer_set"
+            if details
+                .get("from")
+                .and_then(|from| from.get("referrer"))
+                .is_some_and(|referrer| !referrer.is_null()) =>
+        {
+            "Сменён пригласивший".into()
+        }
         "tariff.on_sale" => match flag("on_sale") {
             Some(true) => "Тариф выставлен на продажу".into(),
             Some(false) => "Тариф снят с продажи".into(),

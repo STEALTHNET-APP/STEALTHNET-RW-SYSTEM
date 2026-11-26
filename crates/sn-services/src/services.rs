@@ -521,6 +521,10 @@ impl Services {
         SubscriptionOps::new(self)
     }
 
+    pub fn referral_links(&self) -> crate::referral_links::ReferralLinkOps<'_> {
+        crate::referral_links::ReferralLinkOps::new(self)
+    }
+
     pub fn remna_sync(&self) -> RemnaSync<'_> {
         RemnaSync::new(self)
     }

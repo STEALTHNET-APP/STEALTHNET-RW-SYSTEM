@@ -357,3 +357,146 @@
   font-size: 13px;
   font-weight: 400;
 }
+
+.cc-rf {
+  display: flex;
+  flex-direction: column;
+}
+
+.cc-rf-lead {
+  margin: 8px 0 0;
+  color: var(--ink-2);
+  line-height: 1.5;
+}
+
+.cc-rf-cap {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 16px;
+  padding-bottom: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.cc-rf-row,
+.cc-rf-none {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 0;
+  border-top: 1px solid var(--line);
+}
+
+.cc-rf-none {
+  flex-wrap: wrap;
+  justify-content: space-between;
+  margin-top: 8px;
+}
+
+.cc-rf-ava {
+  flex: 0 0 36px;
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  overflow: hidden;
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.cc-rf-ava.small {
+  flex-basis: 32px;
+  width: 32px;
+  height: 32px;
+  font-size: 12px;
+}
+
+.cc-rf-who {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.cc-rf-name {
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.cc-rf-sum {
+  flex: 0 0 auto;
+  min-width: 72px;
+  text-align: right;
+  font-weight: 700;
+}
+
+.cc-rf-sum.zero {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.cc-rf-pick {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 0 14px;
+  border-top: 1px solid var(--line);
+}
+
+.cc-rf-found {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.cc-rf-opt {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 12px;
+  border: 0;
+  border-top: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.cc-rf-opt:first-child {
+  border-top: 0;
+}
+
+.cc-rf-opt[aria-pressed='true'] {
+  background: var(--surface-2);
+}
+
+.cc-rf-opt:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.cc-rf-ask {
+  margin-bottom: 10px;
+}
+
+.cc-rf-warn,
+.cc-rf-hint {
+  margin: 0 0 8px;
+}
+
+.cc-rf-err {
+  margin: 4px 0 8px;
+}
+
+.cc-rf-more {
+  align-self: flex-start;
+}

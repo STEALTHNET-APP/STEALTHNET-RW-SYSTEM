@@ -154,6 +154,7 @@ pub struct CardStats {
     pub payments_count: i64,
     pub referrals_count: i64,
     pub referrer: Option<ClientPerson>,
+    pub referrer_manual: bool,
     pub cabinet_seen_at: Option<DateTime<Utc>>,
     pub miniapp_seen_at: Option<DateTime<Utc>>,
 }
@@ -503,6 +504,7 @@ impl<'a> ClientOps<'a> {
                 payments_count: stats.payments_count,
                 referrals_count: stats.referrals_count,
                 referrer: stats.referrer,
+                referrer_manual: stats.referrer_manual,
                 cabinet_seen_at: stats.cabinet_seen_at,
                 miniapp_seen_at: stats.miniapp_seen_at,
             },

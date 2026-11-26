@@ -39,6 +39,7 @@ pub enum LockSpace {
     Category = 7,
     Documents = 8,
     SiteSignup = 9,
+    Referrals = 10,
 }
 
 impl LockSpace {
@@ -209,6 +210,10 @@ pub trait Db: Send {
 
     fn promotions(&mut self) -> PromotionsRepo<'_> {
         PromotionsRepo::new(self.conn())
+    }
+
+    fn referrals(&mut self) -> ReferralsRepo<'_> {
+        ReferralsRepo::new(self.conn())
     }
 
     fn subscriptions(&mut self) -> SubscriptionsRepo<'_> {
