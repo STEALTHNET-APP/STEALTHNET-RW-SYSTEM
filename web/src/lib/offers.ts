@@ -43,6 +43,24 @@ export function flatOffers<T extends OfferLike>(offers: T[], terms: (offer: T) =
   return offerCategories(offers).flatMap((category) => categoryOffers(offers, category.id));
 }
 
+export type TermsLike = {
+  tariff: {
+    devices: { included: number; extra: { max: number; monthly: { rub?: number; usd?: number }; monthly_stars: number | null } | null };
+    traffic: { limit_bytes: number | null; reset: string };
+    device_discounts?: Array<{ from: number; percent: number }>;
+  };
+};
+
+export function planTerms(offer: TermsLike, currency: string): string {
+  const { devices, traffic, device_discounts: discounts } = offer.tariff;
+  const extra = devices.extra && devices.extra.max > 0 ? devices.extra : null;
+  return JSON.stringify([
+    devices.included,
+    extra ? [extra.max, currency === 'RUB' ? (extra.monthly.rub ?? 0) : (extra.monthly.usd ?? 0), extra.monthly_stars, (discounts ?? []).map((d) => [d.from, d.percent])] : null,
+    traffic.limit_bytes ? [traffic.limit_bytes, traffic.reset] : null,
+  ]);
+}
+
 export function offerById<T extends OfferLike>(offers: T[], tariffId: number | null | undefined): T | null {
   return offers.find((offer) => offer.tariff.id === tariffId) ?? null;
 }
@@ -86,6 +104,21 @@ export function firstPick<T extends OfferLike>(offers: T[], own: OwnTariff | nul
   }
   const linked = offer.periods.find((p) => p.period_id === link.periodId);
   return made(offer, linked ?? ownPeriod(offer, own) ?? standard(offer), own);
+}
+
+export function flatFirst<T extends OfferLike>(flat: T[], own: OwnTariff | null): OfferPick | null {
+  const offer = offerById(flat, own?.tariff_id) ?? flat[Math.min(1, flat.length - 1)];
+  return offer ? made(offer, offer.periods[0], own) : null;
+}
+
+export function flatTerm<T extends OfferLike>(flat: T[], tariffId: number, current: OfferPick | null): OfferPick | null {
+  const offer = offerById(flat, tariffId);
+  if (!offer) {
+    return current;
+  }
+  const { included, extra } = offer.tariff.devices;
+  const devices = Math.min(Math.max(current?.devices ?? included, included), included + (extra?.max ?? 0));
+  return { tariffId: offer.tariff.id, periodId: offer.periods[0]?.period_id ?? null, devices };
 }
 
 export function targetPick<T extends OfferLike>(offers: T[], own: OwnTariff | null, current: OfferPick | null): OfferPick | null {

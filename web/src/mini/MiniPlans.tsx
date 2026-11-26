@@ -3,15 +3,18 @@ import { useLocation, useNavigate } from 'react-router';
 import { api, ApiError } from '../lib/api';
 import { count, days as dayCount, money, MINUS, type Money } from '../lib/format';
 import { t } from '../lib/i18n';
-import { gbText, ladderText, linesOf, resetPlan, stars, transitionText, type Catalog, type Quote, type TariffOffer } from '../cabinet/model';
+import { gbText, ladderText, linesOf, resetPlan, stars, transitionText, type Catalog, type CheckoutMethod, type Quote, type TariffOffer } from '../cabinet/model';
 import { checkPromo, handedCode, promoFailText } from '../cabinet/promo';
 import { fullCategory, fullNote, NEWEST, newTargetNote, payTargets, remember, resolveTarget, subName, subState, targetView, type PayTarget } from '../cabinet/subs';
 import { BackHead, MINI_SUB_KEY, useMini } from './MiniApp';
 import { openExternal, webApp } from './telegram';
 import { methodKey } from '../lib/methods';
 import { promoCut, promoOf, promoQuoteNote, promoTitle } from '../lib/promo';
-import { categoryOffers, categoryPick, firstPick, offerById, offerCategories, renewsCurrent, SHORT_PERIOD_DAYS, tariffPick, targetPick, type OfferPick } from '../lib/offers';
+import { categoryOffers, categoryPick, firstPick, flatFirst, flatOffers, flatTerm, offerById, offerCategories, planTerms, renewsCurrent, SHORT_PERIOD_DAYS, tariffPick, targetPick, type OfferPick } from '../lib/offers';
 import { ReceiptEmail, useReceiptEmail } from '../lib/receiptEmail';
+
+const PAY_STEP = 'pay';
+const TAP_GUARD_MS = 450;
 
 function failText(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : fallback;
@@ -28,11 +31,38 @@ function payLabel(transition: boolean, total: string, telegram: boolean): string
   return telegram ? t('Оплатить {amount} в Telegram', { amount: total }) : t('Оплатить {amount}', { amount: total });
 }
 
+function fromTerms(state: unknown): boolean {
+  return typeof state === 'object' && state !== null && (state as { terms?: unknown }).terms === true;
+}
+
+function methodStars(m: CheckoutMethod): number | null {
+  const a = m.amount;
+  if (typeof a === 'number') {
+    return a;
+  }
+  return a && typeof a === 'object' && typeof a.stars === 'number' ? a.stars : null;
+}
+
+function methodNote(m: CheckoutMethod, balance: Money): string {
+  if (m.unavailable?.type === 'insufficient_balance') {
+    return t('Не хватает: на балансе {amount}', { amount: money(m.unavailable.balance) });
+  }
+  if (m.unavailable?.type === 'no_stars_price') {
+    return t('У этого срока нет цены в звёздах');
+  }
+  if (m.kind === 'balance') {
+    return t('На балансе {amount}', { amount: money(balance) });
+  }
+  const amount = m.kind === 'stars' ? methodStars(m) : null;
+  return amount !== null ? t('{stars}, оплата в Telegram', { stars: stars(amount) }) : m.hint;
+}
+
 export function MiniPlans() {
   const { me, subs, view: shown, choose, reload } = useMini();
   const receipt = useReceiptEmail(me);
   const location = useLocation();
   const navigate = useNavigate();
+  const paying = new URLSearchParams(location.search).get('step') === PAY_STEP;
   const multi = me.multi_subscriptions === true;
   const [picked, setPicked] = useState<PayTarget | null>(null);
   const [catalog, setCatalog] = useState<Catalog | null>(null);
@@ -60,6 +90,9 @@ export function MiniPlans() {
   const [note, setNote] = useState<string | null>(null);
   const [otherWallet, setOtherWallet] = useState<string | null>(null);
   const seq = useRef(0);
+  const armed = useRef(0);
+  const reopened = useRef(paying);
+  const scrolled = useRef(false);
 
   useEffect(() => {
     api<Catalog>('/api/client/catalog')
@@ -70,6 +103,7 @@ export function MiniPlans() {
   const offers = catalog?.tariffs ?? [];
   const categories = useMemo(() => offerCategories(offers), [offers]);
   const siblings = useMemo(() => categoryOffers(offers, chosenOffer?.category.id), [offers, chosenOffer]);
+  const flat = useMemo(() => (catalog ? flatOffers(catalog.tariffs, (o: TariffOffer) => planTerms(o, catalog.currency)) : null), [catalog]);
   const current = view ? offerById(offers, view.subscription.tariff_id) : null;
   const own = view?.subscription ?? null;
 
@@ -77,14 +111,46 @@ export function MiniPlans() {
     if (!catalog || tariffId !== null) {
       return;
     }
-    const start = firstPick(catalog.tariffs, view?.subscription ?? null);
+    const held = view?.subscription ?? null;
+    const start = flat ? flatFirst(flat, held) : firstPick(catalog.tariffs, held);
     if (!start) {
       return;
     }
     setTariffId(start.tariffId);
     setPeriod(start.periodId);
     setDevices(start.devices);
-  }, [catalog, tariffId, view]);
+  }, [catalog, flat, tariffId, view]);
+
+  const toTerms = () => {
+    if (fromTerms(location.state)) {
+      navigate(-1);
+      return;
+    }
+    navigate({ pathname: location.pathname, search: '' }, { replace: true });
+  };
+
+  const toPay = () => {
+    setError(null);
+    setNote(null);
+    setOtherWallet(null);
+    armed.current = performance.now() + TAP_GUARD_MS;
+    navigate({ pathname: location.pathname, search: `?step=${PAY_STEP}` }, { state: { terms: true } });
+  };
+
+  useEffect(() => {
+    if (reopened.current) {
+      reopened.current = false;
+      toTerms();
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!scrolled.current) {
+      scrolled.current = true;
+      return;
+    }
+    window.scrollTo(0, 0);
+  }, [paying]);
 
   const offer: TariffOffer | null = chosenOffer;
   const included = offer?.tariff.devices.included ?? 0;
@@ -160,7 +226,6 @@ export function MiniPlans() {
   const chosen = methods.find((m) => methodKey(m) === method && !m.unavailable) ?? methods.find((m) => !m.unavailable) ?? null;
   const starsMode = chosen?.kind === 'stars';
   const inTelegramWallet = chosen?.provider === 'gram' && webApp() !== null;
-  const balanceShort = methods.find((m) => m.kind === 'balance' && m.unavailable?.type === 'insufficient_balance');
   const q = quote?.quote ?? null;
   const totalText = starsMode && q?.stars ? stars(q.stars.total) : q ? money(q.total) : '';
   const fromTrial = !!view && view.subscription.kind === 'trial';
@@ -177,9 +242,19 @@ export function MiniPlans() {
   const promoLines = q ? linesOf(q.lines, 'adjustment') : [];
   const saleLines = q ? linesOf(q.lines, 'promotion') : [];
   const quoteNote = promoQuoteNote(quote?.promotion);
-  const offerPromo = promoOf(offer?.periods);
+  const rows = flat ? flat.flatMap((o) => o.periods.slice(0, 1).map((p) => ({ offer: o, period: p }))) : offer ? offer.periods.map((p) => ({ offer, period: p })) : [];
+  const offerPromo = promoOf(rows.map((row) => row.period));
   const promoMinor = promoLines.reduce((sum, line) => sum - line.amount.minor, 0);
   const promoStars = promoLines.reduce((sum, line) => sum - (line.stars ?? 0), 0);
+  const promoCutShown = !!q && (starsMode ? promoStars > 0 : promoMinor > 0);
+  const empty = !!catalog && offers.length === 0;
+  const anyDevices = offers.some((o) => (o.tariff.devices.extra?.max ?? 0) > 0);
+  const named = !flat && (categories.length > 1 || siblings.length > 1);
+  const renewing = typeof target === 'number' ? targetView(subs, target, multi) : null;
+  const summary = [named && offer ? offer.tariff.name : null, periodOffer ? termName(periodOffer.months, periodOffer.days) : null, count(devices, 'устройство', 'устройства', 'устройств'), totalText || null]
+    .filter((part): part is string => !!part)
+    .join(' · ');
+  const title = paying ? t('Оплата') : empty ? t('Тарифы') : !catalog || anyDevices ? t('Срок и устройства') : t('Срок подписки');
 
   const applyPromo = async () => {
     const code = promoInput.trim().toUpperCase();
@@ -205,7 +280,7 @@ export function MiniPlans() {
   };
 
   const pay = async () => {
-    if (!offer || !periodOffer || !chosen) {
+    if (!offer || !periodOffer || !chosen || performance.now() < armed.current) {
       return;
     }
     const email = receipt.take(chosen);
@@ -255,9 +330,133 @@ export function MiniPlans() {
     }
   };
 
+  if (paying) {
+    return (
+      <main className="mn-page plans">
+        <BackHead title={title} sub={t('Шаг {n} из {total}', { n: 2, total: 2 })} onBack={toTerms} />
+        {offer && periodOffer ? (
+          <button type="button" className="mn-card mn-picked press" onClick={toTerms}>
+            <span className="mn-picked-text">
+              <strong className="num">{summary}</strong>
+              {targets.length > 1 ? <span>{renewing ? t('Продлить «{name}»', { name: subName(renewing, subs) }) : t('Новая подписка')}</span> : null}
+            </span>
+            <span className="mn-picked-edit">{t('Изменить')}</span>
+          </button>
+        ) : null}
+        {saleLines.length > 0 || quoteNote || promoCutShown ? (
+          <div className="mn-notes">
+            {saleLines.map((line) => (
+              <span key={line.label}>
+                {line.label}: {MINUS}
+                {starsMode && line.stars !== null ? stars(Math.abs(line.stars)) : money({ minor: Math.abs(line.amount.minor), currency: line.amount.currency })}
+              </span>
+            ))}
+            {quoteNote ? <span>{quoteNote}</span> : null}
+            {promoCutShown && q ? (
+              <span>{t('Скидка по промокоду: {amount}', { amount: `${MINUS}${starsMode ? stars(promoStars) : money({ minor: promoMinor, currency: q.currency })}` })}</span>
+            ) : null}
+          </div>
+        ) : null}
+        <div className="mn-pay">
+          <div className="mn-pay-head">
+            <h2>{t('Способ оплаты')}</h2>
+          </div>
+          {q && methods.length === 0 ? (
+            <p className="mn-muted small">
+              {t('В мини-приложении оплатить сейчас нельзя.')}{' '}
+              <button type="button" className="mn-link press" onClick={() => openExternal(`${window.location.origin}/cabinet/pay`)}>
+                {t('Оплатить в кабинете на сайте')}
+              </button>
+            </p>
+          ) : null}
+          {methods.length > 0 ? (
+            <div role="radiogroup" aria-label={t('Способ оплаты')} className="mn-terms">
+              {methods.map((m) => {
+                const hint = methodNote(m, me.balance);
+                return (
+                  <button key={methodKey(m)} type="button" role="radio" aria-checked={chosen === m} className="mn-term mn-method press" disabled={!!m.unavailable} onClick={() => setMethod(methodKey(m))}>
+                    <span className="mn-dot" aria-hidden="true" />
+                    <span className="mn-term-text">
+                      <strong className="mn-method-name">{m.title}</strong>
+                      {hint ? <span className="mn-term-sub">{hint}</span> : null}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          ) : null}
+        </div>
+        {promoOn || promo || promoError || promoDays ? (
+          <div className="mn-pay">
+            {promoOn || promo ? (
+              <button type="button" className="mn-link mn-promo-toggle" aria-expanded={promoOpen} onClick={() => setPromoOpen(!promoOpen)}>
+                {promo ? t('Промокод {code}', { code: promo }) : t('Есть промокод?')}
+              </button>
+            ) : null}
+            {promoOpen && (promoOn || promo) ? (
+              <form
+                className="mn-promo"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (promo) {
+                    setPromo(null);
+                    setPromoInput('');
+                    return;
+                  }
+                  void applyPromo();
+                }}
+              >
+                <input
+                  value={promoInput}
+                  onChange={(e) => {
+                    setPromoInput(e.target.value.toUpperCase());
+                    setPromoDays(null);
+                  }}
+                  placeholder={t('Промокод')}
+                  aria-label={t('Промокод')}
+                  disabled={!!promo || promoBusy}
+                />
+                <button type="submit" className="mn-btn2 press" disabled={promoBusy}>
+                  {promo ? t('Убрать') : promoBusy ? t('Проверяем…') : t('Применить')}
+                </button>
+              </form>
+            ) : null}
+            {promoError ? <p className="mn-error">{promoError}</p> : null}
+            {promoDays ? (
+              <p className="mn-note" role="status">
+                {t('Промокод {code} добавляет {days} к подписке, при оплате он не нужен.', { code: promoDays.code, days: dayCount(promoDays.days) })}{' '}
+                <button type="button" className="mn-link press" onClick={() => navigate('/app/promo', { state: { promo: promoDays.code } })}>
+                  {t('Добавить дни')}
+                </button>
+              </p>
+            ) : null}
+          </div>
+        ) : null}
+        {receipt.asks(chosen) ? <ReceiptEmail value={receipt.email} onChange={receipt.change} error={receipt.error} disabled={busy} mini /> : null}
+        {error && catalog ? <p className="mn-error">{error}</p> : null}
+        {note ? (
+          <p role="status" className="mn-note">
+            {note}
+            {otherWallet ? (
+              <>
+                {' '}
+                <button type="button" className="mn-link press" onClick={() => openExternal(otherWallet)}>
+                  {t('Оплатить другим кошельком')}
+                </button>
+              </>
+            ) : null}
+          </p>
+        ) : null}
+        <button type="button" className="mn-main mn-paybtn press" onClick={() => void pay()} disabled={busy || !chosen || !q}>
+          {busy ? t('Открываем оплату…') : payLabel(transition, totalText, inTelegramWallet)}
+        </button>
+      </main>
+    );
+  }
+
   return (
     <main className="mn-page plans">
-      <BackHead title={!view ? (another ? t('Новая подписка') : t('Тарифы')) : transition ? t('Переход') : fromTrial ? t('Оплата') : t('Продление')} />
+      <BackHead title={title} sub={empty ? undefined : t('Шаг {n} из {total}', { n: 1, total: 2 })} />
       {targets.length > 1 ? (
         <section aria-label={t('Что оплачиваем')} className="mn-pay">
           <div className="mn-pay-head">
@@ -281,8 +480,8 @@ export function MiniPlans() {
         </section>
       ) : null}
       {!catalog ? <p className="mn-muted">{error ?? t('Загружаем тарифы…')}</p> : null}
-      {catalog && offers.length === 0 ? <p className="mn-muted">{t('Тарифов пока нет.')}</p> : null}
-      {categories.length > 1 ? (
+      {empty ? <p className="mn-muted">{t('Тарифов пока нет.')}</p> : null}
+      {!flat && categories.length > 1 ? (
         <div role="group" aria-label={t('Тип тарифа')} className={categories.length > 3 ? 'mn-seg flow many' : 'mn-seg flow'}>
           {categories.map((c) => (
             <button key={c.id} type="button" aria-pressed={offer?.category.id === c.id} onClick={() => apply(categoryPick(offers, c.id, own, choice))}>
@@ -291,7 +490,7 @@ export function MiniPlans() {
           ))}
         </div>
       ) : null}
-      {siblings.length > 1 ? (
+      {!flat && siblings.length > 1 ? (
         <div role="group" aria-label={t('Тариф')} className={siblings.length > 3 ? 'mn-seg flow many' : 'mn-seg flow'}>
           {siblings.map((o) => (
             <button key={o.tariff.id} type="button" aria-pressed={offer?.tariff.id === o.tariff.id} onClick={() => apply(tariffPick(offers, o.tariff.id, own, choice))}>
@@ -320,12 +519,19 @@ export function MiniPlans() {
         </div>
       ) : null}
       {offerPromo ? <p className="mn-sale">{promoTitle(offerPromo)}</p> : null}
-      {offer ? (
+      {rows.length > 0 ? (
         <div role="radiogroup" aria-label={t('Срок')} className="mn-terms">
-          {offer.periods.map((p) => {
+          {rows.map(({ offer: o, period: p }) => {
             const save = starsMode ? p.stars_savings_percent : p.savings_percent;
             return (
-              <button key={p.period_id} type="button" role="radio" aria-checked={period === p.period_id} className="mn-term press" onClick={() => setPeriod(p.period_id)}>
+              <button
+                key={`${o.tariff.id}:${p.period_id}`}
+                type="button"
+                role="radio"
+                aria-checked={offer?.tariff.id === o.tariff.id && period === p.period_id}
+                className="mn-term press"
+                onClick={() => (flat ? apply(flatTerm(flat, o.tariff.id, choice)) : setPeriod(p.period_id))}
+              >
                 <span className="mn-dot" aria-hidden="true" />
                 <span className="mn-term-text">
                   <span className="mn-term-top">
@@ -383,99 +589,12 @@ export function MiniPlans() {
           </span>
         </div>
       ) : null}
-      <div className="mn-pay">
-        <div className="mn-pay-head">
-          <h2>{t('Оплата')}</h2>
-          {promoOn || promo ? (
-            <button type="button" className="mn-link" aria-expanded={promoOpen} onClick={() => setPromoOpen(!promoOpen)}>
-              {promo ? t('Промокод {code}', { code: promo }) : t('Есть промокод?')}
-            </button>
-          ) : null}
-        </div>
-        {promoOpen && (promoOn || promo) ? (
-          <form
-            className="mn-promo"
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (promo) {
-                setPromo(null);
-                setPromoInput('');
-                return;
-              }
-              void applyPromo();
-            }}
-          >
-            <input
-              value={promoInput}
-              onChange={(e) => {
-                setPromoInput(e.target.value.toUpperCase());
-                setPromoDays(null);
-              }}
-              placeholder={t('Промокод')}
-              aria-label={t('Промокод')}
-              disabled={!!promo || promoBusy}
-            />
-            <button type="submit" className="mn-btn2 press" disabled={promoBusy}>
-              {promo ? t('Убрать') : promoBusy ? t('Проверяем…') : t('Применить')}
-            </button>
-          </form>
-        ) : null}
-        {promoError ? <p className="mn-error">{promoError}</p> : null}
-        {promoDays ? (
-          <p className="mn-note" role="status">
-            {t('Промокод {code} добавляет {days} к подписке, при оплате он не нужен.', { code: promoDays.code, days: dayCount(promoDays.days) })}{' '}
-            <button type="button" className="mn-link press" onClick={() => navigate('/app/promo', { state: { promo: promoDays.code } })}>
-              {t('Добавить дни')}
-            </button>
-          </p>
-        ) : null}
-        {saleLines.map((line) => (
-          <p key={line.label} className="mn-muted small">
-            {line.label}: {MINUS}
-            {starsMode && line.stars !== null ? stars(Math.abs(line.stars)) : money({ minor: Math.abs(line.amount.minor), currency: line.amount.currency })}
-          </p>
-        ))}
-        {quoteNote ? <p className="mn-muted small">{quoteNote}</p> : null}
-        {q && (starsMode ? promoStars > 0 : promoMinor > 0) ? (
-          <p className="mn-muted small">
-            {t('Скидка по промокоду: {amount}', { amount: `${MINUS}${starsMode ? stars(promoStars) : money({ minor: promoMinor, currency: q.currency })}` })}
-          </p>
-        ) : null}
-        {q && methods.length === 0 ? (
-          <p className="mn-muted small">
-            {t('В мини-приложении оплатить сейчас нельзя.')}{' '}
-            <button type="button" className="mn-link press" onClick={() => openExternal(`${window.location.origin}/cabinet/pay`)}>
-              {t('Оплатить в кабинете на сайте')}
-            </button>
-          </p>
-        ) : null}
-        <div role="radiogroup" aria-label={t('Способ оплаты')} className="mn-chips">
-          {methods.map((m) => (
-            <button key={methodKey(m)} type="button" role="radio" aria-checked={chosen === m} className="mn-chip press" disabled={!!m.unavailable} onClick={() => setMethod(methodKey(m))}>
-              {m.title}
-            </button>
-          ))}
-        </div>
-        {balanceShort?.unavailable?.type === 'insufficient_balance' ? <p className="mn-muted small">{t('Не хватает: на балансе {amount}', { amount: money(me.balance) })}</p> : null}
-        {error && catalog ? <p className="mn-error">{error}</p> : null}
-        {note ? (
-          <p role="status" className="mn-note">
-            {note}
-            {otherWallet ? (
-              <>
-                {' '}
-                <button type="button" className="mn-link press" onClick={() => openExternal(otherWallet)}>
-                  {t('Оплатить другим кошельком')}
-                </button>
-              </>
-            ) : null}
-          </p>
-        ) : null}
-      </div>
-      {receipt.asks(chosen) ? <ReceiptEmail value={receipt.email} onChange={receipt.change} error={receipt.error} disabled={busy} mini /> : null}
-      <button type="button" className="mn-main mn-paybtn press" onClick={() => void pay()} disabled={busy || !chosen || !q}>
-        {busy ? t('Открываем оплату…') : payLabel(transition, totalText, inTelegramWallet)}
-      </button>
+      {error && catalog ? <p className="mn-error">{error}</p> : null}
+      {offer ? (
+        <button type="button" className="mn-main mn-paybtn press" onClick={toPay} disabled={!q || !periodOffer}>
+          {totalText ? t('Далее · {amount}', { amount: totalText }) : t('Далее')}
+        </button>
+      ) : null}
     </main>
   );
 }

@@ -443,13 +443,26 @@ export function ThemeCirc() {
   );
 }
 
-export function BackHead({ title, to = '/app' }: { title: string; to?: string }) {
+export function BackHead({ title, to = '/app', sub, onBack }: { title: string; to?: string; sub?: string; onBack?: () => void }) {
   return (
     <header className="mn-head">
-      <Link to={to} className="mn-circ press back" aria-label={t('Назад')}>
-        <Icon name="chevron-left" size={20} />
-      </Link>
-      <h1 className="mn-h1">{title}</h1>
+      {onBack ? (
+        <button type="button" className="mn-circ press back" aria-label={t('Назад')} onClick={onBack}>
+          <Icon name="chevron-left" size={20} />
+        </button>
+      ) : (
+        <Link to={to} className="mn-circ press back" aria-label={t('Назад')}>
+          <Icon name="chevron-left" size={20} />
+        </Link>
+      )}
+      {sub ? (
+        <div className="mn-head-title">
+          <h1 className="mn-h1">{title}</h1>
+          <span className="mn-head-sub">{sub}</span>
+        </div>
+      ) : (
+        <h1 className="mn-h1">{title}</h1>
+      )}
       <ThemeCirc />
     </header>
   );

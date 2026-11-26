@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { categoryOffers, categoryPick, firstPick, flatOffers, offerCategories, renewsCurrent, tariffPick, targetPick } from './offers.ts';
+import { categoryOffers, categoryPick, firstPick, flatFirst, flatOffers, flatTerm, offerCategories, planTerms, renewsCurrent, tariffPick, targetPick } from './offers.ts';
 
 const period = (id, months) => ({ period_id: id, months, days: months * 30 });
 const offer = (id, category, included, max, periods) => ({
@@ -96,4 +96,43 @@ test('тарифы с одним сроком показываются сраз�
   assert.equal(flatOffers([week, first], terms), null);
   assert.equal(flatOffers([week, single(4, 40, 4, 7)], terms), null);
   assert.equal(flatOffers([week, month], (o) => (o.tariff.id === 1 ? 'одно устройство' : 'семь устройств')), null);
+});
+
+test('общий список сроков в мини-приложении: второй по умолчанию, свой при продлении, устройства сохраняются', () => {
+  const term = (id, days, max) => ({
+    category: { id: 10, name: 'Сроки', sort: 1 },
+    tariff: {
+      id,
+      name: `Тариф ${id}`,
+      devices: { included: 7, extra: max === null ? null : { max, monthly: { rub: 4000 }, monthly_stars: 30 } },
+      traffic: { limit_bytes: null, reset: 'no_reset' },
+    },
+    periods: [{ period_id: id * 10, months: Math.max(1, Math.round(days / 30)), days }],
+  });
+  const flat = [term(1, 7, 5), term(2, 30, 5), term(3, 90, 5), term(4, 360, 5)];
+  assert.deepEqual(flatFirst(flat, null), { tariffId: 2, periodId: 20, devices: 7 });
+  assert.deepEqual(flatFirst(flat, { tariff_id: 4, period_days: 360, extra_devices: 2 }), { tariffId: 4, periodId: 40, devices: 9 });
+  assert.deepEqual(flatFirst(flat, { tariff_id: 99, period_days: 30, extra_devices: 2 }), { tariffId: 2, periodId: 20, devices: 7 });
+  assert.deepEqual(flatFirst(flat.slice(0, 1), null), { tariffId: 1, periodId: 10, devices: 7 });
+  assert.equal(flatFirst([], null), null);
+  assert.deepEqual(flatTerm(flat, 4, { tariffId: 2, periodId: 20, devices: 10 }), { tariffId: 4, periodId: 40, devices: 10 });
+  assert.deepEqual(flatTerm(flat, 3, { tariffId: 2, periodId: 20, devices: 30 }), { tariffId: 3, periodId: 30, devices: 12 });
+  assert.deepEqual(flatTerm(flat, 3, null), { tariffId: 3, periodId: 30, devices: 7 });
+  assert.deepEqual(flatTerm(flat, 99, { tariffId: 2, periodId: 20, devices: 8 }), { tariffId: 2, periodId: 20, devices: 8 });
+});
+
+test('условия тарифа в мини-приложении: устройства, их цена и трафик', () => {
+  const plan = (extra, traffic, discounts) => ({ tariff: { devices: { included: 3, extra }, traffic, device_discounts: discounts } });
+  const extra = (max, rub, usd, stars) => ({ max, monthly: { rub, usd }, monthly_stars: stars });
+  const open = { limit_bytes: null, reset: 'no_reset' };
+  const base = planTerms(plan(extra(5, 4000, 100, 30), open, []), 'RUB');
+  assert.equal(planTerms(plan(extra(5, 4000, 200, 30), open, []), 'RUB'), base);
+  assert.notEqual(planTerms(plan(extra(5, 4000, 200, 30), open, []), 'USD'), planTerms(plan(extra(5, 4000, 100, 30), open, []), 'USD'));
+  assert.notEqual(planTerms(plan(extra(5, 5000, 100, 30), open, []), 'RUB'), base);
+  assert.notEqual(planTerms(plan(extra(4, 4000, 100, 30), open, []), 'RUB'), base);
+  assert.notEqual(planTerms(plan(extra(5, 4000, 100, 40), open, []), 'RUB'), base);
+  assert.notEqual(planTerms(plan(extra(5, 4000, 100, 30), open, [{ from: 2, percent: 10 }]), 'RUB'), base);
+  assert.equal(planTerms(plan(null, open, []), 'RUB'), planTerms(plan(extra(0, 9000, 1, 1), { limit_bytes: 0, reset: 'month' }, [{ from: 2, percent: 10 }]), 'RUB'));
+  assert.notEqual(planTerms(plan(null, { limit_bytes: 50, reset: 'month' }, []), 'RUB'), planTerms(plan(null, { limit_bytes: 50, reset: 'day' }, []), 'RUB'));
+  assert.notEqual(planTerms(plan(null, open, []), 'RUB'), base);
 });

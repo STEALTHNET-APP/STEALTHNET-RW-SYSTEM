@@ -17,8 +17,6 @@ export const MINI: Record<string, string> = {
   'Счёт в чат не отправился, открываем другой кошелёк': 'Couldn\'t send the invoice to the chat, opening another wallet',
   'Оплата открылась в новом окне. Когда она пройдёт, подписка обновится сама.': 'Payment opened in a new window. Once it goes through, your subscription will update on its own.',
   'Оплачено. Обновляем подписку…': 'Paid. Updating your subscription…',
-  'Переход': 'Plan change',
-  'Продление': 'Renewal',
   'Тарифов пока нет.': 'No plans yet.',
   'Будет переход на тариф «{name}»': 'You\'ll switch to the “{name}” plan',
   'Тариф сменится на «{name}»': 'The plan will change to “{name}”',
@@ -121,4 +119,9 @@ export const MINI: Record<string, string> = {
   'Документы': 'Documents',
   'Увеличить': 'Zoom in',
   'Уменьшить': 'Zoom out',
+  'Срок и устройства': 'Period and devices',
+  'Шаг {n} из {total}': 'Step {n} of {total}',
+  'Далее': 'Next',
+  'Далее · {amount}': 'Next · {amount}',
+  'Изменить': 'Change',
 };
