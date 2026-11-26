@@ -1032,7 +1032,9 @@ function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved, onChec
         />
       ) : null}
       {schema && withTribute ? <TributeSetup value={tribute} onChange={setTribute} busy={busy} connected={connected} currency={currency} /> : null}
-      {schema && withLava ? <LavaSetup value={lava} onChange={setLava} busy={busy} connected={connected} currency={currency} /> : null}
+      {schema && withLava ? (
+        <LavaSetup value={lava} onChange={setLava} busy={busy} connected={connected} currency={currency} switchedOff={values.recurring !== true} />
+      ) : null}
       {rows.length ? (
         <div className="sf-field" style={{ maxWidth: 'none' }} role="group" aria-labelledby={`pay-m-${provider.id}`}>
           <span className="sf-label" id={`pay-m-${provider.id}`}>
@@ -1047,10 +1049,14 @@ function ProviderSetup({ provider, currency, publicUrl, onClose, onSaved, onChec
                 <input type="checkbox" checked={r.on} onChange={() => toggle(r.code)} disabled={busy} />
                 {r.title}
               </label>
-              <span className="pay-mhint muted">
-                {r.hint}
-                {r.min_minor ? ` · от ${money({ minor: r.min_minor, currency })}` : ''}
-              </span>
+              {withLava && r.code === 'subscription' && r.on && values.recurring !== true ? (
+                <span className="pay-mhint warn-line">Не появится у клиентов, пока «Автопродление через Lava.top» выключено</span>
+              ) : (
+                <span className="pay-mhint muted">
+                  {r.hint}
+                  {r.min_minor ? ` · от ${money({ minor: r.min_minor, currency })}` : ''}
+                </span>
+              )}
               {r.on ? (
                 <span className="pay-mtools">
                   <input

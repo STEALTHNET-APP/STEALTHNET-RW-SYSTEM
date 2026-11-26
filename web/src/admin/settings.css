@@ -621,6 +621,19 @@
   }
 }
 
+.pay-more {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pay-more summary {
+  width: fit-content;
+  padding: 6px 0;
+  font-weight: 600;
+  cursor: pointer;
+}
+
 .pay-lrow {
   display: flex;
   flex-wrap: wrap;

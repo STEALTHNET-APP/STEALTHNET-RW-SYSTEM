@@ -58,6 +58,10 @@ function daysText(days: number): string {
   return `${days} ${plural(days, 'день', 'дня', 'дней')}`;
 }
 
+function unboundText(count: number): string {
+  return `Ещё ${count} ${plural(count, 'подписка Lava.top не привязана', 'подписки Lava.top не привязаны', 'подписок Lava.top не привязаны')}`;
+}
+
 function needText(price: CatalogPrice): string {
   return price.min_days === price.max_days
     ? daysText(price.min_days)
@@ -78,9 +82,12 @@ type Props = {
   busy: boolean;
   connected: boolean;
   currency: Currency;
+  switchedOff: boolean;
 };
 
-export function LavaSetup({ value, onChange, busy, connected, currency }: Props) {
+type Row = { product: CatalogProduct; offer: CatalogOffer; price: CatalogPrice };
+
+export function LavaSetup({ value, onChange, busy, connected, currency, switchedOff }: Props) {
   const [catalog, setCatalog] = useState<Catalog | null>(null);
   const [tariffs, setTariffs] = useState<Tariff[] | null>(null);
   const [stats, setStats] = useState<Stats | null>(null);
@@ -154,9 +161,43 @@ export function LavaSetup({ value, onChange, busy, connected, currency }: Props)
       <span className="warn-line"> · в панели {money({ minor: panel, currency: plan.currency })}, кнопки нет</span>
     );
   };
-  const rows = (catalog?.subscriptions ?? []).flatMap((product) =>
+  const rows: Row[] = (catalog?.subscriptions ?? []).flatMap((product) =>
     product.offers.flatMap((offer) => offer.prices.filter((price) => price.currency === currency).map((price) => ({ product, offer, price }))),
   );
+  const isBound = ({ offer, price }: Row) => value.some((p) => same(p, offer.id, price));
+  const boundRows = rows.filter(isBound);
+  const freeRows = rows.filter((row) => !isBound(row));
+  const line = ({ product, offer, price }: Row) => {
+    const plan = value.find((p) => same(p, offer.id, price));
+    const name = offer.name && offer.name !== product.name ? `${product.name} · ${offer.name}` : product.name;
+    const choices = options(price);
+    return (
+      <Fragment key={`${offer.id}:${price.periodicity}`}>
+        <div className="pay-mrow">
+          <span className="pay-mname">{name || 'Подписка'}</span>
+          <span className="pay-mhint muted">
+            {capital(EVERY[price.periodicity] ?? price.every)} · {money({ minor: price.amount, currency: price.currency })}
+            {status(plan, price.amount)}
+          </span>
+          <select
+            className="field pay-mtitle"
+            value={plan ? `${plan.tariff}:${plan.tariff_period}` : ''}
+            onChange={(e) => bind(product, offer, price, e.target.value)}
+            disabled={busy || tariffs === null}
+            aria-label={`Какой срок продлевает «${name}», ${EVERY[price.periodicity] ?? price.every}`}
+          >
+            <option value="">Не привязана</option>
+            {choices.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        {tariffs !== null && choices.length === 0 ? <span className="cap">Нужен срок {needText(price)}</span> : null}
+      </Fragment>
+    );
+  };
   const known = new Set(rows.map(({ offer, price }) => `${offer.id}:${price.periodicity}:${price.currency}`));
   const stale = catalog ? value.filter((p) => p.currency === currency && !known.has(`${p.offer}:${p.periodicity}:${p.currency}`)) : [];
   const label = (plan: LavaPlan) => {
@@ -174,40 +215,29 @@ export function LavaSetup({ value, onChange, busy, connected, currency }: Props)
         Привяжите подписку Lava.top к сроку тарифа. Цена в Lava.top должна совпадать с ценой срока, иначе у этого срока кнопки автопродления нет. Lava.top не меняет цену уже
         оформленных подписок: новая цена действует только для новых.
       </span>
+      {switchedOff && value.length > 0 ? (
+        <span className="cap warn-line">«Автопродление через Lava.top» выключено: кнопки «Карта с автопродлением» у клиентов не будет, пока переключатель выключен.</span>
+      ) : null}
       {!connected ? <span className="cap">Сохраните API-ключ, и панель загрузит список подписок из Lava.top.</span> : null}
-      {catalog
-        ? rows.map(({ product, offer, price }) => {
-            const plan = value.find((p) => same(p, offer.id, price));
-            const name = offer.name && offer.name !== product.name ? `${product.name} · ${offer.name}` : product.name;
-            const choices = options(price);
-            return (
-              <Fragment key={`${offer.id}:${price.periodicity}`}>
-                <div className="pay-mrow">
-                  <span className="pay-mname">{name || 'Подписка'}</span>
-                  <span className="pay-mhint muted">
-                    {capital(EVERY[price.periodicity] ?? price.every)} · {money({ minor: price.amount, currency: price.currency })}
-                    {status(plan, price.amount)}
-                  </span>
-                  <select
-                    className="field pay-mtitle"
-                    value={plan ? `${plan.tariff}:${plan.tariff_period}` : ''}
-                    onChange={(e) => bind(product, offer, price, e.target.value)}
-                    disabled={busy || tariffs === null}
-                    aria-label={`Какой срок продлевает «${name}», ${EVERY[price.periodicity] ?? price.every}`}
-                  >
-                    <option value="">Не привязана</option>
-                    {choices.map((o) => (
-                      <option key={o.value} value={o.value}>
-                        {o.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                {tariffs !== null && choices.length === 0 ? <span className="cap">Нужен срок {needText(price)}</span> : null}
-              </Fragment>
-            );
-          })
-        : value
+      {catalog ? (
+        boundRows.length === 0 ? (
+          rows.map(line)
+        ) : (
+          <>
+            {boundRows.map(line)}
+            {freeRows.length > 0 ? (
+              <details className="pay-more">
+                <summary>
+                  {unboundText(freeRows.length)}
+                  <span className="muted"> · ни на что не влияют</span>
+                </summary>
+                {freeRows.map(line)}
+              </details>
+            ) : null}
+          </>
+        )
+      ) : (
+        value
             .filter((p) => p.currency === currency)
             .map((p) => (
               <div key={`${p.offer}:${p.periodicity}`} className="pay-mrow">
@@ -216,7 +246,8 @@ export function LavaSetup({ value, onChange, busy, connected, currency }: Props)
                   {capital(EVERY[p.periodicity] ?? p.periodicity)} · {money({ minor: p.amount, currency: p.currency })} · {label(p)}
                 </span>
               </div>
-            ))}
+            ))
+      )}
       {catalog && rows.length === 0 ? <span className="cap">В Lava.top пока нет подписок с ценой в этой валюте.</span> : null}
       {stale.map((p) => (
         <div key={`${p.offer}:${p.periodicity}`} className="pay-mrow">

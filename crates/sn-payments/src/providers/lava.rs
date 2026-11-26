@@ -234,6 +234,11 @@ impl Lava {
                             .and_then(Json::as_str)
                             .map(|t| util::clip(t.trim(), 80))
                             .unwrap_or_default(),
+                        offer: found
+                            .get("name")
+                            .and_then(Json::as_str)
+                            .map(|t| util::clip(t.trim(), 80))
+                            .unwrap_or_default(),
                         subscription: periodic
                             || data.get("type").and_then(Json::as_str).is_some_and(|kind| {
                                 kind.trim().eq_ignore_ascii_case("SUBSCRIPTION")
@@ -696,13 +701,25 @@ impl Lava {
         check: ConnectionCheck,
     ) -> ConnectionCheck {
         if !config.flag(RECURRING) {
-            return check;
+            return if plans(config).is_empty() {
+                check
+            } else {
+                check.detail(SWITCHED_OFF)
+            };
         }
         let catalog = self.subscription_catalog(config).await;
         bound_checks(config, check, catalog)
     }
 
     async fn subscriptions_only_check(&self, config: &ProviderConfig) -> ConnectionCheck {
+        if !config.flag(RECURRING) && !plans(config).is_empty() {
+            return ConnectionCheck::new(
+                CheckStatus::SettingsRejected,
+                "Не задан «ID оффера», а «Автопродление через Lava.top» выключено",
+            )
+            .detail(SWITCHED_OFF)
+            .detail("Включите переключатель или укажите оффер продукта с включённой «Ценой по запросу API» для разовых оплат");
+        }
         if !subscriptions_only(config) {
             return ConnectionCheck::new(
                 CheckStatus::SettingsRejected,
@@ -873,19 +890,24 @@ fn ignored(event_key: String) -> WebhookOutcome {
 
 struct FoundOffer {
     title: String,
+    offer: String,
     subscription: bool,
 }
 
+const SWITCHED_OFF: &str = "«Автопродление через Lava.top» выключено: кнопки «Карта с автопродлением» у клиентов не будет, пока переключатель выключен";
+
 const SUBSCRIPTION_OFFER: &str = "в «ID оффера» в настройках Lava.top стоит оффер подписки. Укажите там оффер отдельного продукта с включённой «Ценой по запросу API» или очистите поле, если нужны только подписки";
 
-fn subscription_check(title: &str) -> ConnectionCheck {
+fn subscription_check(found: &FoundOffer) -> ConnectionCheck {
+    let named = match (found.offer.is_empty(), found.title.is_empty()) {
+        (false, false) => format!("оффер «{}» подписки «{}»", found.offer, found.title),
+        (false, true) => format!("оффер «{}» подписки", found.offer),
+        (true, false) => format!("оффер подписки «{}»", found.title),
+        (true, true) => "оффер подписки".to_string(),
+    };
     ConnectionCheck::new(
         CheckStatus::SettingsRejected,
-        if title.is_empty() {
-            "API-ключ принят, но в «ID оффера» стоит оффер подписки".to_string()
-        } else {
-            format!("API-ключ принят, но в «ID оффера» стоит оффер подписки «{title}»")
-        },
+        format!("API-ключ принят, но в «ID оффера» стоит {named}"),
     )
     .detail("С ним не работают разовые оплаты («Карта», «СБП», «PayPal»). Укажите в поле оффер отдельного продукта с включённой «Ценой по запросу API» или очистите поле, если нужны только подписки: «Карта с автопродлением» у привязанных сроков работает без него")
 }
@@ -1559,7 +1581,7 @@ impl Lava {
         let refused = keys_refused_check;
         match self.offer_product(config, offer, "ONLY_HIDDEN").await {
             Ok(Some(found)) if found.subscription || bound_offer(config, offer) => {
-                return subscription_check(&found.title);
+                return subscription_check(&found);
             }
             Ok(Some(found)) => {
                 return ConnectionCheck::ok(if found.title.is_empty() {
@@ -1574,7 +1596,7 @@ impl Lava {
         }
         match self.offer_product(config, offer, "ONLY_VISIBLE").await {
             Ok(Some(found)) if found.subscription || bound_offer(config, offer) => {
-                subscription_check(&found.title)
+                subscription_check(&found)
             }
             Ok(Some(found)) => ConnectionCheck::new(
                 CheckStatus::SettingsRejected,
@@ -3341,7 +3363,7 @@ mod tests {
         assert!(
             check
                 .summary
-                .contains("стоит оффер подписки «VPN Стандарт»"),
+                .contains("стоит оффер «Базовый» подписки «VPN Стандарт»"),
             "{}",
             check.summary
         );
@@ -3532,9 +3554,59 @@ mod tests {
             .await;
         assert_eq!(check.status, CheckStatus::SettingsRejected);
         assert!(
-            check.summary.contains("стоит оффер подписки"),
+            check
+                .summary
+                .contains("стоит оффер «Подписка» подписки «VPN Стандарт»"),
             "{}",
             check.summary
+        );
+    }
+
+    #[tokio::test]
+    async fn проверка_lava_предупреждает_о_выключенном_автопродлении() {
+        let server = MockServer::start().await;
+        products(
+            &server,
+            "ONLY_HIDDEN",
+            None,
+            json!({"items": [product("Оплата VPN", OFFER)], "nextPage": null}),
+        )
+        .await;
+        let mut off = recurring_settings(json!([plan_entry(
+            SUB_OFFER, "MONTHLY", 34_900, "RUB", 3, 7
+        )]));
+        off.set("recurring", json!(false));
+        let check = Lava::with_api_base(server.uri())
+            .check_connection(&off, &CheckContext::default())
+            .await;
+        assert_eq!(check.status, CheckStatus::Ok, "{}", check.summary);
+        let details = check.details.join("\n");
+        assert!(details.contains("пока переключатель выключен"), "{details}");
+
+        let check = Lava::with_api_base(server.uri())
+            .check_connection(&settings(), &CheckContext::default())
+            .await;
+        assert!(
+            !check.details.join("\n").contains("переключатель"),
+            "без привязок о переключателе не пишем"
+        );
+
+        let mut bare = subscriptions_only_settings(json!([plan_entry(
+            SUB_OFFER, "MONTHLY", 34_900, "RUB", 3, 7
+        )]));
+        bare.set("recurring", json!(false));
+        let check = Lava::with_api_base(server.uri())
+            .check_connection(&bare, &CheckContext::default())
+            .await;
+        assert_eq!(check.status, CheckStatus::SettingsRejected);
+        assert!(check.summary.contains("выключено"), "{}", check.summary);
+        assert!(
+            check
+                .details
+                .join("\n")
+                .contains("пока переключатель выключен"),
+            "{:?}",
+            check.details
         );
     }
 
