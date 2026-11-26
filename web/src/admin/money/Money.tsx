@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, Navigate, Route, Routes, useSearchParams } from 'react-router';
 import { api, ApiError } from '../../lib/api';
+import { dateLong, NBSP } from '../../lib/format';
 import { usePhone } from '../../lib/media';
 import { Avatar } from '../Avatar';
 import { ConfirmDialog } from '../client/dialogs';
@@ -26,6 +27,7 @@ const FILTERS: Array<[Filter, string]> = [
 ];
 
 const MANUAL = new Set(['pending', 'canceled', 'failed']);
+const AUTORENEW_METHOD = 'autorenew';
 const NOT_MANUAL = new Set(['stars', 'balance']);
 const REFUNDABLE = new Set(['paid', 'partially_refunded']);
 
@@ -47,6 +49,29 @@ function stateOf(p: PaymentItem): { text: string; color: string } {
     default:
       return { text: 'не прошёл', color: 'var(--bad)' };
   }
+}
+
+function closesText(p: PaymentItem, now = Date.now()): string | null {
+  if (p.status !== 'pending' || p.order?.status === 'review' || !p.expires_at) {
+    return null;
+  }
+  const at = new Date(p.expires_at).getTime();
+  if (Number.isNaN(at)) {
+    return null;
+  }
+  const minutes = Math.ceil((at - now) / 60_000);
+  if (minutes <= 0) {
+    return `срок вышел ${agoLong(p.expires_at)}`;
+  }
+  if (minutes < 60) {
+    return `закроется через ${minutes}${NBSP}мин`;
+  }
+  const hours = Math.floor(minutes / 60);
+  return hours < 48 ? `закроется через ${hours}${NBSP}ч` : `закроется ${dateLong(p.expires_at)}`;
+}
+
+function cancelable(p: PaymentItem): boolean {
+  return p.status === 'pending' && p.order?.status !== 'review' && p.method !== AUTORENEW_METHOD;
 }
 
 function failText(err: unknown, fallback: string): string {
@@ -83,6 +108,7 @@ function Payments() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState<PaymentItem | null>(null);
+  const [cancel, setCancel] = useState<PaymentItem | null>(null);
   const [done, setDone] = useState<string | null>(null);
 
   const query = useCallback(
@@ -186,6 +212,9 @@ function Payments() {
           const state = stateOf(p);
           const manual = MANUAL.has(p.status) && !NOT_MANUAL.has(p.provider) && p.amount.currency !== 'XTR';
           const returnable = refunds && REFUNDABLE.has(p.status);
+          const closes = closesText(p);
+          const canCancel = cancelable(p);
+          const several = [manual, canCancel, returnable].filter(Boolean).length > 1;
           return (
             <div key={p.id} className="mo-row">
               <Link to={`/admin/clients/${p.client_id}`} className="mo-who hov">
@@ -200,11 +229,17 @@ function Payments() {
               <span className="mo-sum">
                 <strong className="num">{amountText(p.amount)}</strong>
                 <span style={{ color: state.color }}>{state.text}</span>
+                {closes ? <span className="muted">{closes}</span> : null}
               </span>
-              <span className="mo-act">
+              <span className={several ? 'mo-act mo-acts' : 'mo-act'}>
                 {manual ? (
                   <button type="button" className="btn-line hov" onClick={() => setConfirm(p)}>
                     Отметить оплаченным
+                  </button>
+                ) : null}
+                {canCancel ? (
+                  <button type="button" className="btn-line hov" onClick={() => setCancel(p)}>
+                    Отменить
                   </button>
                 ) : null}
                 {returnable ? (
@@ -251,6 +286,24 @@ function Payments() {
             await load();
           }}
           onClose={() => setConfirm(null)}
+        />
+      ) : null}
+      {cancel ? (
+        <ConfirmDialog
+          title="Отменить неоплаченный счёт?"
+          text={`${personName(cancel.client, cancel.client_id)}, ${amountText(cancel.amount)}, ${lowerFirst(methodText(cancel.provider, cancel.method))}. Счёт уйдёт в «Истекли и отменены», а заказ закроется, если других счетов по нему нет. Если клиент всё же оплатит этот счёт, оплата засчитается как обычно.`}
+          confirm="Отменить счёт"
+          dismiss="Не отменять"
+          run={async () => {
+            await api(`/api/admin/payments/${cancel.id}/cancel`, {
+              method: 'POST',
+              body: { comment: 'Отменено вручную в разделе «Деньги»' },
+            });
+            setDone(`Счёт клиента ${personName(cancel.client, cancel.client_id)} отменён`);
+            setCancel(null);
+            await load();
+          }}
+          onClose={() => setCancel(null)}
         />
       ) : null}
     </div>

@@ -361,7 +361,8 @@ pub fn charge_review_filter(alias: &str) -> String {
 
 const CHAIN_WATCHED: &str = "provider_txid IS NOT NULL AND (status = 'pending' \
      OR (status = 'canceled' AND (failure_reason = 'expired' \
-     OR failure_reason = 'счёт заменён новым счётом с тем же промокодом') AND expires_at > $2))";
+     OR failure_reason = 'счёт заменён новым счётом с тем же промокодом' \
+     OR failure_reason = 'счёт отменён вручную в админке') AND expires_at > $2))";
 
 pub const TXID_CONSTRAINT: &str = "payments_provider_txid_key";
 
@@ -1304,5 +1305,6 @@ mod tests {
     #[test]
     fn наблюдатель_цепочки_видит_заменённые_счета() {
         assert!(CHAIN_WATCHED.contains(sn_domain::payment::REPLACED_REASON));
+        assert!(CHAIN_WATCHED.contains(sn_domain::payment::ADMIN_CANCELED_REASON));
     }
 }

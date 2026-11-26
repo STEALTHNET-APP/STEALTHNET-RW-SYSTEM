@@ -646,9 +646,10 @@ type ConfirmProps = {
   confirm: string;
   run: () => Promise<void>;
   onClose: () => void;
+  dismiss?: string;
 };
 
-export function ConfirmDialog({ title, text, confirm, run, onClose }: ConfirmProps) {
+export function ConfirmDialog({ title, text, confirm, run, onClose, dismiss = 'Отменить' }: ConfirmProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const go = async () => {
@@ -674,7 +675,7 @@ export function ConfirmDialog({ title, text, confirm, run, onClose }: ConfirmPro
           {busy ? 'Выполняем…' : confirm}
         </button>
         <button type="button" className="btn-line hov" onClick={onClose} disabled={busy}>
-          Отменить
+          {dismiss}
         </button>
       </div>
     </Dialog>

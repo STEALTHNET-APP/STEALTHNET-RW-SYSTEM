@@ -7,7 +7,8 @@ use sn_domain::module::ModuleId;
 use sn_domain::money::{Amount, Currency, Money, PayCurrency, Stars};
 use sn_domain::order::{NewOrder, OrderKind, PurchaseIntent};
 use sn_domain::payment::{
-    NewPayment, Payment, ProviderId, RefundMethod, RefundSubscriptionAction, providers,
+    NewPayment, Payment, PaymentStatus, ProviderId, RefundMethod, RefundSubscriptionAction,
+    providers,
 };
 use sn_domain::pricing::{QuoteRequest, quote};
 use sn_domain::settings::{keys, secret_keys};

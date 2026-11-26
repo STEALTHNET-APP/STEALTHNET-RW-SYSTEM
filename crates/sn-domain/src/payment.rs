@@ -10,6 +10,7 @@ use std::fmt;
 use uuid::Uuid;
 
 pub const REPLACED_REASON: &str = "счёт заменён новым счётом с тем же промокодом";
+pub const ADMIN_CANCELED_REASON: &str = "счёт отменён вручную в админке";
 
 pub mod providers {
     pub const BALANCE: &str = "balance";

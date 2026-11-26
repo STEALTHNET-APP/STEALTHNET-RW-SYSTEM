@@ -90,6 +90,7 @@ export type PaymentItem = {
   amount: Amount;
   status: string;
   paid_at: string | null;
+  expires_at: string | null;
   created_at: string;
   client: Person | null;
   order: OrderBrief | null;

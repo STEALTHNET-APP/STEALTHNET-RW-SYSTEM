@@ -151,6 +151,7 @@ const AUDIT_TEXT: Record<string, string> = {
   'subscription.traffic_restricted': 'Подписка ограничена за превышение трафика',
   'subscription.traffic_lifted': 'Ограничение по трафику снято',
   'payment.mark_paid': 'Платёж отмечен оплаченным вручную',
+  'payment.cancel': 'Неоплаченный счёт отменён вручную',
   'payment.refund': 'Оформлен возврат',
   'payment.refund_requested': 'Запрошен возврат',
   'payment.refund_confirmed': 'Возврат подтверждён',

@@ -10,7 +10,10 @@ use sn_domain::access::Permission;
 use sn_domain::ids::{ClientId, PaymentId};
 use sn_domain::paging::{Page, PageRequest};
 use sn_domain::payment::PaymentStatus;
-use sn_services::admin::{MarkPaidRequest, MarkPaidResult, PaymentFilter, RefundRequest};
+use sn_services::admin::{
+    CancelPaymentRequest, CancelPaymentResult, MarkPaidRequest, MarkPaidResult, PaymentFilter,
+    RefundRequest,
+};
 use sn_services::decisions::{
     CHARGES_LIMIT, CREDITS_LIMIT, ChargeReviewItem, CreditView, RefundActionView, RefundRequestView,
 };
@@ -22,6 +25,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/payments", get(list))
         .route("/payments/{id}/mark-paid", post(mark_paid))
+        .route("/payments/{id}/cancel", post(cancel_payment))
         .route("/payments/{id}/refund", get(refund_options).post(refund))
         .route("/charges/review", get(charges_review))
         .route("/credits", get(credits))
@@ -142,6 +146,23 @@ async fn mark_paid(
             .services
             .admin()
             .mark_paid(PaymentId(id), &body, admin.0.admin_id)
+            .await?,
+    ))
+}
+
+async fn cancel_payment(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    body: Option<ApiJson<CancelPaymentRequest>>,
+) -> ApiResult<Json<CancelPaymentResult>> {
+    admin.require(Permission::Money)?;
+    let body = body.map(|b| b.0).unwrap_or_default();
+    Ok(Json(
+        state
+            .services
+            .admin()
+            .cancel_payment(PaymentId(id), &body, admin.0.admin_id)
             .await?,
     ))
 }

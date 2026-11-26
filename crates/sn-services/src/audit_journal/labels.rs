@@ -400,6 +400,11 @@ pub const ACTIONS: &[ActionLabel] = &[
         "Платёж отмечен оплаченным вручную",
         Area::Money,
     ),
+    a(
+        "payment.cancel",
+        "Неоплаченный счёт отменён вручную",
+        Area::Money,
+    ),
     a("payment.refund", "Оформлен возврат", Area::Money),
     a("payment.refund_requested", "Запрошен возврат", Area::Money),
     a(
@@ -1215,6 +1220,7 @@ const FIELDS: &[(&str, &str)] = &[
     ("previous_referrer_id", "Прежний пригласивший №"),
     ("payment_id", "Платёж №"),
     ("order_id", "Заказ №"),
+    ("order_canceled", "Заказ отменён"),
     ("subscription_id", "Подписка №"),
     ("request_id", "Запрос на возврат №"),
     ("refund_id", "Возврат №"),

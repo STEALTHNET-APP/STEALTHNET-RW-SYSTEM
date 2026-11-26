@@ -594,7 +594,7 @@ pub(crate) async fn cancel_at_providers(services: &Services, payments: &[Payment
             Ok(Some(found)) => found,
             Ok(None) => continue,
             Err(err) => {
-                tracing::warn!(payment = %payment_id, error = %err, "заменённый счёт не прочитан для отмены в кассе");
+                tracing::warn!(payment = %payment_id, error = %err, "счёт не прочитан для отмены в кассе");
                 continue;
             }
         };
@@ -616,16 +616,49 @@ pub(crate) async fn cancel_at_providers(services: &Services, payments: &[Payment
         .await;
         match canceled {
             Ok(Ok(())) => {
-                tracing::info!(payment = %payment_id, provider = provider.id(), "заменённый счёт отменён и в платёжной системе");
+                tracing::info!(payment = %payment_id, provider = provider.id(), "счёт отменён и в платёжной системе");
             }
             Ok(Err(PaymentError::Unsupported(_))) => {}
             Ok(Err(err)) => {
-                tracing::warn!(payment = %payment_id, provider = provider.id(), error = %err, "заменённый счёт не отменился в платёжной системе");
+                tracing::warn!(payment = %payment_id, provider = provider.id(), error = %err, "счёт не отменился в платёжной системе");
             }
             Err(_) => {
-                tracing::warn!(payment = %payment_id, provider = provider.id(), "платёжная система не ответила на отмену заменённого счёта");
+                tracing::warn!(payment = %payment_id, provider = provider.id(), "платёжная система не ответила на отмену счёта");
             }
         }
+    }
+}
+
+pub async fn cancel_if_unpaid(
+    modules: &ModuleRegistry,
+    ctx: &ModuleContext,
+    tx: &mut Tx,
+    order_id: OrderId,
+) -> ServiceResult<bool> {
+    let order = tx.orders().lock(order_id).await?;
+    if order.status != OrderStatus::Pending {
+        return Ok(false);
+    }
+    let live = tx
+        .payments()
+        .for_order(order.id)
+        .await?
+        .iter()
+        .any(|p| p.status == PaymentStatus::Pending || p.status.is_paid_like());
+    if live {
+        return Ok(false);
+    }
+    match tx
+        .orders()
+        .transition(order.id, OrderStatus::Canceled)
+        .await
+    {
+        Ok((order, true)) => {
+            modules.order_canceled(ctx, tx, &order).await?;
+            Ok(true)
+        }
+        Ok(_) | Err(StoreError::Invalid(_)) => Ok(false),
+        Err(err) => Err(err.into()),
     }
 }
 

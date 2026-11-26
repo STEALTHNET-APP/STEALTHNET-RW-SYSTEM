@@ -9,9 +9,11 @@ use serde_json::Value;
 use sn_domain::events::DomainEvent;
 use sn_domain::ids::{AdminId, ClientId, OrderId, PaymentId, TariffId};
 use sn_domain::money::{Amount, Currency, Money, PayCurrency};
+use sn_domain::order::OrderStatus;
 use sn_domain::paging::{Page, PageRequest};
 use sn_domain::payment::{
-    Payment, PaymentStatus, ProviderId, RefundMethod, RefundSubscriptionAction, providers,
+    ADMIN_CANCELED_REASON, AUTORENEW_METHOD, Payment, PaymentStatus, ProviderId, RefundMethod,
+    RefundSubscriptionAction, providers,
 };
 use sn_payments::{PaymentRef, ProviderStatus, WebhookOutcome, WebhookReply};
 use sn_remnawave::NodeState;
@@ -205,6 +207,17 @@ pub struct MarkPaidRequest {
     pub provider_txid: Option<String>,
     #[serde(default)]
     pub comment: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct CancelPaymentRequest {
+    #[serde(default)]
+    pub comment: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CancelPaymentResult {
+    pub order_canceled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1050,6 +1063,83 @@ impl<'a> AdminOps<'a> {
             ))
             .await?;
         Ok(result)
+    }
+
+    pub async fn cancel_payment(
+        &self,
+        id: PaymentId,
+        request: &CancelPaymentRequest,
+        admin: AdminId,
+    ) -> ServiceResult<CancelPaymentResult> {
+        let not_waiting = || {
+            ServiceError::rejected(
+                "payment.cancel_status",
+                "Этот счёт уже не ждёт оплаты, обновите список",
+            )
+        };
+        let comment = request
+            .comment
+            .as_deref()
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .map(|c| c.chars().take(500).collect::<String>());
+        let ctx = self.services.module_context();
+        let mut tx = self.services.store().begin().await?;
+        let payment = tx.payments().lock(id).await?;
+        if payment.status != PaymentStatus::Pending {
+            return Err(not_waiting());
+        }
+        if payment.method.as_deref() == Some(AUTORENEW_METHOD) {
+            return Err(ServiceError::rejected(
+                "payment.cancel_autorenew",
+                "Списание автопродления закроется само. Если деньги списаны, отметьте его оплаченным",
+            ));
+        }
+        if tx.orders().get(payment.order_id).await?.status == OrderStatus::Review {
+            return Err(ServiceError::rejected(
+                "payment.cancel_review",
+                "Заказ задержан проверкой, решите его в «Деньги → Ждут решения»",
+            ));
+        }
+        match tx
+            .payments()
+            .transition(
+                payment.id,
+                PaymentStatus::Canceled,
+                None,
+                Some(ADMIN_CANCELED_REASON),
+            )
+            .await
+        {
+            Ok(change) if change.applied() => {}
+            Ok(_) | Err(StoreError::Invalid(_)) => return Err(not_waiting()),
+            Err(err) => return Err(err.into()),
+        }
+        let order_canceled = crate::checkout::cancel_if_unpaid(
+            self.services.modules(),
+            &ctx,
+            &mut tx,
+            payment.order_id,
+        )
+        .await?;
+        tx.audit()
+            .record(&Actor::Admin(admin).audit(
+                "payment.cancel",
+                "payment",
+                Some(payment.id.0),
+                serde_json::json!({
+                    "client_id": payment.client_id,
+                    "order_id": payment.order_id,
+                    "provider": payment.provider,
+                    "amount": payment.amount,
+                    "order_canceled": order_canceled,
+                    "comment": comment,
+                }),
+            ))
+            .await?;
+        tx.commit().await?;
+        crate::checkout::cancel_at_providers(self.services, &[payment.id]).await;
+        Ok(CancelPaymentResult { order_canceled })
     }
 
     pub async fn refund(

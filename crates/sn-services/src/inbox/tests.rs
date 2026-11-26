@@ -689,6 +689,142 @@ async fn поздняя_оплата_отменённого_счёта_прин�
 }
 
 #[tokio::test]
+async fn неоплаченный_счёт_отменяется_вручную_а_поздняя_оплата_засчитывается() {
+    let Some(kit) = kit().await else { return };
+    let owner = admin(&kit).await;
+    let client_id = client(&kit.services, 109).await;
+    let tariff = standard(&kit.services).await;
+    let now = kit.services.now();
+    let usd = Amount::new(699, PayCurrency::Usd);
+    let request = crate::admin::CancelPaymentRequest {
+        comment: Some("клиент передумал".into()),
+    };
+    let ops = kit.services.admin();
+    let open = pending(
+        &kit,
+        client_id,
+        &tariff,
+        TEST_PAY,
+        usd,
+        Some(now + chrono::Duration::hours(1)),
+    )
+    .await;
+    let done = ops.cancel_payment(open.id, &request, owner).await.unwrap();
+    assert!(done.order_canceled);
+    assert_eq!(payment(&kit, open.id).await.status, PaymentStatus::Canceled);
+    assert_eq!(
+        order(&kit.services, open.order_id).await.status,
+        OrderStatus::Canceled
+    );
+    assert_eq!(
+        audit_actions(&kit, open.id).await,
+        vec!["payment.cancel".to_string()]
+    );
+    {
+        let mut conn = kit.services.store().conn().await.unwrap();
+        let reason: Option<String> =
+            sqlx::query_scalar("SELECT failure_reason FROM payments WHERE id = $1")
+                .bind(open.id.0)
+                .fetch_one(conn.conn())
+                .await
+                .unwrap();
+        assert_eq!(
+            reason.as_deref(),
+            Some(sn_domain::payment::ADMIN_CANCELED_REASON)
+        );
+    }
+    assert_eq!(
+        ops.cancel_payment(open.id, &request, owner)
+            .await
+            .unwrap_err()
+            .code(),
+        "payment.cancel_status"
+    );
+    let late = kit
+        .services
+        .inbox()
+        .apply_outcome(TEST_PAY, &outcome(&open, ProviderStatus::Paid))
+        .await
+        .unwrap();
+    assert_eq!(
+        late,
+        AcceptResult::Accepted {
+            order_id: open.order_id,
+            payment_id: open.id
+        }
+    );
+    assert_eq!(payment(&kit, open.id).await.status, PaymentStatus::Paid);
+    assert_eq!(
+        order(&kit.services, open.order_id).await.status,
+        OrderStatus::Paid
+    );
+    assert_eq!(
+        ops.cancel_payment(open.id, &request, owner)
+            .await
+            .unwrap_err()
+            .code(),
+        "payment.cancel_status"
+    );
+
+    let first = pending(&kit, client_id, &tariff, TEST_PAY, usd, None).await;
+    let second = extra_payment(&kit, first.order_id, client_id, TEST_PAY, usd).await;
+    assert!(
+        !ops.cancel_payment(first.id, &request, owner)
+            .await
+            .unwrap()
+            .order_canceled,
+        "у заказа остался другой неоплаченный счёт"
+    );
+    assert_eq!(
+        order(&kit.services, first.order_id).await.status,
+        OrderStatus::Pending
+    );
+    assert!(
+        ops.cancel_payment(second.id, &request, owner)
+            .await
+            .unwrap()
+            .order_canceled
+    );
+
+    let charge = pending(&kit, client_id, &tariff, TEST_PAY, usd, None).await;
+    let held = pending(&kit, client_id, &tariff, TEST_PAY, usd, None).await;
+    {
+        let mut tx = kit.services.store().begin().await.unwrap();
+        sqlx::query("UPDATE payments SET method = $2 WHERE id = $1")
+            .bind(charge.id.0)
+            .bind(sn_domain::payment::AUTORENEW_METHOD)
+            .execute(tx.conn())
+            .await
+            .unwrap();
+        tx.orders()
+            .transition(held.order_id, OrderStatus::Review)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    }
+    assert_eq!(
+        ops.cancel_payment(charge.id, &request, owner)
+            .await
+            .unwrap_err()
+            .code(),
+        "payment.cancel_autorenew"
+    );
+    assert_eq!(
+        ops.cancel_payment(held.id, &request, owner)
+            .await
+            .unwrap_err()
+            .code(),
+        "payment.cancel_review"
+    );
+    assert_eq!(
+        payment(&kit, charge.id).await.status,
+        PaymentStatus::Pending
+    );
+    assert_eq!(payment(&kit, held.id).await.status, PaymentStatus::Pending);
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
 async fn пополнение_зачисляется_один_раз_и_клиент_получает_одно_уведомление() {
     let Some(kit) = kit().await else { return };
     let client_id = client(&kit.services, 103).await;

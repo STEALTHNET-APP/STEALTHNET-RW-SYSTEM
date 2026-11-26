@@ -1254,6 +1254,40 @@ async fn платежи_список_и_ручная_отметка_через_h
 }
 
 #[tokio::test]
+async fn неоплаченный_счёт_отменяется_через_http() {
+    let Some(h) = http().await else { return };
+    let owner = h.owner().await;
+    let support = h
+        .admin("cancel-support@example.com", AdminRole::Support)
+        .await;
+    let client = h.client(5_093_118_424).await;
+    let tariff = h.tariff().await;
+    let payment = h.pending_payment(client, &tariff).await;
+    let cancel = format!("/api/admin/payments/{}/cancel", payment.id.0);
+    let (status, _) = h.write(Method::POST, &cancel, &support, json!({})).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, body) = h
+        .write(
+            Method::POST,
+            &cancel,
+            &owner,
+            json!({ "comment": "клиент передумал" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["order_canceled"], true);
+    let (status, body) = h.write(Method::POST, &cancel, &owner, json!({})).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["code"], "payment.cancel_status");
+    let (status, page) = h.get("/api/admin/payments?status=canceled", &owner).await;
+    assert_eq!(status, StatusCode::OK);
+    let items = page["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert!(items[0].get("expires_at").is_some());
+    h.db.cleanup().await;
+}
+
+#[tokio::test]
 async fn возврат_через_http_с_вариантами_ключом_и_вне_панели() {
     let Some(h) = http().await else { return };
     let owner = h.owner().await;

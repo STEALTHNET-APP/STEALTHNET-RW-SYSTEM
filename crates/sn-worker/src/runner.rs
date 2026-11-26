@@ -3,11 +3,11 @@ use chrono::{DateTime, Utc};
 use futures_util::FutureExt;
 use sn_domain::jobs::{JobKind, JobPayload};
 use sn_domain::order::OrderStatus;
-use sn_domain::payment::PaymentStatus;
+use sn_services::checkout::cancel_if_unpaid;
 use sn_services::fulfillment::abandoned_reason;
 use sn_services::session_sweep::{START_DELAY, SessionSweep};
 use sn_services::{Actor, ServiceError, Services};
-use sn_store::{Db, JobRecord, LockSpace, StoreError, audit_entity};
+use sn_store::{Db, JobRecord, LockSpace, audit_entity};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -525,29 +525,8 @@ impl Worker {
         for payment_id in &expired {
             let mut tx = self.services.store().begin().await?;
             let payment = tx.payments().get(*payment_id).await?;
-            let order = tx.orders().lock(payment.order_id).await?;
-            let live = tx
-                .payments()
-                .for_order(order.id)
-                .await?
-                .iter()
-                .any(|p| p.status == PaymentStatus::Pending || p.status.is_paid_like());
-            if order.status == OrderStatus::Pending && !live {
-                match tx
-                    .orders()
-                    .transition(order.id, OrderStatus::Canceled)
-                    .await
-                {
-                    Ok((order, true)) => {
-                        self.services
-                            .modules()
-                            .order_canceled(&ctx, &mut tx, &order)
-                            .await?;
-                        canceled += 1;
-                    }
-                    Ok(_) | Err(StoreError::Invalid(_)) => {}
-                    Err(err) => return Err(err.into()),
-                }
+            if cancel_if_unpaid(self.services.modules(), &ctx, &mut tx, payment.order_id).await? {
+                canceled += 1;
             }
             tx.commit().await?;
         }
