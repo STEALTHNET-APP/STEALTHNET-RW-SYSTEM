@@ -35,7 +35,7 @@ export function HomePhone() {
 
   useEffect(() => {
     if (can('support')) {
-      api<{ items: TicketItem[]; counts: { waiting: number } }>('/api/admin/support/tickets?filter=waiting&limit=50')
+      api<{ items: TicketItem[]; counts: { waiting: number } }>('/api/admin/support/tickets?filter=waiting&order=longest&limit=1')
         .then((page) => {
           setTickets(page.items);
           setWaiting(page.counts.waiting);

@@ -5,7 +5,7 @@ use sn_domain::ids::{AdminId, ClientId, SubscriptionId, TicketFileId, TicketId};
 use sn_domain::paging::{Page, PageRequest};
 use sn_domain::support::{
     AiState, HandoffReason, MessageAuthor, Ticket, TicketAi, TicketChannel, TicketFilter,
-    TicketMessage, TicketStatus,
+    TicketMessage, TicketOrder, TicketStatus,
 };
 use sqlx::PgConnection;
 
@@ -162,27 +162,21 @@ fn sorted_ids(mut ids: Vec<i64>) -> Vec<TicketId> {
     ids.into_iter().map(TicketId).collect()
 }
 
-const fn filter_order(
-    filter: TicketFilter,
-) -> (&'static str, &'static str, &'static str, &'static str) {
+const fn filter_condition(filter: TicketFilter) -> &'static str {
     match filter {
-        TicketFilter::Waiting => (
-            "t.status = 'open' AND t.last_author = 'client'",
-            "COALESCE(t.waiting_message_id, t.last_message_id, 0)",
+        TicketFilter::Waiting => "t.status = 'open' AND t.last_author = 'client'",
+        TicketFilter::Answered => "t.status = 'open' AND t.last_author <> 'client'",
+        TicketFilter::Closed => "t.status = 'closed'",
+    }
+}
+
+const fn order_parts(order: TicketOrder) -> (&'static str, &'static str, &'static str) {
+    match order {
+        TicketOrder::Recent => ("COALESCE(t.last_message_at, t.created_at)", "DESC", "<"),
+        TicketOrder::Longest => (
+            "COALESCE(wm.created_at, lm.created_at, t.created_at)",
             "ASC",
             ">",
-        ),
-        TicketFilter::Answered => (
-            "t.status = 'open' AND t.last_author <> 'client'",
-            "COALESCE(t.last_message_id, 0)",
-            "DESC",
-            "<",
-        ),
-        TicketFilter::Closed => (
-            "t.status = 'closed'",
-            "COALESCE(t.last_message_id, 0)",
-            "DESC",
-            "<",
         ),
     }
 }
@@ -216,7 +210,7 @@ struct KeyedTicketRow {
 struct ViewRow {
     #[sqlx(flatten)]
     ticket: TicketRow,
-    sort_key: i64,
+    sort_at: DateTime<Utc>,
     first_name: Option<String>,
     last_name: Option<String>,
     telegram_username: Option<String>,
@@ -330,7 +324,8 @@ impl<'c> TicketsRepo<'c> {
         .fetch_one(&mut *tx)
         .await?;
         sqlx::query(
-            "UPDATE tickets SET last_message_id = $2, waiting_message_id = $2 WHERE id = $1",
+            "UPDATE tickets SET last_message_id = $2, waiting_message_id = $2, \
+             last_message_at = (SELECT m.created_at FROM ticket_messages m WHERE m.id = $2) WHERE id = $1",
         )
         .bind(id)
         .bind(message)
@@ -457,32 +452,26 @@ impl<'c> TicketsRepo<'c> {
         row.try_into()
     }
 
-    pub async fn list(
-        &mut self,
-        filter: TicketFilter,
-        page: PageRequest,
-    ) -> StoreResult<Page<Ticket>> {
-        let (condition, key, direction, compare) = filter_order(filter);
-        let rows: Vec<KeyedTicketRow> = sqlx::query_as(&format!(
-            "SELECT {COLUMNS}, {key} AS sort_key FROM tickets t \
-             WHERE {condition} AND ($1::bigint IS NULL OR {key} {compare} $1) \
-             ORDER BY {key} {direction}, t.id {direction} LIMIT $2"
-        ))
-        .bind(page.after)
-        .bind(page.fetch_limit())
-        .fetch_all(&mut *self.conn)
-        .await?;
-        keyed_page(rows, page)
-    }
-
     pub async fn list_view(
         &mut self,
         filter: TicketFilter,
+        order: TicketOrder,
         page: PageRequest,
         after_id: Option<TicketId>,
         query: Option<&str>,
     ) -> StoreResult<Page<TicketListItem>> {
-        let (condition, key, direction, compare) = filter_order(filter);
+        let condition = filter_condition(filter);
+        let (key, direction, compare) = order_parts(order);
+        let after = match page.after.map(DateTime::<Utc>::from_timestamp_micros) {
+            None => None,
+            Some(Some(at)) => Some(at),
+            Some(None) => {
+                return Ok(Page {
+                    items: Vec::new(),
+                    next: None,
+                });
+            }
+        };
         let needle = query
             .map(str::trim)
             .filter(|q| !q.is_empty())
@@ -497,10 +486,11 @@ impl<'c> TicketsRepo<'c> {
             )
         });
         let rows: Vec<ViewRow> = sqlx::query_as(&format!(
-            "SELECT {COLUMNS}, {key} AS sort_key, tg.meta ->> 'first_name' AS first_name, \
+            "SELECT {COLUMNS}, {key} AS sort_at, tg.meta ->> 'first_name' AS first_name, \
              tg.meta ->> 'last_name' AS last_name, tg.meta ->> 'username' AS telegram_username, \
              em.value AS email, \
-             CASE WHEN t.status = 'open' AND t.last_author = 'client' THEN wm.created_at END AS waiting_since, \
+             CASE WHEN t.status = 'open' AND t.last_author = 'client' \
+                 THEN COALESCE(wm.created_at, lm.created_at, t.created_at) END AS waiting_since, \
              lm.created_at AS last_message_at, COALESCE(NULLIF(left(lm.body, {PREVIEW_CHARS}), ''), \
                  (SELECT 'Файл: ' || pf.name FROM ticket_files pf WHERE pf.message_id = lm.id ORDER BY pf.id LIMIT 1)) AS preview, \
              lm.author AS preview_author, \
@@ -514,7 +504,7 @@ impl<'c> TicketsRepo<'c> {
                  AND i.kind = 'telegram' ORDER BY i.id LIMIT 1) tg ON true \
              LEFT JOIN LATERAL (SELECT i.value FROM client_identities i WHERE i.client_id = t.client_id \
                  AND i.kind = 'email' ORDER BY i.id LIMIT 1) em ON true \
-             WHERE {condition} AND ($1::bigint IS NULL OR ({key}, t.id) {compare} ($1, $5::bigint)) \
+             WHERE {condition} AND ($1::timestamptz IS NULL OR ({key}, t.id) {compare} ($1, $5::bigint)) \
              AND ($3::text IS NULL OR t.subject ILIKE $3 \
                  OR EXISTS (SELECT 1 FROM ticket_messages qm WHERE qm.ticket_id = t.id AND qm.body ILIKE $3) \
                  OR EXISTS (SELECT 1 FROM ticket_files qf WHERE qf.ticket_id = t.id AND qf.name ILIKE $3) \
@@ -522,7 +512,7 @@ impl<'c> TicketsRepo<'c> {
                      AND qi.search_text LIKE $4)) \
              ORDER BY {key} {direction}, t.id {direction} LIMIT $2"
         ))
-        .bind(page.after)
+        .bind(after)
         .bind(page.fetch_limit())
         .bind(like)
         .bind(folded)
@@ -533,7 +523,7 @@ impl<'c> TicketsRepo<'c> {
             .into_iter()
             .map(|row| {
                 Ok((
-                    row.sort_key,
+                    row.sort_at.timestamp_micros(),
                     TicketListItem {
                         ticket: Ticket::try_from(row.ticket)?,
                         client_name: display_name(
@@ -718,6 +708,7 @@ impl<'c> TicketsRepo<'c> {
         super::ticket_files::attach(&mut tx, reply.ticket_id, message, &reply.attachments).await?;
         sqlx::query(
             "UPDATE tickets SET last_author = $2, last_message_id = $3, \
+             last_message_at = (SELECT m.created_at FROM ticket_messages m WHERE m.id = $3), \
              waiting_message_id = CASE WHEN $2 <> 'client' THEN NULL \
                  WHEN status = 'open' AND last_author = 'client' THEN COALESCE(waiting_message_id, $3) \
                  ELSE $3 END, \

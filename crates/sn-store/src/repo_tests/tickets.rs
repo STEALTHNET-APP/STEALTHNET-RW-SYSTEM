@@ -5,7 +5,7 @@ use chrono::{Duration, Utc};
 use sn_domain::access::AdminRole;
 use sn_domain::ids::{AdminId, ClientId, TicketId};
 use sn_domain::paging::PageRequest;
-use sn_domain::support::{MessageAuthor, TicketChannel, TicketFilter, TicketStatus};
+use sn_domain::support::{MessageAuthor, TicketChannel, TicketFilter, TicketOrder, TicketStatus};
 
 async fn open(db: &mut impl Db, client: ClientId, body: &str) -> TicketId {
     db.tickets()
@@ -39,12 +39,18 @@ fn message(
 
 async fn ids(db: &mut impl Db, filter: TicketFilter) -> Vec<TicketId> {
     db.tickets()
-        .list(filter, PageRequest::default())
+        .list_view(
+            filter,
+            TicketOrder::Recent,
+            PageRequest::default(),
+            None,
+            None,
+        )
         .await
         .unwrap()
         .items
         .into_iter()
-        .map(|t| t.id)
+        .map(|item| item.ticket.id)
         .collect()
 }
 
@@ -87,15 +93,21 @@ async fn обращения_делятся_на_ждущие_отвеченны�
     let third = open(&mut conn, ksenia, "Не пришёл чек").await;
     assert_eq!(
         ids(&mut conn, TicketFilter::Waiting).await,
-        [first, second, third]
+        [third, second, first]
     );
     let view = conn
         .tickets()
-        .list_view(TicketFilter::Waiting, PageRequest::default(), None, None)
+        .list_view(
+            TicketFilter::Waiting,
+            TicketOrder::Recent,
+            PageRequest::default(),
+            None,
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(view.items.len(), 3);
-    let top = &view.items[0];
+    let top = &view.items[2];
     assert_eq!(top.ticket.id, first);
     assert_eq!(top.client_name.as_deref(), Some("Ксения Смирнова"));
     assert_eq!(top.telegram_username.as_deref(), Some("ks_smirnova"));
@@ -113,11 +125,17 @@ async fn обращения_делятся_на_ждущие_отвеченны�
         ))
         .await
         .unwrap();
-    assert_eq!(ids(&mut conn, TicketFilter::Waiting).await, [first, third]);
+    assert_eq!(ids(&mut conn, TicketFilter::Waiting).await, [third, first]);
     assert_eq!(ids(&mut conn, TicketFilter::Answered).await, [second]);
     let answered = conn
         .tickets()
-        .list_view(TicketFilter::Answered, PageRequest::default(), None, None)
+        .list_view(
+            TicketFilter::Answered,
+            TicketOrder::Recent,
+            PageRequest::default(),
+            None,
+            None,
+        )
         .await
         .unwrap()
         .items;
@@ -139,7 +157,7 @@ async fn обращения_делятся_на_ждущие_отвеченны�
         .unwrap();
     assert_eq!(
         ids(&mut conn, TicketFilter::Waiting).await,
-        [first, third, second]
+        [first, second, third]
     );
 
     conn.tickets()
@@ -178,7 +196,7 @@ async fn обращения_делятся_на_ждущие_отвеченны�
     assert_eq!(reopened.closed_at, None);
     assert_eq!(
         ids(&mut conn, TicketFilter::Waiting).await,
-        [first, second, third]
+        [third, first, second]
     );
 
     conn.tickets().close(first).await.unwrap();
@@ -186,25 +204,59 @@ async fn обращения_делятся_на_ждущие_отвеченны�
     conn.tickets().reopen(first).await.unwrap();
     assert_eq!(
         ids(&mut conn, TicketFilter::Waiting).await,
-        [first, second, third]
+        [third, first, second]
     );
 
     let page = conn
         .tickets()
-        .list(TicketFilter::Waiting, PageRequest::new(Some(2), None))
+        .list_view(
+            TicketFilter::Waiting,
+            TicketOrder::Recent,
+            PageRequest::new(Some(2), None),
+            None,
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(
-        page.items.iter().map(|t| t.id).collect::<Vec<_>>(),
-        [first, second]
+        page.items.iter().map(|i| i.ticket.id).collect::<Vec<_>>(),
+        [third, first]
     );
     let rest = conn
         .tickets()
-        .list(TicketFilter::Waiting, PageRequest::new(Some(2), page.next))
+        .list_view(
+            TicketFilter::Waiting,
+            TicketOrder::Recent,
+            PageRequest::new(Some(2), page.next),
+            page.items.last().map(|i| i.ticket.id),
+            None,
+        )
         .await
         .unwrap();
-    assert_eq!(rest.items.iter().map(|t| t.id).collect::<Vec<_>>(), [third]);
+    assert_eq!(
+        rest.items.iter().map(|i| i.ticket.id).collect::<Vec<_>>(),
+        [second]
+    );
     assert_eq!(rest.next, None);
+    let longest = conn
+        .tickets()
+        .list_view(
+            TicketFilter::Waiting,
+            TicketOrder::Longest,
+            PageRequest::default(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        longest
+            .items
+            .iter()
+            .map(|i| i.ticket.id)
+            .collect::<Vec<_>>(),
+        [first, second, third]
+    );
 
     let own = conn
         .tickets()

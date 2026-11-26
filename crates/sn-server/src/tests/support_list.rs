@@ -19,19 +19,51 @@ async fn open(h: &Http, client: ClientId, subject: &str, body: &str) -> TicketId
         .unwrap()
 }
 
-async fn imported(h: &Http, client: ClientId, subject: &str, days_ago: i32) -> TicketId {
+async fn imported_at(h: &Http, client: ClientId, subject: &str, at: DateTime<Utc>) -> TicketId {
     let id: i64 = sqlx::query_scalar(
         "INSERT INTO tickets (client_id, channel, status, subject, last_author, created_at, updated_at) \
-         VALUES ($1, 'unknown', 'open', $2, 'client', now() - make_interval(days => $3), now() - make_interval(days => $3)) \
-         RETURNING id",
+         VALUES ($1, 'unknown', 'open', $2, 'client', $3, $3) RETURNING id",
     )
     .bind(client.0)
     .bind(subject)
-    .bind(days_ago)
+    .bind(at)
     .fetch_one(h.services().store().pool())
     .await
     .unwrap();
     TicketId(id)
+}
+
+async fn imported(h: &Http, client: ClientId, subject: &str, days_ago: i64) -> TicketId {
+    imported_at(h, client, subject, Utc::now() - Duration::days(days_ago)).await
+}
+
+async fn moved_with(
+    h: &Http,
+    client: ClientId,
+    subject: &str,
+    times: &[DateTime<Utc>],
+) -> TicketId {
+    let id = imported_at(h, client, subject, times[0]).await;
+    let pool = h.services().store().pool();
+    for at in times {
+        sqlx::query("INSERT INTO ticket_messages (ticket_id, author, body, created_at) VALUES ($1, 'client', $2, $3)")
+            .bind(id.0)
+            .bind(subject)
+            .bind(at)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+    sqlx::query(
+        "UPDATE tickets t SET last_message_id = (SELECT max(m.id) FROM ticket_messages m WHERE m.ticket_id = t.id), \
+         waiting_message_id = (SELECT min(m.id) FROM ticket_messages m WHERE m.ticket_id = t.id), \
+         last_message_at = (SELECT max(m.created_at) FROM ticket_messages m WHERE m.ticket_id = t.id) WHERE t.id = $1",
+    )
+    .bind(id.0)
+    .execute(pool)
+    .await
+    .unwrap();
+    id
 }
 
 async fn say(
@@ -65,7 +97,10 @@ async fn age(h: &Http, ticket: TicketId, days: i32) {
     .execute(pool)
     .await
     .unwrap();
-    sqlx::query("UPDATE tickets SET created_at = now() - make_interval(days => $2) WHERE id = $1")
+    sqlx::query(
+        "UPDATE tickets SET created_at = now() - make_interval(days => $2), \
+         last_message_at = (SELECT max(m.created_at) FROM ticket_messages m WHERE m.ticket_id = tickets.id) WHERE id = $1",
+    )
         .bind(ticket.0)
         .bind(days)
         .execute(pool)
@@ -129,9 +164,10 @@ async fn список_обращений_отдаётся_частями_без_
         conn.admins().list().await.unwrap()[0].id
     };
     let client = h.client(5_093_118_422).await;
+    let same = Utc::now() - Duration::days(180);
     let mut moved = Vec::new();
     for i in 0..60 {
-        moved.push(imported(&h, client, &format!("Перенесено {i}"), 180).await);
+        moved.push(imported_at(&h, client, &format!("Перенесено {i}"), same).await);
     }
     let mut asked = Vec::new();
     for i in 0..90 {
@@ -159,10 +195,10 @@ async fn список_обращений_отдаётся_частями_без_
     assert_eq!(first["counts"]["waiting"], 110);
     assert_eq!(first["counts"]["answered"], 25);
     assert_eq!(first["counts"]["closed"], 15);
-    assert_eq!(ids_of(&first).len(), 50);
     assert_eq!(
-        first["next"], 0,
-        "перенесённые без сообщений стоят первыми с ключом 0"
+        ids_of(&first),
+        asked[40..].iter().rev().map(|t| t.0).collect::<Vec<_>>(),
+        "сверху новые"
     );
 
     for (filter, total) in [("waiting", 110), ("answered", 25), ("closed", 15)] {
@@ -187,12 +223,13 @@ async fn список_обращений_отдаётся_частями_без_
     }
     let (waiting, _) = walk(&h, &owner, "waiting", "", 50).await;
     assert_eq!(
-        waiting[..60].iter().copied().collect::<HashSet<_>>(),
-        moved.iter().map(|t| t.0).collect::<HashSet<_>>()
+        waiting[..50],
+        asked[40..].iter().rev().map(|t| t.0).collect::<Vec<_>>()[..]
     );
     assert_eq!(
-        waiting[60..],
-        asked[40..].iter().map(|t| t.0).collect::<Vec<_>>()[..]
+        waiting[50..],
+        moved.iter().rev().map(|t| t.0).collect::<Vec<_>>()[..],
+        "у перенесённых одно и то же время: выше больший номер, ни одно не теряется на границе частей"
     );
 
     let (found, pages) = walk(&h, &owner, "waiting", "попытка 4", 4).await;
@@ -201,6 +238,7 @@ async fn список_обращений_отдаётся_частями_без_
         .enumerate()
         .filter(|(i, _)| *i >= 40 && i.to_string().starts_with('4'))
         .map(|(_, t)| t.0)
+        .rev()
         .collect();
     assert_eq!(found, expected);
     assert_eq!(pages, expected.len().div_ceil(4));
@@ -496,5 +534,171 @@ async fn закрываются_только_обращения_где_отве�
         .get(&format!("{close_many}?waiting_days=30"), &owner)
         .await;
     assert_eq!(count["count"], 0);
+    h.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn обращения_идут_от_новых_к_старым_и_новое_сообщение_поднимает_наверх() {
+    let Some(h) = http().await else { return };
+    let owner = h.owner().await;
+    let client = h.client(5_093_118_422).await;
+    let token = h.client_token(client).await;
+    let other = h.client(5_093_118_423).await;
+    let other_token = h.client_token(other).await;
+    let now = Utc::now();
+    let old = |days: i64| now - Duration::days(days);
+    let a = moved_with(&h, client, "Давнее", &[old(197)]).await;
+    let b = moved_with(&h, client, "Свежее из старой", &[old(120), old(79)]).await;
+    let c = moved_with(&h, client, "Среднее", &[old(180)]).await;
+    let d = imported_at(&h, client, "Без сообщений", old(150)).await;
+    let e = moved_with(&h, client, "То же время", &[old(100)]).await;
+    let f = moved_with(&h, client, "То же время", &[old(100)]).await;
+    let mut fresh = Vec::new();
+    for subject in ["Свежее X", "Свежее Y"] {
+        let (status, body) = h
+            .write(
+                Method::POST,
+                "/api/client/support/tickets",
+                &other_token,
+                json!({ "subject": subject, "body": "Не подключается" }),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        fresh.push(TicketId(body["ticket_id"].as_i64().unwrap()));
+    }
+    let (x, y) = (fresh[0], fresh[1]);
+    let list = |filter: &'static str| {
+        let h = &h;
+        let owner = owner.clone();
+        async move {
+            let (status, page) = h
+                .get(
+                    &format!("/api/admin/support/tickets?filter={filter}&limit=200"),
+                    &owner,
+                )
+                .await;
+            assert_eq!(status, StatusCode::OK, "{page}");
+            ids_of(&page)
+        }
+    };
+    let ids = |list: &[TicketId]| list.iter().map(|t| t.0).collect::<Vec<_>>();
+
+    assert_eq!(
+        list("waiting").await,
+        ids(&[y, x, b, f, e, d, c, a]),
+        "по времени последнего сообщения, у перенесённых — время старой панели"
+    );
+
+    let (status, _) = h
+        .write(
+            Method::POST,
+            &format!("/api/client/support/tickets/{}", a.0),
+            &token,
+            json!({ "body": "Ответьте, пожалуйста" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        list("waiting").await,
+        ids(&[a, y, x, b, f, e, d, c]),
+        "новое сообщение клиента поднимает обращение наверх"
+    );
+
+    let (status, _) = h
+        .write(
+            Method::POST,
+            &format!("/api/admin/support/tickets/{}", b.0),
+            &owner,
+            json!({ "body": "Обновите подписку" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = h
+        .write(
+            Method::POST,
+            &format!("/api/client/support/tickets/{}", x.0),
+            &other_token,
+            json!({ "body": "Есть кто-нибудь?" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let waiting = list("waiting").await;
+    assert_eq!(waiting, ids(&[x, a, y, f, e, d, c]));
+    assert_eq!(list("answered").await, ids(&[b]));
+
+    let (paged, pages) = walk(&h, &owner, "waiting", "", 2).await;
+    assert_eq!(paged, waiting, "частями вниз, к старым, тот же порядок");
+    assert_eq!(pages, 4);
+    let (found, _) = walk(&h, &owner, "waiting", "Свежее", 1).await;
+    assert_eq!(found, ids(&[x, y]), "в поиске тот же порядок");
+
+    let (_, all) = h
+        .get(
+            "/api/admin/support/tickets?filter=waiting&order=longest&limit=200",
+            &owner,
+        )
+        .await;
+    let since = |id: TicketId| {
+        all["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["ticket"]["id"] == id.0)
+            .map(|item| item["waiting_since"].as_str().map(str::to_string))
+            .unwrap()
+    };
+    let parsed = |text: Option<String>| {
+        text.map(|t| {
+            DateTime::parse_from_rfc3339(&t)
+                .unwrap()
+                .with_timezone(&Utc)
+        })
+    };
+    assert_eq!(
+        parsed(since(d)).map(|at| at.timestamp_micros()),
+        Some(old(150).timestamp_micros()),
+        "без сообщений ждёт с создания"
+    );
+    assert_eq!(
+        parsed(since(a)).map(|at| at.timestamp_micros()),
+        Some(old(197).timestamp_micros()),
+        "ждёт с первого неотвеченного сообщения"
+    );
+    for id in [c, d] {
+        let (status, _) = h
+            .write(
+                Method::POST,
+                &format!("/api/admin/support/tickets/{}/close", id.0),
+                &owner,
+                json!({}),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+    assert_eq!(
+        list("closed").await,
+        ids(&[d, c]),
+        "закрытие не двигает обращение"
+    );
+
+    let (status, longest) = h
+        .get(
+            "/api/admin/support/tickets?filter=waiting&order=longest&limit=1",
+            &owner,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{longest}");
+    assert_eq!(
+        ids_of(&longest),
+        ids(&[a]),
+        "для главной — кто ждёт дольше всех"
+    );
+    let (status, _) = h
+        .get(
+            "/api/admin/support/tickets?filter=waiting&order=oldest",
+            &owner,
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
     h.db.cleanup().await;
 }

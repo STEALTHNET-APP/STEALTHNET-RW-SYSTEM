@@ -14,7 +14,7 @@ use sn_domain::module::ModuleId;
 use sn_domain::paging::{Page, PageRequest};
 use sn_domain::support::{
     HandoffReason, MAX_OPEN_TICKETS, MessageAuthor, ReplyTarget, Ticket, TicketAi, TicketChannel,
-    TicketFile, TicketFilter, TicketMessage, TicketStatus,
+    TicketFile, TicketFilter, TicketMessage, TicketOrder, TicketStatus,
 };
 use sn_modules::catalog::ai;
 use sn_store::{ClientTicket, Db, NewReply, NewTicket};
@@ -259,18 +259,10 @@ impl<'a> SupportOps<'a> {
         Ok(Delivered::Opened(id))
     }
 
-    pub async fn list(
-        &self,
-        filter: TicketFilter,
-        page: PageRequest,
-    ) -> ServiceResult<Page<Ticket>> {
-        let mut conn = self.services.store().conn().await?;
-        Ok(conn.tickets().list(filter, page).await?)
-    }
-
     pub async fn list_view(
         &self,
         filter: TicketFilter,
+        order: TicketOrder,
         page: PageRequest,
         after_id: Option<TicketId>,
         query: Option<&str>,
@@ -278,7 +270,7 @@ impl<'a> SupportOps<'a> {
         let mut conn = self.services.store().conn().await?;
         let items = conn
             .tickets()
-            .list_view(filter, page, after_id, query)
+            .list_view(filter, order, page, after_id, query)
             .await?;
         let counts = conn.tickets().counts().await?;
         Ok((items, counts))

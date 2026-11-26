@@ -227,7 +227,13 @@ async fn админы_узнают_о_передаче_оператору_а_н�
         "not_found"
     );
     let (items, _) = support
-        .list_view(TicketFilter::Waiting, Default::default(), None, None)
+        .list_view(
+            TicketFilter::Waiting,
+            Default::default(),
+            Default::default(),
+            None,
+            None,
+        )
         .await
         .unwrap();
     let listed = items.items.iter().find(|i| i.ticket.id == cabinet).unwrap();
@@ -267,12 +273,13 @@ async fn после_ответа_ии_просьба_позвать_операт
     let waiting = |filter| async move {
         services
             .support()
-            .list(filter, Default::default())
+            .list_view(filter, Default::default(), Default::default(), None, None)
             .await
             .unwrap()
+            .0
             .items
             .iter()
-            .any(|t| t.id == id)
+            .any(|item| item.ticket.id == id)
     };
     assert!(waiting(TicketFilter::Answered).await);
     support

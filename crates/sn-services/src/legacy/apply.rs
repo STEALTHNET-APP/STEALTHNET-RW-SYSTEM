@@ -1437,6 +1437,7 @@ impl<'a> Applier<'a> {
                 if added {
                     sqlx::query(
                         "UPDATE tickets t SET last_message_id = m.last_id, last_author = m.author, \
+                         last_message_at = (SELECT max(x.created_at) FROM ticket_messages x WHERE x.ticket_id = t.id), \
                          waiting_message_id = CASE WHEN m.author = 'client' AND t.status = 'open' THEN \
                            (SELECT min(x.id) FROM ticket_messages x WHERE x.ticket_id = t.id AND x.author = 'client' \
                             AND x.id > COALESCE((SELECT max(r.id) FROM ticket_messages r WHERE r.ticket_id = t.id AND r.author <> 'client'), 0)) \

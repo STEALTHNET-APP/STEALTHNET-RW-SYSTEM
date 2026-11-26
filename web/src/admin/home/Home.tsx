@@ -112,7 +112,7 @@ function useTodoSources() {
       setWaiting(null);
       return;
     }
-    api<{ items: TicketItem[]; counts: { waiting: number } }>('/api/admin/support/tickets?filter=waiting&limit=1')
+    api<{ items: TicketItem[]; counts: { waiting: number } }>('/api/admin/support/tickets?filter=waiting&order=longest&limit=1')
       .then((page) => setWaiting({ count: page.counts.waiting, oldest: page.items[0] ?? null }))
       .catch(() => setWaiting({ count: 0, oldest: null }));
   }, [support]);

@@ -190,6 +190,14 @@ pub enum TicketFilter {
     Closed,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TicketOrder {
+    #[default]
+    Recent,
+    Longest,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Ticket {
     pub id: TicketId,

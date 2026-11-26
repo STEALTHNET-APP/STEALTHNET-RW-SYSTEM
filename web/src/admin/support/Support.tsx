@@ -586,10 +586,15 @@ export function Support() {
               {items && items.length === 0 && !listError ? <p className="sp-empty">{query ? 'Ничего не нашли' : 'Обращений нет'}</p> : null}
               {items?.map((item) => {
                 const name = itemName(item);
-                const minutes = minutesSince(item.waiting_since);
+                const lastAt = item.last_message_at ?? item.ticket.created_at;
+                const minutes = minutesSince(lastAt);
                 const waitColor =
                   filter === 'waiting' && minutes !== null ? (minutes >= 120 ? 'var(--bad)' : minutes >= 30 ? 'var(--warn)' : 'var(--muted)') : 'var(--muted)';
-                const time = filter === 'waiting' && minutes !== null ? spanText(minutes) : item.last_message_at ? shortWhen(item.last_message_at) : '';
+                const time = filter === 'waiting' && minutes !== null ? spanText(minutes) : shortWhen(lastAt);
+                const since =
+                  filter === 'waiting' && item.waiting_since && item.waiting_since !== item.last_message_at
+                    ? `Ждёт ответа с ${dateLong(item.waiting_since)}, ${timeHM(item.waiting_since)}`
+                    : undefined;
                 const preview = item.preview ? `${item.last_author === 'support' ? 'Вы: ' : item.last_author === 'ai' ? 'ИИ: ' : ''}${item.preview}` : '';
                 const mark = aiMark(item.ai, item.ticket.status, item.last_author);
                 const body = (
@@ -598,7 +603,7 @@ export function Support() {
                     <span className="sp-item-main">
                       <span className="sp-item-top">
                         <strong className="sp-ell">{name}</strong>
-                        <span className="sp-time num" style={{ color: waitColor }}>
+                        <span className="sp-time num" style={{ color: waitColor }} title={since}>
                           {time}
                         </span>
                       </span>

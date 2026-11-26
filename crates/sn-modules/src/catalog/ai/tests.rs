@@ -429,9 +429,12 @@ async fn просьба_позвать_человека_и_вопрос_о_де�
     let mut conn = db.store.conn().await.unwrap();
     let waiting = conn
         .tickets()
-        .list(
+        .list_view(
             sn_domain::support::TicketFilter::Waiting,
             Default::default(),
+            Default::default(),
+            None,
+            None,
         )
         .await
         .unwrap();

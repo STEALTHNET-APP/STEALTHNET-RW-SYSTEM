@@ -8,7 +8,7 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use sn_domain::access::Permission;
 use sn_domain::ids::{TicketFileId, TicketId};
-use sn_domain::support::TicketFilter;
+use sn_domain::support::{TicketFilter, TicketOrder};
 use sn_services::support::{CloseMany, ReplyRequest, TicketThread};
 
 pub fn routes() -> Router<AppState> {
@@ -38,6 +38,8 @@ struct ListQuery {
     after: Option<i64>,
     #[serde(default)]
     after_id: Option<i64>,
+    #[serde(default)]
+    order: Option<String>,
 }
 
 fn filter(value: Option<&str>) -> ApiResult<TicketFilter> {
@@ -52,6 +54,17 @@ fn filter(value: Option<&str>) -> ApiResult<TicketFilter> {
     }
 }
 
+fn order(value: Option<&str>) -> ApiResult<TicketOrder> {
+    match value.map(str::trim).unwrap_or("recent") {
+        "" | "recent" => Ok(TicketOrder::Recent),
+        "longest" => Ok(TicketOrder::Longest),
+        other => Err(ApiError::bad_request(
+            "validation.order",
+            format!("неизвестный порядок {other}"),
+        )),
+    }
+}
+
 async fn list(
     admin: CurrentAdmin,
     State(state): State<AppState>,
@@ -59,6 +72,7 @@ async fn list(
 ) -> ApiResult<Json<serde_json::Value>> {
     admin.require(Permission::Support)?;
     let filter = filter(query.filter.as_deref())?;
+    let order = order(query.order.as_deref())?;
     let paging = Paging {
         limit: query.limit,
         after: query.after,
@@ -68,6 +82,7 @@ async fn list(
         .support()
         .list_view(
             filter,
+            order,
             paging.request(),
             query.after_id.map(TicketId),
             query.q.as_deref(),

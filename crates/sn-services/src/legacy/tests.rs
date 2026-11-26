@@ -1216,7 +1216,11 @@ fn bedolaga_dump() -> Vec<u8> {
         },
         "associations": {}
     });
-    let json = serde_json::to_vec(&data).unwrap();
+    bedolaga_archive(&data)
+}
+
+fn bedolaga_archive(data: &serde_json::Value) -> Vec<u8> {
+    let json = serde_json::to_vec(data).unwrap();
     let mut builder = tar::Builder::new(Vec::new());
     for (name, bytes) in [
         (
@@ -1234,6 +1238,83 @@ fn bedolaga_dump() -> Vec<u8> {
             .unwrap();
     }
     gz(&builder.into_inner().unwrap())
+}
+
+#[tokio::test]
+async fn перенесённые_обращения_идут_по_времени_из_старой_панели() {
+    let Some(env) = env().await else { return };
+    let data = serde_json::json!({
+        "metadata": {"timestamp": "2026-11-16T21:00:00+00:00", "version": "orm-1.0"},
+        "data": {
+            "users": [
+                {"id": 1, "telegram_id": 3001, "username": "anna", "first_name": "Анна", "status": "active", "created_at": "2026-01-10T10:00:00+00:00"},
+                {"id": 2, "telegram_id": 3002, "username": "boris", "first_name": "Борис", "status": "active", "created_at": "2026-01-11T10:00:00+00:00"}
+            ],
+            "subscriptions": [],
+            "transactions": [],
+            "tickets": [
+                {"id": 81, "user_id": 1, "title": "Давнее", "status": "open", "created_at": "2026-05-04T10:00:00+00:00"},
+                {"id": 82, "user_id": 2, "title": "Дописал позже", "status": "open", "created_at": "2026-05-20T10:00:00+00:00"},
+                {"id": 83, "user_id": 1, "title": "Среднее", "status": "open", "created_at": "2026-05-21T10:00:00+00:00"},
+                {"id": 84, "user_id": 2, "title": "Без сообщений", "status": "open", "created_at": "2026-07-20T10:00:00+00:00"},
+                {"id": 85, "user_id": 1, "title": "Отвечено", "status": "open", "created_at": "2026-08-01T10:00:00+00:00"}
+            ],
+            "ticket_messages": [
+                {"id": 91, "ticket_id": 82, "user_id": 2, "message_text": "Не работает", "is_from_admin": false, "created_at": "2026-05-20T10:00:00+00:00"},
+                {"id": 92, "ticket_id": 81, "user_id": 1, "message_text": "Не подключается", "is_from_admin": false, "created_at": "2026-05-04T10:00:00+00:00"},
+                {"id": 93, "ticket_id": 83, "user_id": 1, "message_text": "Медленно", "is_from_admin": false, "created_at": "2026-05-21T10:00:00+00:00"},
+                {"id": 94, "ticket_id": 82, "user_id": 2, "message_text": "Всё ещё не работает", "is_from_admin": false, "created_at": "2026-09-08T10:00:00+00:00"},
+                {"id": 95, "ticket_id": 85, "user_id": 1, "message_text": "Вопрос", "is_from_admin": false, "created_at": "2026-08-01T10:00:00+00:00"},
+                {"id": 96, "ticket_id": 85, "user_id": 9, "message_text": "Ответ", "is_from_admin": true, "created_at": "2026-08-02T10:00:00+00:00"}
+            ]
+        },
+        "associations": {}
+    });
+    let (_, outcome) = import(
+        &env,
+        &bedolaga_archive(&data),
+        Some(owner(&env.services).await),
+    )
+    .await;
+    assert_eq!(outcome.counts.tickets, 5);
+    let s = &env.services;
+    assert_eq!(
+        scalar(
+            s,
+            "SELECT count(*) FROM tickets WHERE last_message_at IS NULL"
+        )
+        .await,
+        1
+    );
+    assert_eq!(
+        scalar(s, "SELECT count(*) FROM tickets t WHERE t.last_message_at = (SELECT max(m.created_at) FROM ticket_messages m WHERE m.ticket_id = t.id)").await,
+        4
+    );
+    let subjects = |order: sn_domain::support::TicketOrder,
+                    filter: sn_domain::support::TicketFilter| async move {
+        let (page, _) = s
+            .support()
+            .list_view(filter, order, Default::default(), None, None)
+            .await
+            .unwrap();
+        page.items
+            .into_iter()
+            .map(|item| item.ticket.subject.unwrap_or_default())
+            .collect::<Vec<_>>()
+    };
+    use sn_domain::support::{TicketFilter, TicketOrder};
+    assert_eq!(
+        subjects(TicketOrder::Recent, TicketFilter::Waiting).await,
+        ["Дописал позже", "Без сообщений", "Среднее", "Давнее"]
+    );
+    assert_eq!(
+        subjects(TicketOrder::Longest, TicketFilter::Waiting).await,
+        ["Давнее", "Дописал позже", "Среднее", "Без сообщений"]
+    );
+    assert_eq!(
+        subjects(TicketOrder::Recent, TicketFilter::Answered).await,
+        ["Отвечено"]
+    );
 }
 
 #[tokio::test]
