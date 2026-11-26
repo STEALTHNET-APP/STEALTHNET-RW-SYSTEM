@@ -61,6 +61,10 @@ export function planTerms(offer: TermsLike, currency: string): string {
   ]);
 }
 
+export function flatPlans<T extends OfferLike & TermsLike>(offers: T[], currency: string): T[] | null {
+  return flatOffers(offers, (offer) => planTerms(offer, currency));
+}
+
 export function offerById<T extends OfferLike>(offers: T[], tariffId: number | null | undefined): T | null {
   return offers.find((offer) => offer.tariff.id === tariffId) ?? null;
 }
@@ -106,8 +110,8 @@ export function firstPick<T extends OfferLike>(offers: T[], own: OwnTariff | nul
   return made(offer, linked ?? ownPeriod(offer, own) ?? standard(offer), own);
 }
 
-export function flatFirst<T extends OfferLike>(flat: T[], own: OwnTariff | null): OfferPick | null {
-  const offer = offerById(flat, own?.tariff_id) ?? flat[Math.min(1, flat.length - 1)];
+export function flatFirst<T extends OfferLike>(flat: T[], own: OwnTariff | null, link: OfferLink = {}): OfferPick | null {
+  const offer = offerById(flat, link.tariffId) ?? offerById(flat, own?.tariff_id) ?? flat[Math.min(1, flat.length - 1)];
   return offer ? made(offer, offer.periods[0], own) : null;
 }
 

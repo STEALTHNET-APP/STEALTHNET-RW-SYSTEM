@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { categoryOffers, categoryPick, firstPick, flatFirst, flatOffers, flatTerm, offerCategories, planTerms, renewsCurrent, tariffPick, targetPick } from './offers.ts';
+import { categoryOffers, categoryPick, firstPick, flatFirst, flatOffers, flatPlans, flatTerm, offerCategories, planTerms, renewsCurrent, tariffPick, targetPick } from './offers.ts';
 
 const period = (id, months) => ({ period_id: id, months, days: months * 30 });
 const offer = (id, category, included, max, periods) => ({
@@ -135,4 +135,25 @@ test('условия тарифа в мини-приложении: устрой
   assert.equal(planTerms(plan(null, open, []), 'RUB'), planTerms(plan(extra(0, 9000, 1, 1), { limit_bytes: 0, reset: 'month' }, [{ from: 2, percent: 10 }]), 'RUB'));
   assert.notEqual(planTerms(plan(null, { limit_bytes: 50, reset: 'month' }, []), 'RUB'), planTerms(plan(null, { limit_bytes: 50, reset: 'day' }, []), 'RUB'));
   assert.notEqual(planTerms(plan(null, open, []), 'RUB'), base);
+});
+
+test('общий список в кабинете: одна функция условий и ссылка с сайта', () => {
+  const term = (id, days, rub) => ({
+    category: { id: 10, name: 'Сроки', sort: 1 },
+    tariff: {
+      id,
+      name: `Тариф ${id}`,
+      devices: { included: 7, extra: { max: 5, monthly: { rub }, monthly_stars: 30 } },
+      traffic: { limit_bytes: null, reset: 'no_reset' },
+    },
+    periods: [{ period_id: id * 10, months: Math.max(1, Math.round(days / 30)), days }],
+  });
+  const flat = [term(1, 7, 5000), term(2, 30, 5000), term(3, 90, 5000)];
+  assert.deepEqual(flatPlans(flat, 'RUB').map((o) => o.tariff.id), [1, 2, 3]);
+  assert.equal(flatPlans([term(1, 7, 5000), term(2, 30, 6000)], 'RUB'), null);
+  assert.deepEqual(flatPlans([term(1, 7, 5000), term(2, 30, 6000)], 'USD').map((o) => o.tariff.id), [1, 2]);
+  const own = { tariff_id: 2, period_days: 30, extra_devices: 1 };
+  assert.deepEqual(flatFirst(flat, own, { tariffId: 3, periodId: 30 }), { tariffId: 3, periodId: 30, devices: 7 });
+  assert.deepEqual(flatFirst(flat, own, { tariffId: Number.NaN, periodId: 0 }), { tariffId: 2, periodId: 20, devices: 8 });
+  assert.deepEqual(flatFirst(flat, null, { tariffId: 99 }), { tariffId: 2, periodId: 20, devices: 7 });
 });

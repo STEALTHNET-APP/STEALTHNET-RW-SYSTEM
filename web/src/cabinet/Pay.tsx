@@ -11,7 +11,7 @@ import { checkPromo, handedCode, promoFailText } from './promo';
 import { CABINET_SUB_KEY, useSubs } from './SubSwitch';
 import { fullCategory, fullNote, NEWEST, newTargetNote, payTargets, remember, resolveTarget, subName, subState, targetView, type PayTarget } from './subs';
 import { methodKey } from '../lib/methods';
-import { categoryOffers, categoryPick, firstPick, offerById, offerCategories, renewsCurrent, tariffPick, targetPick, type OfferPick } from '../lib/offers';
+import { categoryOffers, categoryPick, firstPick, flatFirst, flatPlans, flatTerm, offerById, offerCategories, renewsCurrent, SHORT_PERIOD_DAYS, tariffPick, targetPick, type OfferPick } from '../lib/offers';
 import { ReceiptEmail, useReceiptEmail } from '../lib/receiptEmail';
 
 type Payment = { payment_id: string; status: string; order_status: string; pay_url: string | null };
@@ -88,6 +88,7 @@ export function Pay() {
 
   const categories = useMemo(() => offerCategories(offers), [offers]);
   const siblings = useMemo(() => categoryOffers(offers, picked?.category.id), [offers, picked]);
+  const flat = useMemo(() => (catalog ? flatPlans(catalog.tariffs, catalog.currency) : null), [catalog]);
 
   const current = live ? offerById(offers, live.subscription.tariff_id) : null;
   const own = live?.subscription ?? null;
@@ -96,21 +97,23 @@ export function Pay() {
     if (!catalog || live === undefined || tariffId !== null) {
       return;
     }
-    const start = firstPick(offers, live?.subscription ?? null, { tariffId: Number(params.get('tariff')), periodId: Number(params.get('period')) });
+    const link = { tariffId: Number(params.get('tariff')), periodId: Number(params.get('period')) };
+    const start = flat ? flatFirst(flat, live?.subscription ?? null, link) : firstPick(offers, live?.subscription ?? null, link);
     if (!start) {
       return;
     }
     setTariffId(start.tariffId);
     setPeriod(start.periodId);
     setDevices(start.devices);
-  }, [catalog, live, tariffId, offers, params]);
+  }, [catalog, flat, live, tariffId, offers, params]);
 
   const offer: TariffOffer | null = picked;
   const included = offer?.tariff.devices.included ?? 0;
   const extra = offer?.tariff.devices.extra ?? null;
   const maxDevices = included + (extra?.max ?? 0);
   const periodOffer = offer?.periods.find((p) => p.period_id === period) ?? null;
-  const offerPromo = promoOf(offer?.periods);
+  const rows = flat ? flat.flatMap((o) => o.periods.slice(0, 1).map((p) => ({ offer: o, period: p }))) : offer ? offer.periods.map((p) => ({ offer, period: p })) : [];
+  const offerPromo = promoOf(rows.map((row) => row.period));
   const subscriptionId = typeof target === 'number' ? target : null;
   const choice: OfferPick | null = tariffId === null ? null : { tariffId, periodId: period, devices };
 
@@ -456,10 +459,10 @@ export function Pay() {
               </div>
             </Card>
           ) : null}
-          <Card className="cb-pick" label={t('Тариф и срок')}>
+          <Card className="cb-pick" label={flat ? t('Срок') : t('Тариф и срок')}>
             <div className="cb-row wrap">
-              <h2 className="cb-h2">{t('Тариф и срок')}</h2>
-              {categories.length > 1 ? (
+              <h2 className="cb-h2">{flat ? t('Срок') : t('Тариф и срок')}</h2>
+              {!flat && categories.length > 1 ? (
                 <div role="group" aria-label={t('Тип тарифа')} className={categories.length > 3 ? 'cb-cats many' : 'cb-cats'}>
                   {categories.map((c) => (
                     <button key={c.id} type="button" aria-pressed={offer?.category.id === c.id} onClick={() => apply(categoryPick(offers, c.id, own, choice))}>
@@ -469,7 +472,7 @@ export function Pay() {
                 </div>
               ) : null}
             </div>
-            {siblings.length > 1 ? (
+            {!flat && siblings.length > 1 ? (
               <div role="group" aria-label={t('Тариф')} className={siblings.length > 3 ? 'cb-cats cb-tariffs many' : 'cb-cats cb-tariffs'}>
                 {siblings.map((o) => (
                   <button key={o.tariff.id} type="button" aria-pressed={offer?.tariff.id === o.tariff.id} onClick={() => apply(tariffPick(offers, o.tariff.id, own, choice))}>
@@ -480,10 +483,19 @@ export function Pay() {
             ) : null}
             {offerPromo ? <p className="cb-sale">{promoTitle(offerPromo)}</p> : null}
             <div role="radiogroup" aria-label={t('Срок')} className={starsMode ? 'cb-terms wide' : 'cb-terms'}>
-              {offer?.periods.map((p) => {
+              {rows.map(({ offer: o, period: p }) => {
                 const save = starsMode ? p.stars_savings_percent : p.savings_percent;
+                const monthly = flat ? p.days >= SHORT_PERIOD_DAYS : !!save;
+                const better = !!save && !p.promotion;
                 return (
-                  <button key={p.period_id} type="button" role="radio" aria-checked={period === p.period_id} className="cb-term-card" onClick={() => setPeriod(p.period_id)}>
+                  <button
+                    key={`${o.tariff.id}:${p.period_id}`}
+                    type="button"
+                    role="radio"
+                    aria-checked={offer?.tariff.id === o.tariff.id && period === p.period_id}
+                    className="cb-term-card"
+                    onClick={() => (flat ? apply(flatTerm(flat, o.tariff.id, choice)) : setPeriod(p.period_id))}
+                  >
                     <span className="cb-term-name">{monthsLabel(p.months, p.days)}</span>
                     {p.promotion ? (
                       <span className="cb-term-old">
@@ -491,10 +503,10 @@ export function Pay() {
                       </span>
                     ) : null}
                     <span className="cb-term-price">{starsMode && p.stars ? stars(p.stars) : priceOf(p.price)}</span>
-                    {save ? (
+                    {monthly || better ? (
                       <span className="cb-term-save">
-                        <span className="cb-muted">{t('{price} в месяц', { price: starsMode && p.stars_per_month ? stars(p.stars_per_month) : priceOf(p.per_month) })}</span>
-                        {p.promotion ? null : <strong>{t('Выгоднее на {percent}%', { percent: save })}</strong>}
+                        {monthly ? <span className="cb-muted">{t('{price} в месяц', { price: starsMode && p.stars_per_month ? stars(p.stars_per_month) : priceOf(p.per_month) })}</span> : null}
+                        {better ? <strong>{t('Выгоднее на {percent}%', { percent: save })}</strong> : null}
                       </span>
                     ) : null}
                   </button>
@@ -584,9 +596,7 @@ export function Pay() {
                   return (
                     <>
                       <div className="cb-line">
-                        <span>
-                          {offer.tariff.name} · {monthsLabel(periodOffer.months, periodOffer.days)}
-                        </span>
+                        <span>{flat ? monthsLabel(periodOffer.months, periodOffer.days) : `${offer.tariff.name} · ${monthsLabel(periodOffer.months, periodOffer.days)}`}</span>
                         <span className="num">{periodLine ? (starsMode && periodLine.stars !== null ? stars(periodLine.stars) : priceOf(periodLine.amount)) : ''}</span>
                       </div>
                       {extra && extra.max > 0 ? (

@@ -89,13 +89,15 @@ body {
 | Вход | `.cb-solo-box` (окно), `.cb-login-form`, `.cb-login-help` |
 | Подписка | `.cb-sub`, `.cb-days`, `.cb-bar`, заполненная часть — `.cb-bar span`, `.cb-balance-card`, `.cb-sum` (баланс), `.cb-auto-row` (автопродление), `.cb-friends`, `.cb-help` |
 | Подключение | `.cb-plats button` (устройства), `.cb-step`, `.cb-num` (номер шага), `.cb-step-text` (текст шага) |
-| Тарифы и оплата | `.cb-cats button` (тарифы), `.cb-term-card` (срок), `.cb-term-price`, `.cb-term-save`, `.cb-method` (способ оплаты), выбранный — `[aria-checked='true']`, `.cb-total`, `.cb-due-sum` (к оплате) |
+| Тарифы и оплата | `.cb-cats button` (категории и тарифы, в общем списке сроков их нет), `.cb-term-card` (срок), `.cb-term-price`, `.cb-term-save`, `.cb-method` (способ оплаты), выбранный — `[aria-checked='true']`, `.cb-total`, `.cb-due-sum` (к оплате) |
 | Устройства | `.cb-device`, `.cb-device-text strong` |
 | Пополнение и история | `.cb-amount` (сумма), `.cb-payrow` (платёж), `.cb-payrow-side strong` (сумма платежа) |
 | Друзья | `.cb-link`, `.cb-facts`, `.cb-withdraw` |
 | Подарки | `.cb-giftrow`, `.cb-gift-code` |
 | Помощь | `.cb-payrow` (обращение), `.cb-msg`, своё — `.cb-msg.mine` |
 | Ссылки внизу | `.cb-foot`, `.cb-foot a` |
+
+Общий список сроков: если у каждого тарифа на продаже один срок, сроки разные, а устройства, их докупка, скидки за устройства и трафик одинаковые, в «Тарифах» нет кнопок категорий и тарифов. Карточка называется «Срок» и показывает все сроки сразу теми же `.cb-term-card`, под ценой — цена в месяц у сроков от 28 дней. Выбран тариф клиента, у нового клиента — второй срок.
 
 Переменные цветов: `--bg` (фон), `--bar` (шапка), `--surface` и `--surface-2` (карточки и кнопки), `--line` и `--card-line` (линии и рамки карточек), `--ink`, `--ink-2` и `--muted` (текст), `--accent`, `--accent-ink` (ссылки и открытая вкладка), `--accent-soft` (фон открытой вкладки), `--btn` и `--btn-ink` (главная кнопка), `--warn` и `--bad` (предупреждения и ошибки).
 
