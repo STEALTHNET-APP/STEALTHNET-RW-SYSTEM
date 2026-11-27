@@ -21,6 +21,7 @@ use sn_payments::{
 use sn_store::{Db, NewPaymentNotice, Tx, audit_entity};
 use std::sync::Arc;
 
+pub(crate) mod legacy;
 #[cfg(test)]
 mod tests;
 
@@ -38,7 +39,7 @@ const CANCEL_RETRY_MINUTES: [i64; 6] = [1, 5, 15, 60, 180, 360];
 pub(crate) const LINK_COLUMNS: &str = "id, provider, external_id, client_id, subscription_id, \
      first_payment_id, tariff_id, period_id, days, periodicity, every_text, name, \
      amount_minor, currency, email, status, cancel_source, cancel_attempts, cancel_error, \
-     ended_at, paid_until, next_charge_at, created_at";
+     ended_at, paid_until, next_charge_at, created_at, legacy_invoice_id, charges_since, started_at";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -118,7 +119,7 @@ pub(crate) struct Link {
     pub external_id: String,
     pub client_id: i64,
     pub subscription_id: Option<i64>,
-    pub first_payment_id: i64,
+    pub first_payment_id: Option<i64>,
     pub tariff_id: Option<i64>,
     pub period_id: Option<i64>,
     pub days: i32,
@@ -136,6 +137,9 @@ pub(crate) struct Link {
     pub paid_until: Option<DateTime<Utc>>,
     pub next_charge_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
+    pub legacy_invoice_id: Option<i64>,
+    pub charges_since: Option<DateTime<Utc>>,
+    pub started_at: Option<DateTime<Utc>>,
 }
 
 impl Link {
@@ -180,6 +184,7 @@ pub struct RenewalView {
     pub ended_at: Option<DateTime<Utc>>,
     pub paid_until: Option<DateTime<Utc>>,
     pub problem: Option<String>,
+    pub legacy: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
@@ -188,9 +193,21 @@ pub struct SweepReport {
     pub cancelled: usize,
     pub charges: usize,
     pub failed: usize,
+    pub adopted: usize,
 }
 
 pub(crate) use sn_domain::client::mask_email;
+
+pub(crate) fn no_email(title: &str, locale: Locale) -> String {
+    match locale {
+        Locale::En => format!(
+            "the buyer email at {title} is unknown, so the subscription can only be cancelled in the {title} account"
+        ),
+        Locale::Ru => format!(
+            "почта покупателя в {title} неизвестна, поэтому отменить подписку можно только в кабинете {title}"
+        ),
+    }
+}
 
 pub(crate) fn title_of(services: &Services, provider: &str) -> String {
     services
@@ -353,6 +370,9 @@ pub(crate) async fn audit(
         map.insert("provider".into(), link.provider.clone().into());
         map.insert("contract".into(), link.external_id.clone().into());
         map.insert("client_id".into(), link.client_id.into());
+        if let Some(invoice) = link.legacy_invoice_id {
+            map.insert("legacy_invoice".into(), invoice.into());
+        }
     }
     db.audit()
         .record(&actor.audit(action, kind, Some(id), details))
@@ -373,7 +393,7 @@ pub(crate) async fn notice(
             provider: link.provider.clone(),
             event_key: key,
             kind,
-            payment_id: Some(PaymentId(link.first_payment_id)),
+            payment_id: link.first_payment_id.map(PaymentId),
             client_id: Some(ClientId(link.client_id)),
             amount,
             text: text.chars().take(NOTICE_TEXT_LIMIT).collect(),
@@ -922,8 +942,13 @@ impl<'a> Renewals<'a> {
             return Ok(None);
         };
         let charges = charges_of(db, link.id).await?;
+        let title = title_of(self.services, &link.provider);
+        let problem = link.cancel_error.clone().or_else(|| {
+            (link.status().live() && link.email.trim().is_empty())
+                .then(|| no_email(&title, lang::current()))
+        });
         Ok(Some(RenewalView {
-            title: title_of(self.services, &link.provider),
+            title,
             name: link.name.clone(),
             provider: link.provider.clone(),
             status: link.status(),
@@ -934,13 +959,14 @@ impl<'a> Renewals<'a> {
             next_charge_at: link
                 .next_charge_at
                 .filter(|_| link.status() == LinkStatus::Active),
-            started_at: link.created_at,
+            started_at: link.started_at.unwrap_or(link.created_at),
             charges,
             email: mask_email(&link.email),
             cancel_source: link.cancel_source.clone(),
             ended_at: link.ended_at,
             paid_until: link.paid_until,
-            problem: link.cancel_error.clone(),
+            problem,
+            legacy: link.charges_since.is_some(),
         }))
     }
 
@@ -1070,9 +1096,25 @@ impl<'a> Renewals<'a> {
             return Err(ServiceError::NotFound("платёжная система"));
         };
         let config = self.services.payments().config(&link.provider);
-        let answer = provider
-            .cancel_renewal(&config, &link.external_id, &link.email)
-            .await;
+        let title = title_of(self.services, &link.provider);
+        let blind = link.email.trim().is_empty();
+        let answer = if blind {
+            match provider.fetch_renewal(&config, &link.external_id).await {
+                Ok(state)
+                    if matches!(
+                        state.status,
+                        RenewalStatus::Cancelled | RenewalStatus::Failed
+                    ) =>
+                {
+                    Ok(RenewalCancel::Cancelled)
+                }
+                _ => Err(PaymentError::Rejected(no_email(&title, Locale::Ru))),
+            }
+        } else {
+            provider
+                .cancel_renewal(&config, &link.external_id, &link.email)
+                .await
+        };
         let mut tx = self.services.store().begin().await?;
         let Some(current) = lock_link(&mut tx, link.id).await? else {
             return Ok(());
@@ -1117,12 +1159,19 @@ impl<'a> Renewals<'a> {
                         format!("renewal_cancel_refused:{}", current.external_id),
                         NoticeKind::ManualCredit,
                         None,
-                        format!(
-                            "{} не отменила автопродление клиента: {text}. Панель повторяет запрос, \
-                             но списания идут, пока подписка не отменена: отмените её в кабинете {}",
-                            title_of(self.services, &current.provider),
-                            title_of(self.services, &current.provider)
-                        ),
+                        if blind {
+                            format!(
+                                "Панель не может отменить автопродление клиента в {title}: почта \
+                                 покупателя неизвестна. Списания идут, пока подписка не отменена: \
+                                 отмените её в кабинете {title}, панель увидит отмену при сверке"
+                            )
+                        } else {
+                            format!(
+                                "{title} не отменила автопродление клиента: {text}. Панель повторяет \
+                                 запрос, но списания идут, пока подписка не отменена: отмените её в \
+                                 кабинете {title}"
+                            )
+                        },
                     )
                     .await?;
                 }
@@ -1151,6 +1200,13 @@ impl<'a> Renewals<'a> {
     }
 
     pub async fn sweep(&self, now: DateTime<Utc>) -> ServiceResult<SweepReport> {
+        let mut report = SweepReport::default();
+        match self.adopt_legacy(now).await {
+            Ok(adopted) => report.adopted = adopted,
+            Err(err) => {
+                tracing::warn!(error = %err, "договоры Lava.top старой панели не проверены");
+            }
+        }
         let due: Vec<Link> = {
             let mut conn = self.services.store().conn().await?;
             sqlx::query_as(&format!(
@@ -1163,7 +1219,6 @@ impl<'a> Renewals<'a> {
             .fetch_all(conn.conn())
             .await?
         };
-        let mut report = SweepReport::default();
         for link in due {
             report.checked += 1;
             let id = link.id;
@@ -1225,6 +1280,12 @@ impl<'a> Renewals<'a> {
         let mut found = 0usize;
         for charge in state.charges.iter().filter(|c| c.paid) {
             if charge.id.eq_ignore_ascii_case(&link.external_id) {
+                continue;
+            }
+            if link
+                .charges_since
+                .is_some_and(|since| charge.at.is_none_or(|at| at <= since))
+            {
                 continue;
             }
             let known = {

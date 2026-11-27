@@ -396,6 +396,18 @@ pub struct RenewalState {
     pub paid_until: Option<DateTime<Utc>>,
     pub cancelled_at: Option<DateTime<Utc>>,
     pub charges: Vec<RenewalCharge>,
+    #[serde(default)]
+    pub buyer_email: Option<String>,
+    #[serde(default)]
+    pub periodicity: Option<String>,
+    #[serde(default)]
+    pub every: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub amount: Option<Amount>,
+    #[serde(default)]
+    pub started_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -721,6 +733,14 @@ pub trait PaymentProvider: Send + Sync + 'static {
         _series: &str,
     ) -> PaymentResult<RenewalState> {
         Err(PaymentError::Unsupported("сверка автопродления"))
+    }
+
+    async fn find_renewal(
+        &self,
+        _config: &ProviderConfig,
+        _series: &str,
+    ) -> PaymentResult<Option<RenewalState>> {
+        Err(PaymentError::Unsupported("поиск подписки"))
     }
 
     async fn confirm_renewal(

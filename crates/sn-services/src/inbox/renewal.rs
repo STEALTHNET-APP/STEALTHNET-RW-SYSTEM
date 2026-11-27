@@ -10,6 +10,7 @@ use sn_domain::tariff::Tariff;
 use sn_payments::RenewalEvent;
 
 pub(crate) const UNKNOWN_RENEWAL: &str = "продление подписки, которой нет в панели";
+pub const RENEWAL_CREDITED: &str = "Зачислено автоматически: списание провело автопродление";
 
 fn renewal_order(
     link: &Link,
@@ -69,7 +70,10 @@ impl PaymentInbox<'_> {
         let id = match link.subscription_id {
             Some(id) => Some(SubscriptionId(id)),
             None => {
-                let first = tx.payments().get(PaymentId(link.first_payment_id)).await?;
+                let Some(first) = link.first_payment_id else {
+                    return Ok(None);
+                };
+                let first = tx.payments().get(PaymentId(first)).await?;
                 tx.orders().get(first.order_id).await?.subscription_id
             }
         };
@@ -288,6 +292,11 @@ impl PaymentInbox<'_> {
                 result
             }
         };
+        if matches!(result, AcceptResult::Accepted { .. }) {
+            tx.payment_notices()
+                .close_credit_event(provider, &outcome.event_key, None, RENEWAL_CREDITED, now)
+                .await?;
+        }
         tx.commit().await?;
         Ok(result)
     }

@@ -292,6 +292,7 @@ export function historyLine(item: HistoryItem, index: number, who: HistoryWho): 
           return { ...base, what: n ? `Добавлено ${days(n)}` : 'Добавлены дни', note: actor, sum: '' };
         }
         case 'subscription.renewal_started':
+        case 'subscription.renewal_adopted':
         case 'subscription.renewal_cancel_requested':
         case 'subscription.renewal_cancelled':
         case 'subscription.renewal_failed':
@@ -310,6 +311,7 @@ export function historyLine(item: HistoryItem, index: number, who: HistoryWho): 
           };
           const what: Record<string, string> = {
             'subscription.renewal_started': `Оформлено автопродление через ${provider}`,
+            'subscription.renewal_adopted': `Договор ${provider} из старой панели стал автопродлением подписки`,
             'subscription.renewal_cancel_requested': `Отправлена отмена автопродления в ${provider}`,
             'subscription.renewal_cancelled': `Автопродление через ${provider} отменено`,
             'subscription.renewal_failed': `${provider} не смогла списать за продление, автопродление закрыто`,

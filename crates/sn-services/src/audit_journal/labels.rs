@@ -262,6 +262,11 @@ pub const ACTIONS: &[ActionLabel] = &[
         Area::Subscriptions,
     ),
     a(
+        "subscription.renewal_adopted",
+        "Договор автопродления из старой панели привязан к подписке",
+        Area::Subscriptions,
+    ),
+    a(
         "subscription.renewal_cancel_requested",
         "Отправлена отмена автопродления в платёжную систему",
         Area::Subscriptions,

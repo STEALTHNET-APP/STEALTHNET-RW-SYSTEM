@@ -52,13 +52,15 @@ export function renewalLine(renewal: Renewal): string {
 }
 
 export function renewalNote(renewal: Renewal): string {
-  const since = `оформлено ${dateLong(renewal.started_at)}, списаний ${renewal.charges}`;
+  const since = renewal.legacy
+    ? `из старой панели, оформлено ${dateLong(renewal.started_at)}`
+    : `оформлено ${dateLong(renewal.started_at)}, списаний ${renewal.charges}`;
   switch (renewal.status) {
     case 'active':
       return [
         renewal.next_charge_at ? `следующее списание около ${dateLong(renewal.next_charge_at)}` : null,
         since,
-        `почта в ${renewal.title} ${renewal.email}`,
+        renewal.email ? `почта в ${renewal.title} ${renewal.email}` : renewal.problem,
       ]
         .filter(Boolean)
         .join(' · ');

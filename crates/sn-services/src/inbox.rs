@@ -883,8 +883,20 @@ impl<'a> PaymentInbox<'a> {
         ) {
             return None;
         }
+        let series = match &parsed.payment {
+            Some(PaymentRef::Renewal(renewal)) => {
+                if settled.error.as_deref() != Some(renewal::UNKNOWN_RENEWAL) {
+                    return None;
+                }
+                Some(renewal.series.clone())
+            }
+            _ => None,
+        };
         match crate::legacy::invoices::settle(self.services, provider, parsed, request).await {
             Ok(Some(found)) => {
+                if let Some(series) = &series {
+                    self.note_legacy_contract(found.invoice, series).await;
+                }
                 let again = WebhookOutcome {
                     payment: Some(PaymentRef::Payment(found.payment)),
                     ..parsed.clone()
@@ -911,6 +923,24 @@ impl<'a> PaymentInbox<'a> {
                 };
                 None
             }
+        }
+    }
+
+    async fn note_legacy_contract(&self, invoice: i64, series: &str) {
+        let noted = match self.services.store().conn().await {
+            Ok(mut conn) => {
+                crate::renewals::legacy::note_legacy_charge(
+                    &mut conn,
+                    invoice,
+                    series,
+                    self.services.now(),
+                )
+                .await
+            }
+            Err(err) => Err(err.into()),
+        };
+        if let Err(err) = noted {
+            tracing::warn!(legacy_invoice = invoice, error = %err, "договор Lava.top старой панели не отмечен для проверки");
         }
     }
 

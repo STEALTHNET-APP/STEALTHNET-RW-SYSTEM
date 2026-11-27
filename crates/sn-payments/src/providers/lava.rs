@@ -600,11 +600,35 @@ impl Lava {
                 })
             })
             .collect();
+        let periodicity = text_of(&parsed, "periodicity").map(str::to_string);
         Ok(Some(RenewalState {
             status: renewal_status(parsed.get("subscriptionStatus").and_then(Json::as_str)),
             paid_until: time_of(&parsed, "expiredAt"),
             cancelled_at: time_of(&parsed, "cancelledAt"),
             charges,
+            buyer_email: parsed
+                .at(&["buyer", "email"])
+                .and_then(Json::as_str)
+                .map(str::trim)
+                .filter(|email| email.len() <= 254 && email.contains('@'))
+                .map(str::to_string),
+            every: periodicity
+                .as_deref()
+                .and_then(every)
+                .map(|e| e.text.to_string()),
+            periodicity,
+            name: ["offer", "name"]
+                .iter()
+                .find_map(|key| {
+                    parsed
+                        .at(&["product", key])
+                        .and_then(Json::as_str)
+                        .map(str::trim)
+                        .filter(|name| !name.is_empty())
+                })
+                .map(|name| util::clip(name, 120)),
+            amount: invoice_total(&parsed).and_then(|total| total_amount(total).ok()),
+            started_at: time_of(&parsed, "datetime"),
         }))
     }
 
@@ -1334,6 +1358,14 @@ impl PaymentProvider for Lava {
         txid: &str,
     ) -> PaymentResult<Option<WebhookOutcome>> {
         self.renewal(config, series, txid).await
+    }
+
+    async fn find_renewal(
+        &self,
+        config: &ProviderConfig,
+        series: &str,
+    ) -> PaymentResult<Option<RenewalState>> {
+        self.subscription(config, series).await
     }
 
     fn enabled_by_default(&self) -> bool {

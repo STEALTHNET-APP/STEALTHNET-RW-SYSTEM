@@ -1445,3 +1445,636 @@ async fn списание_по_договору_старой_панели_про
         "списания по договору старой панели не просят зачислять вручную"
     );
 }
+
+async fn insert_legacy(
+    kit: &Kit,
+    client: ClientId,
+    tariff: &Tariff,
+    target: Option<&Subscription>,
+    external: &str,
+    old_id: &str,
+) -> i64 {
+    let period = tariff.periods.iter().find(|p| p.days == 30).unwrap();
+    let intent = serde_json::to_value(PurchaseIntent::Subscription {
+        tariff_id: tariff.id,
+        period_id: period.id,
+        extra_devices: 0,
+        target: target.map(|s| s.id),
+    })
+    .unwrap();
+    let mut conn = kit.services.store().conn().await.unwrap();
+    sqlx::query_scalar::<_, i64>(
+        "INSERT INTO legacy_invoices (source, old_id, provider, old_provider, external_id, order_ref, \
+         client_id, intent, label, amount_minor, currency, created_at, recurring) \
+         VALUES ('stealthnet', $1, 'lava', 'lavatop', $2, $3, $4, $5, 'Тариф', 299, 'USD', \
+         now() - interval '90 days', true) RETURNING id",
+    )
+    .bind(old_id)
+    .bind(external)
+    .bind(format!("ord-{old_id}"))
+    .bind(client.0)
+    .bind(intent)
+    .fetch_one(conn.conn())
+    .await
+    .unwrap()
+}
+
+fn contract_json(id: &str, status: &str, email: Option<&str>, charges: Value) -> Value {
+    let mut body = json!({
+        "id": id,
+        "datetime": (Utc::now() - Duration::days(95)).to_rfc3339(),
+        "status": "COMPLETED",
+        "receipt": {"amount": 2.99, "currency": "USD", "fee": 0.24},
+        "product": {"name": "VPN Стандарт", "offer": "Месяц"},
+        "periodicity": "MONTHLY",
+        "subscriptionStatus": status,
+        "expiredAt": (Utc::now() + Duration::days(20)).to_rfc3339(),
+        "recurrentPayments": charges,
+    });
+    if let Some(email) = email {
+        body["buyer"] = json!({"email": email, "cardMask": "220220******4444"});
+    }
+    body
+}
+
+async fn mount_contract(server: &MockServer, id: &str, body: Value) {
+    Mock::given(method("GET"))
+        .and(path(format!("/api/v1/subscriptions/{id}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(server)
+        .await;
+}
+
+fn charge(id: &str, at: DateTime<Utc>) -> Value {
+    json!({"id": id, "datetime": at.to_rfc3339(), "status": "COMPLETED", "amount": 2.99, "currency": "USD"})
+}
+
+async fn mount_cancel(server: &MockServer, email: &str) {
+    Mock::given(method("DELETE"))
+        .and(path("/api/v1/subscriptions"))
+        .and(query_param("contractId", PARENT))
+        .and(query_param("email", email))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(server)
+        .await;
+}
+
+async fn autorenew_off(kit: &Kit, id: SubscriptionId) {
+    let mut conn = kit.services.store().conn().await.unwrap();
+    conn.subscriptions()
+        .set_autorenew(
+            id,
+            AutoRenewState {
+                enabled: false,
+                period_id: None,
+            },
+        )
+        .await
+        .unwrap();
+}
+
+async fn autorenew_of(kit: &Kit, id: SubscriptionId) -> bool {
+    let mut conn = kit.services.store().conn().await.unwrap();
+    conn.subscriptions()
+        .get(id)
+        .await
+        .unwrap()
+        .autorenew
+        .enabled
+}
+
+async fn contract_state(kit: &Kit, invoice: i64) -> (Option<String>, Option<String>) {
+    let mut conn = kit.services.store().conn().await.unwrap();
+    sqlx::query_as("SELECT contract_state, contract_id FROM legacy_invoices WHERE id = $1")
+        .bind(invoice)
+        .fetch_one(conn.conn())
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn договор_старой_панели_становится_автопродлением_и_оператор_его_отключает() {
+    let server = MockServer::start().await;
+    let Some(kit) = lava_kit(&server).await else {
+        return;
+    };
+    let tariff = standard(&kit.services).await;
+    configure(&kit, true, json!([plan(&tariff, 30, 299, "MONTHLY")])).await;
+    let client = with_email(&kit, 5_093_118_601).await;
+    let subscription = provision(&kit, client, &tariff, 30).await;
+    let invoice = insert_legacy(
+        &kit,
+        client,
+        &tariff,
+        Some(&subscription),
+        PARENT,
+        "p-old-1",
+    )
+    .await;
+    autorenew_off(&kit, subscription.id).await;
+    assert!(!autorenew_of(&kit, subscription.id).await);
+    let before = renewal_id(31);
+    mount_contract(
+        &server,
+        PARENT,
+        contract_json(
+            PARENT,
+            "ACTIVE",
+            Some(EMAIL),
+            json!([charge(&before, Utc::now() - Duration::days(30))]),
+        ),
+    )
+    .await;
+
+    let report = kit.services.renewals().sweep(Utc::now()).await.unwrap();
+    assert_eq!(report.adopted, 1);
+    let link = link_of(&kit).await;
+    assert_eq!(link.status(), LinkStatus::Active);
+    assert_eq!(link.subscription_id, Some(subscription.id.0));
+    assert_eq!(link.email, EMAIL);
+    assert_eq!(link.legacy_invoice_id, Some(invoice));
+    assert_eq!(link.periodicity, "MONTHLY");
+    assert_eq!(link.every_text, "каждый месяц");
+    assert_eq!(link.amount(), Some(Money::new(299, Currency::Usd)));
+    assert_eq!(link.first_payment_id, None);
+    assert_eq!(
+        contract_state(&kit, invoice).await,
+        (Some("linked".into()), Some(PARENT.into()))
+    );
+    assert!(autorenew_of(&kit, subscription.id).await);
+    let view = kit
+        .services
+        .renewals()
+        .view(subscription.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(view.legacy);
+    assert_eq!(view.status, LinkStatus::Active);
+    assert_eq!(view.email, "c***@example.com");
+    assert_eq!(view.problem, None);
+    assert!(view.started_at < Utc::now() - Duration::days(90));
+
+    kit.services
+        .renewals()
+        .check_subscription(subscription.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        count(
+            &kit,
+            "SELECT count(*) FROM payments WHERE provider = 'lava'"
+        )
+        .await,
+        0,
+        "списание до переноса договора сверка не засчитывает"
+    );
+
+    server.reset().await;
+    let after = renewal_id(32);
+    mount_contract(
+        &server,
+        PARENT,
+        contract_json(
+            PARENT,
+            "ACTIVE",
+            Some(EMAIL),
+            json!([
+                charge(&before, Utc::now() - Duration::days(30)),
+                charge(&after, Utc::now() + Duration::minutes(5))
+            ]),
+        ),
+    )
+    .await;
+    mount_renewal(&server, &after, 0, 2.99).await;
+    kit.services
+        .renewals()
+        .check_subscription(subscription.id)
+        .await
+        .unwrap();
+    let renewed = run_renewal_order(&kit, &after).await;
+    assert_eq!(renewed.kind, sn_domain::order::OrderKind::Renewal);
+    assert_eq!(renewed.subscription_id, Some(subscription.id));
+    assert_eq!(
+        count(
+            &kit,
+            "SELECT count(*) FROM payments WHERE provider = 'lava'"
+        )
+        .await,
+        1
+    );
+    let report = kit.services.renewals().sweep(Utc::now()).await.unwrap();
+    assert_eq!(report.adopted, 0);
+
+    mount_cancel(&server, EMAIL).await;
+    let admin = kit
+        .services
+        .auth()
+        .upsert_owner("owner@example.com", "очень-надёжный-пароль")
+        .await
+        .unwrap()
+        .0;
+    let view = kit
+        .services
+        .renewals()
+        .cancel_subscription(subscription.id, CancelSource::Operator, Actor::Admin(admin))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(view.status, LinkStatus::Cancelled);
+    assert_eq!(
+        link_of(&kit).await.cancel_source.as_deref(),
+        Some("operator")
+    );
+    assert!(!autorenew_of(&kit, subscription.id).await);
+    assert!(
+        templates(&kit)
+            .await
+            .iter()
+            .any(|t| t == CANCELLED_TEMPLATE),
+        "клиенту сообщили об отключении"
+    );
+}
+
+#[tokio::test]
+async fn списание_до_переноса_договора_идёт_по_счёту_после_по_автопродлению_и_клиент_отключает() {
+    let server = MockServer::start().await;
+    let Some(kit) = lava_kit(&server).await else {
+        return;
+    };
+    let tariff = standard(&kit.services).await;
+    configure(&kit, true, json!([plan(&tariff, 30, 299, "MONTHLY")])).await;
+    let client = with_email(&kit, 5_093_118_602).await;
+    let subscription = provision(&kit, client, &tariff, 30).await;
+    let invoice = insert_legacy(
+        &kit,
+        client,
+        &tariff,
+        Some(&subscription),
+        PARENT,
+        "p-old-2",
+    )
+    .await;
+
+    let first = renewal_id(41);
+    mount_renewal(&server, &first, 0, 2.99).await;
+    assert_eq!(deliver(&kit, renewal_event(&first)).await, 200);
+    let by_invoice = run_renewal_order(&kit, &first).await;
+    assert_eq!(by_invoice.subscription_id, Some(subscription.id));
+    let (_, resolution, _) = notice_of(&kit, &first).await;
+    assert_eq!(resolution.as_deref(), Some(crate::inbox::LEGACY_CREDITED));
+    assert_eq!(
+        contract_state(&kit, invoice).await,
+        (None, Some(PARENT.into())),
+        "договор отмечен для проверки по номеру из уведомления"
+    );
+
+    mount_contract(
+        &server,
+        PARENT,
+        contract_json(
+            PARENT,
+            "ACTIVE",
+            Some(EMAIL),
+            json!([charge(&first, Utc::now())]),
+        ),
+    )
+    .await;
+    let report = kit.services.renewals().sweep(Utc::now()).await.unwrap();
+    assert_eq!(
+        report.adopted, 0,
+        "проверка через несколько минут после списания"
+    );
+    let report = kit
+        .services
+        .renewals()
+        .sweep(Utc::now() + Duration::minutes(10))
+        .await
+        .unwrap();
+    assert_eq!(report.adopted, 1);
+    assert_eq!(link_of(&kit).await.status(), LinkStatus::Active);
+
+    let second = renewal_id(42);
+    mount_renewal(&server, &second, 30, 2.99).await;
+    assert_eq!(deliver(&kit, renewal_event(&second)).await, 200);
+    let by_link = run_renewal_order(&kit, &second).await;
+    assert_eq!(by_link.subscription_id, Some(subscription.id));
+    assert_eq!(
+        count(
+            &kit,
+            "SELECT count(*) FROM provider_subscription_charges c \
+             JOIN payments p ON p.id = c.payment_id WHERE p.provider = 'lava'"
+        )
+        .await,
+        1,
+        "второе списание провела связка автопродления"
+    );
+    assert_eq!(
+        count(
+            &kit,
+            "SELECT count(*) FROM payment_notices WHERE resolved_at IS NULL"
+        )
+        .await,
+        0
+    );
+    let txid_count = |txid: &str| {
+        format!(
+            "SELECT count(*) FROM payments WHERE provider = 'lava' AND provider_txid = '{txid}'"
+        )
+    };
+    assert_eq!(count(&kit, &txid_count(&first)).await, 1);
+    assert_eq!(count(&kit, &txid_count(&second)).await, 1);
+
+    mount_cancel(&server, EMAIL).await;
+    kit.services
+        .subscriptions()
+        .set_autorenew(subscription.id, false, None, Actor::Client(client))
+        .await
+        .unwrap();
+    let link = link_of(&kit).await;
+    assert_eq!(link.status(), LinkStatus::Cancelled);
+    assert_eq!(link.cancel_source.as_deref(), Some("client"));
+}
+
+#[tokio::test]
+async fn договор_без_почты_отменяют_в_кабинете_lava() {
+    let server = MockServer::start().await;
+    let Some(kit) = lava_kit(&server).await else {
+        return;
+    };
+    let tariff = standard(&kit.services).await;
+    configure(&kit, true, json!([plan(&tariff, 30, 299, "MONTHLY")])).await;
+    let client = with_email(&kit, 5_093_118_603).await;
+    let subscription = provision(&kit, client, &tariff, 30).await;
+    insert_legacy(
+        &kit,
+        client,
+        &tariff,
+        Some(&subscription),
+        PARENT,
+        "p-old-3",
+    )
+    .await;
+    mount_contract(
+        &server,
+        PARENT,
+        contract_json(PARENT, "ACTIVE", None, json!([])),
+    )
+    .await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/v1/subscriptions"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(0)
+        .mount(&server)
+        .await;
+    kit.services.renewals().sweep(Utc::now()).await.unwrap();
+    let link = link_of(&kit).await;
+    assert_eq!(link.email, "");
+    let view = kit
+        .services
+        .renewals()
+        .view(subscription.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        view.problem
+            .as_deref()
+            .is_some_and(|p| p.contains("кабинете Lava.top")),
+        "{:?}",
+        view.problem
+    );
+    let admin = kit
+        .services
+        .auth()
+        .upsert_owner("owner@example.com", "очень-надёжный-пароль")
+        .await
+        .unwrap()
+        .0;
+    kit.services
+        .renewals()
+        .cancel_subscription(subscription.id, CancelSource::Operator, Actor::Admin(admin))
+        .await
+        .unwrap();
+    assert_eq!(link_of(&kit).await.status(), LinkStatus::Cancelling);
+    assert!(
+        notices(&kit)
+            .await
+            .iter()
+            .any(|k| k == &format!("renewal_cancel_refused:{PARENT}"))
+    );
+
+    server.reset().await;
+    mount_contract(
+        &server,
+        PARENT,
+        contract_json(PARENT, "CANCELLED", None, json!([])),
+    )
+    .await;
+    kit.services
+        .renewals()
+        .sweep(Utc::now() + Duration::minutes(2))
+        .await
+        .unwrap();
+    assert_eq!(link_of(&kit).await.status(), LinkStatus::Cancelled);
+}
+
+#[tokio::test]
+async fn перенос_договоров_отмечает_ненайденные_и_отменённые() {
+    let server = MockServer::start().await;
+    let Some(kit) = lava_kit(&server).await else {
+        return;
+    };
+    let tariff = standard(&kit.services).await;
+    configure(&kit, true, json!([plan(&tariff, 30, 299, "MONTHLY")])).await;
+    let client = with_email(&kit, 5_093_118_604).await;
+    let subscription = provision(&kit, client, &tariff, 30).await;
+    let unknown = "0e8f6b2a-1c3d-4e5f-8a9b-0c1d2e3f4a5b";
+    let ended = "7a6b5c4d-3e2f-4a1b-9c8d-7e6f5a4b3c2d";
+    let gone = insert_legacy(
+        &kit,
+        client,
+        &tariff,
+        Some(&subscription),
+        unknown,
+        "p-old-4",
+    )
+    .await;
+    let closed = insert_legacy(&kit, client, &tariff, Some(&subscription), ended, "p-old-5").await;
+    let odd = insert_legacy(
+        &kit,
+        client,
+        &tariff,
+        Some(&subscription),
+        "not-a-contract",
+        "p-old-6",
+    )
+    .await;
+    mount_contract(
+        &server,
+        ended,
+        contract_json(ended, "CANCELLED", Some(EMAIL), json!([])),
+    )
+    .await;
+    let report = kit.services.renewals().sweep(Utc::now()).await.unwrap();
+    assert_eq!(report.adopted, 0);
+    assert_eq!(
+        contract_state(&kit, gone).await.0.as_deref(),
+        Some("missing")
+    );
+    assert_eq!(
+        contract_state(&kit, closed).await.0.as_deref(),
+        Some("ended")
+    );
+    assert_eq!(
+        contract_state(&kit, odd).await.0.as_deref(),
+        Some("missing")
+    );
+    assert_eq!(
+        count(&kit, "SELECT count(*) FROM provider_subscriptions").await,
+        0
+    );
+    let report = kit
+        .services
+        .renewals()
+        .sweep(Utc::now() + Duration::days(2))
+        .await
+        .unwrap();
+    assert_eq!(report.adopted, 0);
+    let asked = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.url.path().starts_with("/api/v1/subscriptions/"))
+        .count();
+    assert_eq!(
+        asked, 2,
+        "ненайденные и отменённые договоры не спрашиваются снова"
+    );
+}
+
+async fn link_by(kit: &Kit, external: &str) -> Option<Link> {
+    let mut conn = kit.services.store().conn().await.unwrap();
+    sqlx::query_as::<_, Link>(&format!(
+        "SELECT {LINK_COLUMNS} FROM provider_subscriptions WHERE external_id = $1"
+    ))
+    .bind(external)
+    .fetch_optional(conn.conn())
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn договор_без_ссылки_на_подписку_привязывается_к_подписке_клиента() {
+    let server = MockServer::start().await;
+    let Some(kit) = lava_kit(&server).await else {
+        return;
+    };
+    let standard = standard(&kit.services).await;
+    {
+        let mut conn = kit.services.store().conn().await.unwrap();
+        conn.settings()
+            .set(keys::MULTI_SUBSCRIPTIONS, &json!({"enabled": true}), None)
+            .await
+            .unwrap();
+    }
+    configure(&kit, true, json!([plan(&standard, 30, 299, "MONTHLY")])).await;
+    let premium = tariff(
+        &kit.services,
+        category(&kit.services, "Премиум").await,
+        "Премиум",
+        sn_domain::traffic::TrafficPolicy::UNLIMITED,
+        vec![squad(3)],
+    )
+    .await;
+
+    let single = "1f0e2d3c-4b5a-4968-8776-655443322110";
+    let alone = with_email(&kit, 5_093_118_611).await;
+    let only = provision(&kit, alone, &standard, 30).await;
+    insert_legacy(&kit, alone, &standard, None, single, "p-old-11").await;
+    mount_contract(
+        &server,
+        single,
+        contract_json(single, "ACTIVE", Some(EMAIL), json!([])),
+    )
+    .await;
+
+    let by_tariff = "2a3b4c5d-6e7f-4801-9a2b-3c4d5e6f7a8b";
+    let mixed = client(&kit.services, 5_093_118_612).await;
+    provision(&kit, mixed, &standard, 30).await;
+    let wanted = provision(&kit, mixed, &premium, 30).await;
+    insert_legacy(&kit, mixed, &premium, None, by_tariff, "p-old-12").await;
+    mount_contract(
+        &server,
+        by_tariff,
+        contract_json(by_tariff, "ACTIVE", Some(EMAIL), json!([])),
+    )
+    .await;
+
+    let basic = tariff(
+        &kit.services,
+        category(&kit.services, "Базовый").await,
+        "Базовый",
+        sn_domain::traffic::TrafficPolicy::UNLIMITED,
+        vec![squad(2)],
+    )
+    .await;
+    let twins = client(&kit.services, 5_093_118_613).await;
+    provision(&kit, twins, &standard, 30).await;
+    provision(&kit, twins, &premium, 30).await;
+    assert_eq!(
+        count(
+            &kit,
+            &format!(
+                "SELECT count(*) FROM subscriptions WHERE client_id = {} AND ended_at IS NULL",
+                twins.0
+            )
+        )
+        .await,
+        2
+    );
+    let unclear = insert_legacy(&kit, twins, &basic, None, PARENT, "p-old-13").await;
+    mount_contract(
+        &server,
+        PARENT,
+        contract_json(PARENT, "ACTIVE", Some(EMAIL), json!([])),
+    )
+    .await;
+
+    let report = kit.services.renewals().sweep(Utc::now()).await.unwrap();
+    assert_eq!(report.adopted, 2);
+    assert_eq!(
+        link_by(&kit, single).await.unwrap().subscription_id,
+        Some(only.id.0),
+        "единственная подписка клиента"
+    );
+    assert_eq!(
+        link_by(&kit, by_tariff).await.unwrap().subscription_id,
+        Some(wanted.id.0),
+        "подписка с тарифом договора"
+    );
+    assert!(link_by(&kit, PARENT).await.is_none());
+    assert_eq!(
+        contract_state(&kit, unclear).await.0.as_deref(),
+        Some("unbound")
+    );
+
+    let charge = renewal_id(51);
+    mount_renewal(&server, &charge, 0, 2.99).await;
+    assert_eq!(deliver(&kit, renewal_event(&charge)).await, 200);
+    let created = run_renewal_order(&kit, &charge).await;
+    assert_eq!(created.kind, sn_domain::order::OrderKind::New);
+    let report = kit
+        .services
+        .renewals()
+        .sweep(Utc::now() + Duration::minutes(10))
+        .await
+        .unwrap();
+    assert_eq!(report.adopted, 1);
+    assert_eq!(
+        link_by(&kit, PARENT).await.unwrap().subscription_id,
+        created.subscription_id.map(|s| s.0),
+        "после списания договор привязан к подписке, которую оно оформило"
+    );
+}

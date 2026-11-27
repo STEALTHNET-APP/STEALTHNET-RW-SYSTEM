@@ -32,6 +32,7 @@ export type Renewal = {
   ended_at: string | null;
   paid_until: string | null;
   problem: string | null;
+  legacy: boolean;
 };
 
 export type Subscription = {
