@@ -2078,3 +2078,71 @@ async fn договор_без_ссылки_на_подписку_привязы
         "после списания договор привязан к подписке, которую оно оформило"
     );
 }
+
+#[tokio::test]
+async fn договор_старой_панели_привязывается_по_привязке_подписки_lava() {
+    let server = MockServer::start().await;
+    let Some(kit) = lava_kit(&server).await else {
+        return;
+    };
+    let standard = standard(&kit.services).await;
+    {
+        let mut conn = kit.services.store().conn().await.unwrap();
+        conn.settings()
+            .set(keys::MULTI_SUBSCRIPTIONS, &json!({"enabled": true}), None)
+            .await
+            .unwrap();
+    }
+    let premium = tariff(
+        &kit.services,
+        category(&kit.services, "Премиум").await,
+        "Премиум",
+        sn_domain::traffic::TrafficPolicy::UNLIMITED,
+        vec![squad(3)],
+    )
+    .await;
+    let premium_period = premium.periods.iter().find(|p| p.days == 30).unwrap().id;
+    configure(
+        &kit,
+        true,
+        json!([
+            plan(&standard, 30, 299, "MONTHLY"),
+            {
+                "product": SUB_PRODUCT, "offer": "5d4c3b2a-1f0e-4d9c-8b7a-6f5e4d3c2b1a",
+                "periodicity": "MONTHLY", "name": "VPN Премиум · Месяц",
+                "amount": 299, "currency": "USD", "tariff": premium.id.0, "tariff_period": premium_period.0
+            }
+        ]),
+    )
+    .await;
+    let customer = client(&kit.services, 5_093_118_621).await;
+    provision(&kit, customer, &standard, 30).await;
+    let wanted = provision(&kit, customer, &premium, 30).await;
+    let invoice = insert_legacy(&kit, customer, &standard, None, PARENT, "p-old-21").await;
+    let mut body = contract_json(PARENT, "ACTIVE", Some(EMAIL), json!([]));
+    body["product"] = json!({"name": "VPN  Премиум", "offer": "Месяц"});
+    mount_contract(&server, PARENT, body).await;
+
+    let report = kit.services.renewals().sweep(Utc::now()).await.unwrap();
+    assert_eq!(report.adopted, 1);
+    let link = link_of(&kit).await;
+    assert_eq!(
+        link.subscription_id,
+        Some(wanted.id.0),
+        "подписка Lava.top привязана к «Премиуму», договор продлевает подписку этого тарифа"
+    );
+    assert_eq!(link.tariff_id, Some(premium.id.0));
+    assert_eq!(link.period_id, Some(premium_period.0));
+    assert_eq!(link.name, "VPN Премиум · Месяц");
+    assert_eq!(
+        contract_state(&kit, invoice).await.0.as_deref(),
+        Some("linked")
+    );
+    let planned = count(
+        &kit,
+        "SELECT count(*) FROM audit_log WHERE action = 'subscription.renewal_adopted' \
+         AND details->>'plan' = 'true'",
+    )
+    .await;
+    assert_eq!(planned, 1);
+}

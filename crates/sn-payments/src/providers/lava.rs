@@ -617,16 +617,7 @@ impl Lava {
                 .and_then(every)
                 .map(|e| e.text.to_string()),
             periodicity,
-            name: ["offer", "name"]
-                .iter()
-                .find_map(|key| {
-                    parsed
-                        .at(&["product", key])
-                        .and_then(Json::as_str)
-                        .map(str::trim)
-                        .filter(|name| !name.is_empty())
-                })
-                .map(|name| util::clip(name, 120)),
+            name: product_title(&parsed).map(|name| util::clip(&name, 120)),
             amount: invoice_total(&parsed).and_then(|total| total_amount(total).ok()),
             started_at: time_of(&parsed, "datetime"),
         }))
@@ -1111,6 +1102,20 @@ fn catalog_offer(offer: &Json) -> Option<serde_json::Value> {
             "prices": prices,
         })
     })
+}
+
+fn product_title(info: &Json) -> Option<String> {
+    let part = |key: &str| {
+        info.at(&["product", key])
+            .and_then(Json::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+    };
+    match (part("name"), part("offer")) {
+        (Some(product), Some(offer)) if offer != product => Some(format!("{product} · {offer}")),
+        (Some(product), _) => Some(product.to_string()),
+        (None, offer) => offer.map(str::to_string),
+    }
 }
 
 fn renewal_status(raw: Option<&str>) -> RenewalStatus {

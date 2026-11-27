@@ -1,7 +1,7 @@
 use super::*;
 use sn_domain::ids::{PeriodId, TariffId};
 use sn_domain::payment::providers::LAVA;
-use sn_payments::{ProviderConfig, RenewalState};
+use sn_payments::{ProviderConfig, RenewalPlan, RenewalState};
 use uuid::Uuid;
 
 const ADOPT_BATCH: i64 = 200;
@@ -80,6 +80,52 @@ impl Contract {
             }) => (target, Some(tariff_id), Some(period_id)),
             _ => (None, None, None),
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Term {
+    tariff: Option<TariffId>,
+    period: Option<PeriodId>,
+    name: Option<String>,
+    planned: bool,
+}
+
+fn folded(text: &str) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+fn plan_for<'p>(plans: &'p [RenewalPlan], state: &RenewalState) -> Option<&'p RenewalPlan> {
+    let name = folded(state.name.as_deref()?);
+    let periodicity = state.periodicity.as_deref()?.trim();
+    let currency = state.amount?.currency;
+    let mut found = plans.iter().filter(|plan| {
+        plan.periodicity.eq_ignore_ascii_case(periodicity)
+            && plan.amount.currency.code() == currency.code()
+            && folded(&plan.name) == name
+    });
+    let first = found.next()?;
+    found.next().is_none().then_some(first)
+}
+
+fn term(plans: &[RenewalPlan], state: &RenewalState, contract: &Contract) -> Term {
+    if let Some(plan) = plan_for(plans, state) {
+        return Term {
+            tariff: Some(TariffId(plan.binding.tariff_id)),
+            period: Some(PeriodId(plan.binding.period_id)),
+            name: Some(plan.name.clone()).filter(|name| !name.is_empty()),
+            planned: true,
+        };
+    }
+    let (_, tariff, period) = contract.intent();
+    Term {
+        tariff,
+        period,
+        name: None,
+        planned: false,
     }
 }
 
@@ -169,9 +215,13 @@ impl Renewals<'_> {
             .fetch_all(conn.conn())
             .await?
         };
+        let plans = provider.renewal_plans(&config);
         let mut adopted = 0usize;
         for contract in due {
-            match self.adopt(provider.as_ref(), &config, &contract, now).await {
+            match self
+                .adopt(provider.as_ref(), &config, &plans, &contract, now)
+                .await
+            {
                 Ok(State::Linked) => adopted += 1,
                 Ok(_) => {}
                 Err(err) => {
@@ -189,6 +239,7 @@ impl Renewals<'_> {
         &self,
         provider: &dyn PaymentProvider,
         config: &ProviderConfig,
+        plans: &[RenewalPlan],
         contract: &Contract,
         now: DateTime<Utc>,
     ) -> ServiceResult<State> {
@@ -204,6 +255,7 @@ impl Renewals<'_> {
             mark(&mut conn, contract.id, State::Missing, None, now).await?;
             return Ok(State::Missing);
         };
+        let term = term(plans, &state, contract);
         let mut tx = self.services.store().begin().await?;
         let outcome = match state.status {
             RenewalStatus::Cancelled | RenewalStatus::Failed => State::Ended,
@@ -211,11 +263,11 @@ impl Renewals<'_> {
                 if lock_series(&mut tx, LAVA, &series).await?.is_some() {
                     State::Linked
                 } else {
-                    match self.bound(&mut tx, contract).await? {
+                    match self.bound(&mut tx, contract, term.tariff).await? {
                         None => State::Unbound,
                         Some(sub) if live_link(&mut tx, sub.id).await?.is_some() => State::Conflict,
                         Some(sub) => {
-                            self.link(&mut tx, contract, &series, &state, &sub, now)
+                            self.link(&mut tx, contract, &series, &state, &sub, &term, now)
                                 .await?
                         }
                     }
@@ -227,8 +279,13 @@ impl Renewals<'_> {
         Ok(outcome)
     }
 
-    async fn bound(&self, tx: &mut Tx, contract: &Contract) -> ServiceResult<Option<Subscription>> {
-        let (target, tariff, _) = contract.intent();
+    async fn bound(
+        &self,
+        tx: &mut Tx,
+        contract: &Contract,
+        tariff: Option<TariffId>,
+    ) -> ServiceResult<Option<Subscription>> {
+        let (target, _, _) = contract.intent();
         if let Some(target) = target
             && let Some(sub) = usable(tx, contract.client_id, target).await?
         {
@@ -258,6 +315,7 @@ impl Renewals<'_> {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn link(
         &self,
         tx: &mut Tx,
@@ -265,6 +323,7 @@ impl Renewals<'_> {
         series: &str,
         state: &RenewalState,
         sub: &Subscription,
+        term: &Term,
         now: DateTime<Utc>,
     ) -> ServiceResult<State> {
         let Some(tariff_id) = sub.tariff_id else {
@@ -278,11 +337,10 @@ impl Renewals<'_> {
         let periodicity = state.periodicity.clone().unwrap_or_default();
         let cycle = cycle_of(self.services, LAVA, &periodicity, 30);
         let wanted = cycle_days(cycle);
-        let (_, _, period) = contract.intent();
         let period = tariff
             .periods
             .iter()
-            .find(|p| Some(p.id) == period)
+            .find(|p| Some(p.id) == term.period)
             .or_else(|| {
                 tariff
                     .periods
@@ -298,7 +356,11 @@ impl Renewals<'_> {
             (RenewalStatus::Active, Some(until)) if until > now - Duration::days(400) => until,
             _ => cycle.after(now),
         };
-        let name = state.name.clone().unwrap_or_else(|| tariff.name.clone());
+        let name = term
+            .name
+            .clone()
+            .or_else(|| state.name.clone())
+            .unwrap_or_else(|| tariff.name.clone());
         let id: Option<i64> = sqlx::query_scalar(
             "INSERT INTO provider_subscriptions (provider, external_id, client_id, subscription_id, \
              first_payment_id, tariff_id, period_id, days, offer_id, product_id, periodicity, \
@@ -345,6 +407,7 @@ impl Renewals<'_> {
                     "every": link.every_text,
                     "periodicity": link.periodicity,
                     "email_known": !link.email.is_empty(),
+                    "plan": term.planned,
                 }),
             )
             .await?;
