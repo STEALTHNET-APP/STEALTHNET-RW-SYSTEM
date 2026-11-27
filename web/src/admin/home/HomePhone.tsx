@@ -17,6 +17,7 @@ import { Avatar } from '../Avatar';
 import { ImportHint } from './ImportHint';
 import { ConfigWarnings } from './ConfigWarnings';
 import { PhoneWeek } from './WeekLedger';
+import { todayChange } from './weekStats';
 
 function longSpan(minutes: number): string {
   return minutes < 60 ? count(Math.max(1, minutes), 'минуту', 'минуты', 'минут') : spanText(minutes);
@@ -70,8 +71,7 @@ export function HomePhone() {
   const today = dashboard?.today ?? null;
   const subs = dashboard?.subscriptions ?? null;
   const online = dashboard?.remna?.online_now ?? null;
-  const change =
-    revenue && revenue.yesterday.minor > 0 ? Math.round(((revenue.today.minor - revenue.yesterday.minor) / revenue.yesterday.minor) * 100) : null;
+  const change = todayChange(revenue);
 
   const todos: Todo[] = setupTodos(dashboard?.setup, can);
   for (const node of nodes) {
@@ -175,16 +175,16 @@ export function HomePhone() {
             <span className="hp-cap">Выручка сегодня</span>
             <strong className="hp-big">{money(revenue.today)}</strong>
             <span className="hp-cap" style={{ marginTop: 4 }}>
-              {change !== null ? (
+              {change ? (
                 <>
-                  <span style={{ color: change >= 0 ? 'var(--ok)' : 'var(--bad)' }}>
-                    {change >= 0 ? '+' : '−'}
-                    {Math.abs(change)}%
+                  <span style={{ color: change.percent >= 0 ? 'var(--ok)' : 'var(--bad)' }}>
+                    {change.percent >= 0 ? '+' : '−'}
+                    {Math.abs(change.percent)}%
                   </span>{' '}
-                  к вчера ·{' '}
+                  {change.versus} ·{' '}
                 </>
               ) : null}
-              за месяц {money(revenue.month, true)}
+              <span style={{ whiteSpace: 'nowrap' }}>за месяц {money(revenue.month, true)}</span>
             </span>
           </>
         ) : (

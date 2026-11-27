@@ -40,6 +40,7 @@ pub struct DashboardStats {
     pub revenue_7d_minor: i64,
     pub revenue_30d_minor: i64,
     pub revenue_yesterday_minor: i64,
+    pub revenue_yesterday_same_time_minor: i64,
     pub revenue_prev_7d_minor: i64,
     pub revenue_today_stars: Stars,
     pub revenue_7d_stars: Stars,
@@ -120,6 +121,7 @@ struct CountsRow {
 struct RevenueRow {
     today: i64,
     yesterday: i64,
+    yesterday_same_time: i64,
     week: i64,
     prev_week: i64,
     month: i64,
@@ -784,6 +786,9 @@ impl<'c> SubscriptionsRepo<'c> {
         let week_ago = now
             .checked_sub_signed(Duration::days(7))
             .ok_or_else(|| StoreError::Invalid("дата вне допустимого диапазона".into()))?;
+        let day_ago = now
+            .checked_sub_signed(Duration::days(1))
+            .ok_or_else(|| StoreError::Invalid("дата вне допустимого диапазона".into()))?;
         let series_start = days_back(REVENUE_DAYS as u64 - 1)?;
         let soon = now
             .checked_add_signed(Duration::days(EXPIRING_SOON_DAYS))
@@ -807,6 +812,7 @@ impl<'c> SubscriptionsRepo<'c> {
         let revenue: RevenueRow = sqlx::query_as(&format!(
             "SELECT COALESCE(sum(net) FILTER (WHERE currency = $1 AND paid_at >= $2), 0)::bigint AS today, \
              COALESCE(sum(net) FILTER (WHERE currency = $1 AND paid_at >= $3 AND paid_at < $2), 0)::bigint AS yesterday, \
+             COALESCE(sum(net) FILTER (WHERE currency = $1 AND paid_at >= $3 AND paid_at < $8), 0)::bigint AS yesterday_same_time, \
              COALESCE(sum(net) FILTER (WHERE currency = $1 AND paid_at >= $4), 0)::bigint AS week, \
              COALESCE(sum(net) FILTER (WHERE currency = $1 AND paid_at >= $6 AND paid_at < $7), 0)::bigint AS prev_week, \
              COALESCE(sum(net) FILTER (WHERE currency = $1), 0)::bigint AS month, \
@@ -824,6 +830,7 @@ impl<'c> SubscriptionsRepo<'c> {
         .bind(month_start)
         .bind(prev_week_start)
         .bind(week_ago)
+        .bind(day_ago)
         .fetch_one(&mut *self.conn)
         .await?;
         let shift = f64::from(offset.local_minus_utc());
@@ -891,6 +898,7 @@ impl<'c> SubscriptionsRepo<'c> {
             revenue_7d_minor: revenue.week,
             revenue_30d_minor: revenue.month,
             revenue_yesterday_minor: revenue.yesterday,
+            revenue_yesterday_same_time_minor: revenue.yesterday_same_time,
             revenue_prev_7d_minor: revenue.prev_week,
             revenue_today_stars: Stars(revenue.today_stars),
             revenue_7d_stars: Stars(revenue.week_stars),

@@ -38,6 +38,7 @@ pub struct DashboardCounts {
 pub struct DashboardRevenue {
     pub today: Money,
     pub yesterday: Money,
+    pub yesterday_same_time: Money,
     pub week: Money,
     pub week_before: Money,
     pub month: Money,
@@ -582,6 +583,10 @@ impl<'a> AdminOps<'a> {
                 include_money.then(|| DashboardRevenue {
                     today: Money::new(stats.revenue_today_minor, currency),
                     yesterday: Money::new(stats.revenue_yesterday_minor, currency),
+                    yesterday_same_time: Money::new(
+                        stats.revenue_yesterday_same_time_minor,
+                        currency,
+                    ),
                     week: Money::new(stats.revenue_7d_minor, currency),
                     week_before: Money::new(stats.revenue_prev_7d_minor, currency),
                     month: Money::new(stats.revenue_30d_minor, currency),

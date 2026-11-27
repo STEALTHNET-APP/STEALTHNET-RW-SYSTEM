@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { changePercent, dayLabel, lastWeek, totals } from './weekStats.ts';
+import { changePercent, dayLabel, lastWeek, todayChange, totals } from './weekStats.ts';
 
 const rub = (r) => ({ minor: r * 100, currency: 'RUB' });
 
@@ -56,4 +56,11 @@ test('изменение к прошлым 7 дням и подписи дней
   assert.equal(dayLabel('2026-11-21', 6), 'сб 21');
   assert.equal(dayLabel('2026-11-23', 4), 'пн 23');
   assert.equal(dayLabel('2026-11-01', 26), 'вс 1');
+});
+
+test('сегодня сравнивается со вчера к этому же времени, без него — с полным вчерашним днём', () => {
+  assert.deepEqual(todayChange({ today: rub(1200), yesterday: rub(3000), yesterday_same_time: rub(1000) }), { percent: 20, versus: 'к этому времени вчера' });
+  assert.deepEqual(todayChange({ today: rub(1200), yesterday: rub(3000) }), { percent: -60, versus: 'к вчерашнему дню' });
+  assert.equal(todayChange({ today: rub(1200), yesterday: rub(3000), yesterday_same_time: rub(0) }), null);
+  assert.equal(todayChange(null), null);
 });

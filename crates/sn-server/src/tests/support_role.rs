@@ -96,6 +96,10 @@ async fn поддержка_не_видит_utm_ноды_сервер_панел
             dashboard["today"]["new_clients_paid"]
         );
         assert!(dashboard["revenue"]["week_before"]["minor"].is_number());
+        assert!(
+            dashboard["revenue"]["yesterday_same_time"]["minor"].is_number(),
+            "{dashboard}"
+        );
     }
     assert!(dashboard["orders_review"].is_number());
 

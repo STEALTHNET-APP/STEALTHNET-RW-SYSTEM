@@ -80,6 +80,13 @@ async fn главная_считает_подписки_и_выручку_в_в�
     refund(&mut conn, full, 100, PaymentStatus::Refunded).await;
     let yesterday = paid(&mut conn, payer, "cryptopay", usd(500)).await;
     paid_at(&mut conn, yesterday, today_start - Duration::hours(1)).await;
+    let yesterday_morning = paid(&mut conn, payer, "cryptopay", usd(80)).await;
+    paid_at(
+        &mut conn,
+        yesterday_morning,
+        now - Duration::days(1) - Duration::minutes(1),
+    )
+    .await;
     let ten_days = paid(&mut conn, payer, "cryptopay", usd(2_000)).await;
     paid_at(&mut conn, ten_days, now - Duration::days(10)).await;
     let old = paid(&mut conn, payer, "cryptopay", usd(4_000)).await;
@@ -278,10 +285,14 @@ async fn главная_считает_подписки_и_выручку_в_в�
     );
     assert_eq!(stats.revenue_today_minor, 699 + 700);
     assert_eq!(stats.payments_today, 2);
-    assert_eq!(stats.revenue_yesterday_minor, 500);
-    assert_eq!(stats.revenue_7d_minor, 699 + 700 + 500);
+    assert_eq!(stats.revenue_yesterday_minor, 500 + 80);
+    assert_eq!(stats.revenue_yesterday_same_time_minor, 80);
+    assert_eq!(stats.revenue_7d_minor, 699 + 700 + 500 + 80);
     assert_eq!(stats.revenue_prev_7d_minor, 30 + 2_000);
-    assert_eq!(stats.revenue_30d_minor, 699 + 700 + 500 + 2_000 + 30 + 40);
+    assert_eq!(
+        stats.revenue_30d_minor,
+        699 + 700 + 500 + 80 + 2_000 + 30 + 40
+    );
     assert_eq!(stats.revenue_today_stars, Stars(350));
     assert_eq!(stats.revenue_7d_stars, Stars(350));
     assert_eq!(stats.revenue_30d_stars, Stars(525));
@@ -294,12 +305,12 @@ async fn главная_считает_подписки_и_выручку_в_в�
     assert_eq!(today.day, now.with_timezone(&offset).date_naive());
     assert_eq!((today.minor, today.stars), (1_399, Stars(350)));
     let back = |days: usize| stats.revenue_by_day[stats.revenue_by_day.len() - 1 - days];
-    assert_eq!(back(1).minor, 500);
+    assert_eq!(back(1).minor, 500 + 80);
     assert_eq!(back(8).stars, Stars(175));
     assert_eq!(back(10).minor, 2_000);
     assert_eq!(
         stats.revenue_by_day.iter().map(|d| d.minor).sum::<i64>(),
-        1_399 + 500 + 2_000 + 30 + 40
+        1_399 + 500 + 80 + 2_000 + 30 + 40
     );
     assert_eq!(back(7).minor, 30 + 40);
     assert_eq!(
@@ -310,7 +321,7 @@ async fn главная_считает_подписки_и_выручку_в_в�
             back(8).payments,
             back(10).payments
         ),
-        (2, 1, 2, 0, 1)
+        (2, 2, 2, 0, 1)
     );
     assert_eq!(stats.clients_by_day.len(), REVENUE_DAYS as usize);
     let clients = |days: usize| stats.clients_by_day[stats.clients_by_day.len() - 1 - days];

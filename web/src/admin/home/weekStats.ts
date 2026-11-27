@@ -57,6 +57,15 @@ export function changePercent(value: Money | null, prev: Money | null | undefine
   return Math.round(((value.minor - prev.minor) / prev.minor) * 100);
 }
 
+export function todayChange(revenue: { today: Money; yesterday: Money; yesterday_same_time?: Money } | null): { percent: number; versus: string } | null {
+  if (!revenue) {
+    return null;
+  }
+  const sameTime = revenue.yesterday_same_time;
+  const percent = changePercent(revenue.today, sameTime ?? revenue.yesterday);
+  return percent === null ? null : { percent, versus: sameTime ? 'к этому времени вчера' : 'к вчерашнему дню' };
+}
+
 export function weekdayIndex(day: string): number {
   const [y = 1970, m = 1, d = 1] = day.split('-').map(Number);
   return (new Date(Date.UTC(y, m - 1, d)).getUTCDay() + 6) % 7;

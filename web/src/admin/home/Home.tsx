@@ -37,6 +37,7 @@ import { ImportHint } from './ImportHint';
 import { ConfigWarnings } from './ConfigWarnings';
 import { PanelServer } from './PanelServer';
 import { WeekLedger } from './WeekLedger';
+import { todayChange } from './weekStats';
 
 export function useOverview() {
   const { can } = useSession();
@@ -345,8 +346,7 @@ function MainBoard() {
   const revenue = dashboard?.revenue ?? null;
   const today = dashboard?.today ?? null;
   const subs = dashboard?.subscriptions ?? null;
-  const delta =
-    revenue && revenue.yesterday.minor > 0 ? Math.round(((revenue.today.minor - revenue.yesterday.minor) / revenue.yesterday.minor) * 100) : null;
+  const delta = todayChange(revenue);
   const summary = nodesSummary(nodes);
   const remnaOff = dashboard?.setup?.remnawave === false;
   const seesNodes = can('infrastructure');
@@ -385,16 +385,16 @@ function MainBoard() {
               <Bars values={revenue.by_day.map((d) => d.amount.minor)} />
             </span>
             <span className="muted">
-              {delta !== null ? (
+              {delta ? (
                 <>
-                  <span style={{ color: delta >= 0 ? 'var(--ok)' : 'var(--bad)', fontWeight: 600 }}>
-                    {delta >= 0 ? '+' : '−'}
-                    {Math.abs(delta)}%
+                  <span style={{ color: delta.percent >= 0 ? 'var(--ok)' : 'var(--bad)', fontWeight: 600 }}>
+                    {delta.percent >= 0 ? '+' : '−'}
+                    {Math.abs(delta.percent)}%
                   </span>{' '}
-                  к вчерашнему дню ·{' '}
+                  {delta.versus} ·{' '}
                 </>
               ) : null}
-              за месяц {money(revenue.month, true)}
+              <span style={{ whiteSpace: 'nowrap' }}>за месяц {money(revenue.month, true)}</span>
             </span>
           </div>
         ) : null}
