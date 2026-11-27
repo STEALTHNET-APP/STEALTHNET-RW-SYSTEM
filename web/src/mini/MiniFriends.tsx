@@ -4,7 +4,7 @@ import { api } from '../lib/api';
 import { money } from '../lib/format';
 import { t } from '../lib/i18n';
 import type { Referral } from '../cabinet/model';
-import { deeperLevels, siteInviteLink } from '../lib/referral';
+import { levelRows, siteInviteLink } from '../lib/referral';
 import { pick, profileBlock, profileOn, sectionPath, withPercent } from './config';
 import { FRIENDS_TEXTS } from './labels';
 import { BackHead, useMini } from './MiniApp';
@@ -35,8 +35,8 @@ export function useFriendsText(): { title: string; text: (percent: number) => st
 export function FriendsCard({ referral, heading, part }: { referral: Referral; heading: boolean; part?: string }) {
   const [copied, setCopied] = useState<string | null>(null);
   const { title, text } = useFriendsText();
-  const first = text(referral.levels[0] ?? 0);
-  const line = first ? [first, ...deeperLevels(referral.levels)].join('\n') : '';
+  const rows = levelRows(referral.levels);
+  const line = rows.length ? text(referral.levels[0] ?? 0) : '';
   const site = siteInviteLink(referral.code);
 
   const copy = async (value: string, key: string) => {
@@ -52,7 +52,17 @@ export function FriendsCard({ referral, heading, part }: { referral: Referral; h
   return (
     <div className="mn-card mn-pad" data-part={part}>
       {heading ? <strong>{title}</strong> : null}
-      {line ? <span className="mn-ink2 mn-lines-text">{line}</span> : null}
+      {line ? <span className="mn-muted small mn-lines-text">{line}</span> : null}
+      {rows.length ? (
+        <dl className="mn-levels">
+          {rows.map((row) => (
+            <div key={row.label}>
+              <dt>{row.label}</dt>
+              <dd>{row.percent}%</dd>
+            </div>
+          ))}
+        </dl>
+      ) : null}
       {referral.bot_link ? (
         <>
           <span className="mn-muted small">{t('Ссылка на Telegram-бота')}</span>

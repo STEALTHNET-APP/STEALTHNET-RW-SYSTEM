@@ -91,7 +91,6 @@ export const COMMON: Record<string, string> = {
   'Подписки': 'Subscriptions',
   'Пополнить баланс нельзя. Остатком можно оплатить подписку, если его хватает на всю сумму': 'Top-ups are off. You can pay for a subscription with what\'s left if it covers the full amount',
   'Пригласите друга и получайте {percent}% от его оплат на баланс.': 'Invite friends and get {percent}% of their payments on your balance.',
-  'Ваш процент с каждой оплаты:\n{percent}% — друзья': 'Your share of every payment:\n{percent}% — friends',
   'Пришли по ссылке: {count} · заработано {amount}': 'Joined with your link: {count} · earned {amount}',
   'Скопировано': 'Copied',
   'Скопировать ссылку': 'Copy link',

@@ -92,7 +92,7 @@ body {
 | Тарифы и оплата | `.cb-cats button` (категории и тарифы, в общем списке сроков их нет), `.cb-term-card` (срок), `.cb-term-price`, `.cb-term-save`, `.cb-method` (способ оплаты), выбранный — `[aria-checked='true']`, `.cb-total`, `.cb-due-sum` (к оплате) |
 | Устройства | `.cb-device`, `.cb-device-text strong` |
 | Пополнение и история | `.cb-amount` (сумма), `.cb-payrow` (платёж), `.cb-payrow-side strong` (сумма платежа) |
-| Друзья | `.cb-link`, `.cb-facts`, `.cb-withdraw` |
+| Друзья | `.cb-levels`, `.cb-levels-list` (проценты уровней), `.cb-link`, `.cb-facts`, `.cb-withdraw` |
 | Подарки | `.cb-giftrow`, `.cb-gift-code` |
 | Помощь | `.cb-payrow` (обращение), `.cb-msg`, своё — `.cb-msg.mine` |
 | Ссылки внизу | `.cb-foot`, `.cb-foot a` |

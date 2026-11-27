@@ -1913,6 +1913,40 @@ a.cb-card[id] {
   font-weight: 800;
 }
 
+.cb-levels-list {
+  margin: 0;
+  display: grid;
+}
+
+.cb-levels-list div {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 16px;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+}
+
+.cb-levels-list div:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.cb-levels-list div:last-child {
+  padding-bottom: 0;
+}
+
+.cb-levels-list dt {
+  color: var(--ink-2);
+}
+
+.cb-levels-list dd {
+  margin: 0;
+  color: var(--ink);
+  font-size: 18px;
+  font-weight: 700;
+}
+
 .cb-payrow.cb-ticketrow {
   display: block;
   padding: 0;

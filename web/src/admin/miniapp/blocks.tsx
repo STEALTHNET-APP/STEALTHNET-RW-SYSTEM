@@ -410,7 +410,7 @@ function FriendsBody({ block, change, kit, percent }: BodyProps<Extract<ProfileB
         max={kit.limits.friends_text}
         standard={kit.text(FRIENDS_TEXTS.text)}
         multiline
-        hint={`{percent} — процент первого уровня из модуля «Рефералы», сейчас ${percent}. Второй и третий уровень добавятся ниже сами. Пустое поле — без текста`}
+        hint={`Текст над строками с процентами. {percent} — процент первого уровня из модуля «Рефералы», сейчас ${percent}. Пустое поле — без текста`}
         onChange={(text) => change({ ...block, text })}
       />
     </>

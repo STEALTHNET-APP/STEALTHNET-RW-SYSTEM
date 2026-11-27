@@ -39,7 +39,7 @@ export const EMPTY_TEXTS = {
 
 export const FRIENDS_TEXTS = {
   title: msg('Друзья'),
-  text: msg('Ваш процент с каждой оплаты:\n{percent}% — друзья'),
+  text: msg('Ваш процент с каждой оплаты'),
 };
 
 export function tabText(key: SectionKey): string {

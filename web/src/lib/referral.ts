@@ -47,20 +47,13 @@ export function botLink(username: string, start?: string | null): string {
   return start ? `${base}?start=${encodeURIComponent(start)}` : base;
 }
 
-export function deeperLevels(levels: readonly number[]): string[] {
-  const [, second = 0, third = 0] = levels;
-  const lines: string[] = [];
-  if (second > 0) {
-    lines.push(t('{percent}% — их друзья', { percent: second }));
-  }
-  if (third > 0) {
-    lines.push(t('{percent}% — друзья их друзей', { percent: third }));
-  }
-  return lines;
-}
+export type LevelRow = { label: string; percent: number };
 
-export function levelsText(levels: readonly number[]): string[] {
-  const [first = 0] = levels;
-  const lines = [first > 0 ? t('{percent}% — друзья', { percent: first }) : '', ...deeperLevels(levels)].filter(Boolean);
-  return lines.length ? [t('Ваш процент с каждой оплаты:'), ...lines] : [];
+export function levelRows(levels: readonly number[]): LevelRow[] {
+  const [first = 0, second = 0, third = 0] = levels;
+  return [
+    { label: t('С оплат друзей'), percent: first },
+    { label: t('С оплат их друзей'), percent: second },
+    { label: t('С оплат друзей их друзей'), percent: third },
+  ].filter((row) => row.percent > 0);
 }

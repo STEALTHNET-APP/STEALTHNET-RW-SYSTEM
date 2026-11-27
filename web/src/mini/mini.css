@@ -1339,6 +1339,40 @@ button.mn-tab {
   padding: 20px;
 }
 
+.mn-levels {
+  margin: 0;
+  display: grid;
+}
+
+.mn-levels div {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+}
+
+.mn-levels div:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.mn-levels div:last-child {
+  padding-bottom: 6px;
+}
+
+.mn-levels dt {
+  color: var(--ink-2);
+}
+
+.mn-levels dd {
+  margin: 0;
+  color: var(--ink);
+  font-size: 17px;
+  font-weight: 700;
+}
+
 .mn-url {
   display: block;
   padding: 12px;
