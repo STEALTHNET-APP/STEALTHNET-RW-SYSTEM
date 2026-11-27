@@ -39,6 +39,7 @@ pub struct DashboardRevenue {
     pub today: Money,
     pub yesterday: Money,
     pub week: Money,
+    pub week_before: Money,
     pub month: Money,
     pub today_stars: i64,
     pub by_day: Vec<DayAmount>,
@@ -48,6 +49,15 @@ pub struct DashboardRevenue {
 pub struct DayAmount {
     pub day: chrono::NaiveDate,
     pub amount: Money,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct DashboardDay {
+    pub day: chrono::NaiveDate,
+    pub new_clients: i64,
+    pub new_clients_paid: Option<i64>,
+    pub revenue: Option<Money>,
+    pub payments: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,6 +114,7 @@ pub struct DashboardView {
     pub subscriptions: Option<DashboardCounts>,
     pub today: Option<DashboardToday>,
     pub revenue: Option<DashboardRevenue>,
+    pub days: Option<Vec<DashboardDay>>,
     pub stats_error: Option<String>,
     pub support_waiting: i64,
     pub orders_review: Option<i64>,
@@ -550,7 +561,7 @@ impl<'a> AdminOps<'a> {
         let now = self.services.now();
         let mut conn = self.services.store().conn().await?;
         let offset = self.services.settings().remna_offset();
-        let (subscriptions, today, revenue, stats_error) = match conn
+        let (subscriptions, today, revenue, days, stats_error) = match conn
             .subscriptions()
             .dashboard_in(now, currency, offset)
             .await
@@ -572,6 +583,7 @@ impl<'a> AdminOps<'a> {
                     today: Money::new(stats.revenue_today_minor, currency),
                     yesterday: Money::new(stats.revenue_yesterday_minor, currency),
                     week: Money::new(stats.revenue_7d_minor, currency),
+                    week_before: Money::new(stats.revenue_prev_7d_minor, currency),
                     month: Money::new(stats.revenue_30d_minor, currency),
                     today_stars: stats.revenue_today_stars.0,
                     by_day: stats
@@ -583,9 +595,25 @@ impl<'a> AdminOps<'a> {
                         })
                         .collect(),
                 }),
+                Some(
+                    stats
+                        .revenue_by_day
+                        .iter()
+                        .zip(&stats.clients_by_day)
+                        .map(|(money, clients)| DashboardDay {
+                            day: clients.day,
+                            new_clients: clients.new,
+                            new_clients_paid: include_money.then_some(clients.paid),
+                            revenue: include_money.then(|| Money::new(money.minor, currency)),
+                            payments: include_money.then_some(money.payments),
+                        })
+                        .collect(),
+                ),
                 None,
             ),
-            Err(StoreError::NotImplemented(what)) => (None, None, None, Some(what.to_string())),
+            Err(StoreError::NotImplemented(what)) => {
+                (None, None, None, None, Some(what.to_string()))
+            }
             Err(err) => return Err(err.into()),
         };
         let support_waiting: i64 = sqlx::query_scalar(
@@ -640,6 +668,7 @@ impl<'a> AdminOps<'a> {
             subscriptions,
             today,
             revenue,
+            days,
             stats_error,
             support_waiting,
             orders_review: money_count(orders_review),

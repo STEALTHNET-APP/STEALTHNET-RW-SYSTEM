@@ -40,6 +40,7 @@ pub struct DashboardStats {
     pub revenue_7d_minor: i64,
     pub revenue_30d_minor: i64,
     pub revenue_yesterday_minor: i64,
+    pub revenue_prev_7d_minor: i64,
     pub revenue_today_stars: Stars,
     pub revenue_7d_stars: Stars,
     pub revenue_30d_stars: Stars,
@@ -47,6 +48,7 @@ pub struct DashboardStats {
     pub new_clients_today: i64,
     pub new_clients_paid_today: i64,
     pub revenue_by_day: Vec<DayRevenue>,
+    pub clients_by_day: Vec<DayClients>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -54,6 +56,14 @@ pub struct DayRevenue {
     pub day: NaiveDate,
     pub minor: i64,
     pub stars: Stars,
+    pub payments: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct DayClients {
+    pub day: NaiveDate,
+    pub new: i64,
+    pub paid: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,6 +121,7 @@ struct RevenueRow {
     today: i64,
     yesterday: i64,
     week: i64,
+    prev_week: i64,
     month: i64,
     today_stars: i64,
     week_stars: i64,
@@ -768,7 +779,11 @@ impl<'c> SubscriptionsRepo<'c> {
         let today_start = days_back(0)?;
         let yesterday_start = days_back(1)?;
         let week_start = days_back(6)?;
+        let prev_week_start = days_back(13)?;
         let month_start = days_back(29)?;
+        let week_ago = now
+            .checked_sub_signed(Duration::days(7))
+            .ok_or_else(|| StoreError::Invalid("дата вне допустимого диапазона".into()))?;
         let series_start = days_back(REVENUE_DAYS as u64 - 1)?;
         let soon = now
             .checked_add_signed(Duration::days(EXPIRING_SOON_DAYS))
@@ -793,6 +808,7 @@ impl<'c> SubscriptionsRepo<'c> {
             "SELECT COALESCE(sum(net) FILTER (WHERE currency = $1 AND paid_at >= $2), 0)::bigint AS today, \
              COALESCE(sum(net) FILTER (WHERE currency = $1 AND paid_at >= $3 AND paid_at < $2), 0)::bigint AS yesterday, \
              COALESCE(sum(net) FILTER (WHERE currency = $1 AND paid_at >= $4), 0)::bigint AS week, \
+             COALESCE(sum(net) FILTER (WHERE currency = $1 AND paid_at >= $6 AND paid_at < $7), 0)::bigint AS prev_week, \
              COALESCE(sum(net) FILTER (WHERE currency = $1), 0)::bigint AS month, \
              COALESCE(sum(net) FILTER (WHERE currency = 'XTR' AND paid_at >= $2), 0)::bigint AS today_stars, \
              COALESCE(sum(net) FILTER (WHERE currency = 'XTR' AND paid_at >= $4), 0)::bigint AS week_stars, \
@@ -806,43 +822,65 @@ impl<'c> SubscriptionsRepo<'c> {
         .bind(yesterday_start)
         .bind(week_start)
         .bind(month_start)
+        .bind(prev_week_start)
+        .bind(week_ago)
         .fetch_one(&mut *self.conn)
         .await?;
-        let by_day: Vec<(NaiveDate, i64, i64)> = sqlx::query_as(&format!(
-            "SELECT ((paid_at AT TIME ZONE 'UTC') + make_interval(secs => $2))::date AS day, \
+        let shift = f64::from(offset.local_minus_utc());
+        let by_day: Vec<(NaiveDate, i64, i64, i64)> = sqlx::query_as(&format!(
+            "SELECT ((LEAST(paid_at, $4) AT TIME ZONE 'UTC') + make_interval(secs => $2))::date AS day, \
              COALESCE(sum(amount_minor - refunded_minor) FILTER (WHERE currency = $1), 0)::bigint, \
-             COALESCE(sum(amount_minor - refunded_minor) FILTER (WHERE currency = 'XTR'), 0)::bigint \
+             COALESCE(sum(amount_minor - refunded_minor) FILTER (WHERE currency = 'XTR'), 0)::bigint, \
+             count(*) FILTER (WHERE currency = $1 AND amount_minor - refunded_minor > 0) \
              FROM payments WHERE paid_at >= $3 AND status IN {PAID_LIKE} AND provider <> 'balance' \
              GROUP BY 1"
         ))
         .bind(currency.code())
-        .bind(f64::from(offset.local_minus_utc()))
+        .bind(shift)
         .bind(series_start)
+        .bind(now)
         .fetch_all(&mut *self.conn)
         .await?;
-        let (new_clients_today, new_clients_paid_today): (i64, i64) = sqlx::query_as(&format!(
-            "SELECT count(*), count(*) FILTER (WHERE EXISTS (SELECT 1 FROM payments p \
-             WHERE p.client_id = c.id AND p.status IN {PAID_LIKE} AND p.provider <> 'balance')) \
-             FROM clients c WHERE c.deleted_at IS NULL AND c.created_at >= $1"
+        let clients: Vec<(NaiveDate, i64, i64)> = sqlx::query_as(&format!(
+            "SELECT ((LEAST(c.created_at, $3) AT TIME ZONE 'UTC') + make_interval(secs => $2))::date AS day, \
+             count(*), count(p.paid) FROM clients c \
+             LEFT JOIN LATERAL (SELECT true AS paid FROM payments p WHERE p.client_id = c.id \
+             AND p.status IN {PAID_LIKE} AND p.provider <> 'balance' LIMIT 1) p ON true \
+             WHERE c.deleted_at IS NULL AND c.created_at >= $1 GROUP BY 1"
         ))
-        .bind(today_start)
-        .fetch_one(&mut *self.conn)
+        .bind(series_start)
+        .bind(shift)
+        .bind(now)
+        .fetch_all(&mut *self.conn)
         .await?;
         let mut revenue_by_day = Vec::with_capacity(REVENUE_DAYS as usize);
+        let mut clients_by_day = Vec::with_capacity(REVENUE_DAYS as usize);
         for back in (0..REVENUE_DAYS as u64).rev() {
             let Some(day) = today.checked_sub_days(Days::new(back)) else {
                 continue;
             };
-            let (minor, stars) = by_day
+            let (minor, stars, payments) = by_day
                 .iter()
-                .find(|(d, _, _)| *d == day)
-                .map_or((0, 0), |(_, minor, stars)| (*minor, *stars));
+                .find(|(d, ..)| *d == day)
+                .map_or((0, 0, 0), |(_, minor, stars, payments)| {
+                    (*minor, *stars, *payments)
+                });
             revenue_by_day.push(DayRevenue {
                 day,
                 minor,
                 stars: Stars(stars),
+                payments,
             });
+            let (new, paid) = clients
+                .iter()
+                .find(|(d, ..)| *d == day)
+                .map_or((0, 0), |(_, new, paid)| (*new, *paid));
+            clients_by_day.push(DayClients { day, new, paid });
         }
+        let (new_clients_today, new_clients_paid_today) = clients_by_day
+            .last()
+            .filter(|d| d.day == today)
+            .map_or((0, 0), |d| (d.new, d.paid));
         Ok(DashboardStats {
             active_paid: counts.active_paid,
             trials: counts.trials,
@@ -853,6 +891,7 @@ impl<'c> SubscriptionsRepo<'c> {
             revenue_7d_minor: revenue.week,
             revenue_30d_minor: revenue.month,
             revenue_yesterday_minor: revenue.yesterday,
+            revenue_prev_7d_minor: revenue.prev_week,
             revenue_today_stars: Stars(revenue.today_stars),
             revenue_7d_stars: Stars(revenue.week_stars),
             revenue_30d_stars: Stars(revenue.month_stars),
@@ -860,6 +899,7 @@ impl<'c> SubscriptionsRepo<'c> {
             new_clients_today,
             new_clients_paid_today,
             revenue_by_day,
+            clients_by_day,
         })
     }
 

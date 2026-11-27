@@ -119,11 +119,11 @@ fn month_end(day: NaiveDate) -> Option<NaiveDate> {
         .pred_opt()
 }
 
-pub fn previous(dates: Dates, compare: Compare) -> Option<Dates> {
+pub fn previous(dates: Dates, compare: Compare, rolling: bool) -> Option<Dates> {
     match compare {
         Compare::None => None,
         Compare::Prev => {
-            if dates.from.day() == 1 {
+            if !rolling && dates.from.day() == 1 && dates.days() > 1 {
                 let months = month_number(dates.to) - month_number(dates.from) + 1;
                 if month_end(dates.to) == Some(dates.to) {
                     return Some(Dates {
@@ -616,7 +616,7 @@ mod tests {
             offset,
             dates,
             step: Step::Day,
-            prev: previous(dates, Compare::Prev),
+            prev: previous(dates, Compare::Prev, false),
             today: d(2026, 11, 18),
             now: utc(11, 18, 17, 50),
         };
@@ -653,7 +653,7 @@ mod tests {
             to: d(2026, 10, 31),
         };
         assert_eq!(
-            previous(october, Compare::Prev),
+            previous(october, Compare::Prev, false),
             Some(Dates {
                 from: d(2026, 9, 1),
                 to: d(2026, 9, 30)
@@ -664,7 +664,7 @@ mod tests {
             to: d(2026, 9, 30),
         };
         assert_eq!(
-            previous(quarter, Compare::Prev),
+            previous(quarter, Compare::Prev, false),
             Some(Dates {
                 from: d(2026, 4, 1),
                 to: d(2026, 6, 30)
@@ -675,7 +675,7 @@ mod tests {
             to: d(2026, 3, 30),
         };
         assert_eq!(
-            previous(so_far, Compare::Prev),
+            previous(so_far, Compare::Prev, false),
             Some(Dates {
                 from: d(2026, 2, 1),
                 to: d(2026, 2, 28)
@@ -686,7 +686,7 @@ mod tests {
             to: d(2026, 11, 18),
         };
         assert_eq!(
-            previous(week, Compare::Prev),
+            previous(week, Compare::Prev, false),
             Some(Dates {
                 from: d(2026, 11, 5),
                 to: d(2026, 11, 11)
@@ -697,7 +697,7 @@ mod tests {
             to: d(2026, 11, 18),
         };
         assert_eq!(
-            previous(across, Compare::Prev),
+            previous(across, Compare::Prev, false),
             Some(Dates {
                 from: d(2026, 8, 1),
                 to: d(2026, 9, 18)
@@ -708,7 +708,7 @@ mod tests {
             to: d(2026, 11, 18),
         };
         assert_eq!(
-            previous(year, Compare::Prev),
+            previous(year, Compare::Prev, false),
             Some(Dates {
                 from: d(2024, 12, 1),
                 to: d(2025, 11, 18)
@@ -719,20 +719,20 @@ mod tests {
             to: d(2026, 11, 18),
         };
         assert_eq!(
-            previous(mid, Compare::Prev),
+            previous(mid, Compare::Prev, false),
             Some(Dates {
                 from: d(2026, 8, 21),
                 to: d(2026, 10, 4)
             })
         );
         assert_eq!(
-            previous(october, Compare::Year),
+            previous(october, Compare::Year, false),
             Some(Dates {
                 from: d(2025, 10, 1),
                 to: d(2025, 10, 31)
             })
         );
-        assert_eq!(previous(october, Compare::None), None);
+        assert_eq!(previous(october, Compare::None, false), None);
     }
 
     #[test]

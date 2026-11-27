@@ -634,3 +634,95 @@
 .hm-panel-foot {
   margin: 12px 0 0;
 }
+
+.hm-week {
+  flex: 1 1 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  margin-top: 4px;
+  padding: 18px 24px 0;
+  border-top: 1px solid var(--line);
+}
+
+.hm-weekcard .hm-week {
+  margin-top: 0;
+  padding: 16px 20px 10px;
+  border-top: 0;
+}
+
+.hm-week-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 14px;
+}
+
+.hm-week-more {
+  margin-left: auto;
+}
+
+.hm-ledger-wrap {
+  overflow-x: auto;
+}
+
+.hm-ledger {
+  width: 100%;
+  min-width: 720px;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.hm-ledger th,
+.hm-ledger td {
+  padding: 6px 0 6px 14px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.hm-ledger tr > :first-child {
+  padding-left: 0;
+  text-align: left;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+.hm-ledger thead th {
+  padding-top: 2px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.hm-ledger tbody tr {
+  border-top: 1px solid var(--line);
+}
+
+.hm-ledger .hm-ld-sum {
+  padding-left: 22px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.hm-ledger thead .hm-ld-sum {
+  color: var(--ink-2);
+}
+
+.hm-ledger .hm-ld-y {
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.hm-ledger .hm-ld-sub th,
+.hm-ledger .hm-ld-sub td {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.hm-ledger .hm-ld-sub .hm-ld-sum,
+.hm-ledger .hm-ld-sub .hm-ld-y {
+  font-weight: 600;
+  color: var(--ink-2);
+}

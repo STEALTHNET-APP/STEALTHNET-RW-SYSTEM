@@ -81,6 +81,8 @@ pub struct TabQuery {
     #[serde(default)]
     pub compare: Option<Compare>,
     #[serde(default)]
+    pub rolling: Option<bool>,
+    #[serde(default)]
     pub tariff: Option<i64>,
     #[serde(default)]
     pub category: Option<i64>,
@@ -135,7 +137,11 @@ pub fn range(query: &TabQuery, offset: FixedOffset, now: DateTime<Utc>) -> Resul
         offset,
         dates,
         step,
-        prev: previous(dates, query.compare.unwrap_or_default()),
+        prev: previous(
+            dates,
+            query.compare.unwrap_or_default(),
+            query.rolling.unwrap_or(false),
+        ),
         today,
         now,
     })

@@ -1,8 +1,11 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, ApiError } from '../../lib/api';
 import { count, groupDigits, money, NBSP, traffic } from '../../lib/format';
 import type { Currency } from '../../lib/types';
 import { useSession } from '../session';
+import { localToday, periodText, presetDates, rollingPreset, type Preset } from './period';
+
+export { axisLabel, dayText, localToday, monthTitle, periodText, PRESETS, presetDates, presetFromParam, type Preset } from './period';
 
 export type Unit = 'money' | 'stars' | 'count' | 'percent' | 'seconds' | 'bytes' | 'days';
 export type Step = 'day' | 'week' | 'month';
@@ -83,19 +86,6 @@ export const FILTERS: Array<[FilterKey, string, keyof Options]> = [
   ['method', 'Способ', 'methods'],
 ];
 
-export type Preset = 'month' | 'last_month' | '7' | '30' | '90' | 'year' | 'all' | 'custom';
-
-export const PRESETS: Array<[Preset, string]> = [
-  ['month', 'Этот месяц'],
-  ['last_month', 'Прошлый месяц'],
-  ['7', '7 дней'],
-  ['30', '30 дней'],
-  ['90', '90 дней'],
-  ['year', '12 месяцев'],
-  ['all', 'Всё время'],
-  ['custom', 'Свой период'],
-];
-
 export type Query = {
   preset: Preset;
   from: string;
@@ -105,93 +95,11 @@ export type Query = {
   filters: Filters;
 };
 
-const MONTHS = ['январь', 'февраль', 'март', 'апрель', 'май', 'июнь', 'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь'];
-const MONTHS_GEN = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
-const MONTHS_SHORT = ['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
-
-function iso(d: Date): string {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
-
-function parse(day: string): Date {
-  const [y = 1970, m = 1, d = 1] = day.split('-').map(Number);
-  return new Date(y, m - 1, d);
-}
-
-export function presetDates(preset: Preset, today: string): { from: string; to: string } {
-  const t = parse(today);
-  const back = (days: number) => iso(new Date(t.getFullYear(), t.getMonth(), t.getDate() - days + 1));
-  switch (preset) {
-    case 'month':
-      return { from: iso(new Date(t.getFullYear(), t.getMonth(), 1)), to: today };
-    case 'last_month':
-      return {
-        from: iso(new Date(t.getFullYear(), t.getMonth() - 1, 1)),
-        to: iso(new Date(t.getFullYear(), t.getMonth(), 0)),
-      };
-    case '7':
-      return { from: back(7), to: today };
-    case '30':
-      return { from: back(30), to: today };
-    case '90':
-      return { from: back(90), to: today };
-    case 'year':
-      return { from: iso(new Date(t.getFullYear() - 1, t.getMonth() + 1, 1)), to: today };
-    case 'all':
-      return { from: '2015-01-01', to: today };
-    default:
-      return { from: today, to: today };
-  }
-}
-
-export function localToday(): string {
-  return iso(new Date());
-}
-
-export function dayText(day: string, withYear = true): string {
-  const d = parse(day);
-  return `${d.getDate()} ${MONTHS_GEN[d.getMonth()]}${withYear ? ` ${d.getFullYear()}` : ''}`;
-}
-
-export function monthTitle(day: string): string {
-  const d = parse(day);
-  const name = MONTHS[d.getMonth()] ?? '';
-  return `${name.charAt(0).toUpperCase()}${name.slice(1)} ${d.getFullYear()}`;
-}
-
-export function periodText(from: string, to: string): string {
-  const a = parse(from);
-  const b = parse(to);
-  const lastDay = new Date(b.getFullYear(), b.getMonth() + 1, 0).getDate();
-  if (a.getDate() === 1 && a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth()) {
-    return b.getDate() === lastDay ? monthTitle(from) : `${monthTitle(from)}, по ${b.getDate()}`;
-  }
-  if (from === to) {
-    return dayText(from);
-  }
-  const sameYear = a.getFullYear() === b.getFullYear();
-  return `${dayText(from, !sameYear)} — ${dayText(to)}`;
-}
-
 export function compareText(r: TabReport['range']): string | null {
   if (!r.prev) {
     return null;
   }
   return periodText(r.prev.from, r.prev.to);
-}
-
-export function axisLabel(day: string, step: Step, first: boolean, prevDay: string | null): string {
-  const d = parse(day);
-  if (step === 'month') {
-    const year = prevDay ? parse(prevDay).getFullYear() !== d.getFullYear() : first;
-    const short = MONTHS_SHORT[d.getMonth()] ?? '';
-    return year ? `${short} ${String(d.getFullYear()).slice(2)}` : short;
-  }
-  if (step === 'week') {
-    return `${d.getDate()} ${MONTHS_SHORT[d.getMonth()]}`;
-  }
-  const monthChanged = prevDay ? parse(prevDay).getMonth() !== d.getMonth() : first;
-  return monthChanged ? `${d.getDate()} ${MONTHS_SHORT[d.getMonth()]}` : String(d.getDate());
 }
 
 export function stars(n: number): string {
@@ -303,6 +211,9 @@ export function queryString(q: Query, extra: Record<string, string | undefined> 
     p.set('step', q.step);
   }
   p.set('compare', q.compare);
+  if (rollingPreset(q.preset)) {
+    p.set('rolling', 'true');
+  }
   for (const [k, v] of Object.entries(q.filters)) {
     if (v) {
       if (k === 'method') {
@@ -322,18 +233,31 @@ export function queryString(q: Query, extra: Record<string, string | undefined> 
   return p.toString();
 }
 
-export function useQueryState(initial: Filters = {}): [Query, (next: Partial<Query>) => void] {
-  const today = localToday();
-  const [q, setQ] = useState<Query>(() => ({ preset: 'month', ...presetDates('month', today), step: null, compare: 'prev', filters: initial }));
+export function useQueryState(initial: Filters = {}, preset: Preset = 'month'): [Query, (next: Partial<Query>) => void, (today: string) => void] {
+  const today = useRef(localToday());
+  const [q, setQ] = useState<Query>(() => ({ preset, ...presetDates(preset, today.current), step: null, compare: 'prev', filters: initial }));
   const update = (next: Partial<Query>) =>
     setQ((cur) => {
       const merged = { ...cur, ...next };
       if (next.preset && next.preset !== 'custom') {
-        Object.assign(merged, presetDates(next.preset, localToday()), { step: next.step ?? null });
+        Object.assign(merged, presetDates(next.preset, today.current), { step: next.step ?? null });
       }
       return merged;
     });
-  return [q, update];
+  const sync = useCallback((panel: string) => {
+    if (!panel || panel === today.current) {
+      return;
+    }
+    today.current = panel;
+    setQ((cur) => {
+      if (cur.preset === 'custom') {
+        return cur;
+      }
+      const dates = presetDates(cur.preset, panel);
+      return dates.from === cur.from && dates.to === cur.to ? cur : { ...cur, ...dates };
+    });
+  }, []);
+  return [q, update, sync];
 }
 
 export type Tab = {

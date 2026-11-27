@@ -3,13 +3,22 @@ use crate::testing::test_store;
 use crate::*;
 use chrono::{DateTime, Duration, FixedOffset, NaiveTime, Timelike, Utc};
 use sn_domain::client::ClientStatus;
-use sn_domain::ids::PaymentId;
+use sn_domain::ids::{ClientId, PaymentId};
 use sn_domain::money::{Amount, Currency, PayCurrency, Stars};
 use sn_domain::payment::{PaymentStatus, RefundMethod, RefundSubscriptionAction};
 use sn_domain::subscription::{SubscriptionKind, SubscriptionStatus};
 
 async fn paid_at(db: &mut impl Db, id: PaymentId, at: DateTime<Utc>) {
     sqlx::query("UPDATE payments SET paid_at = $2 WHERE id = $1")
+        .bind(id.0)
+        .bind(at)
+        .execute(&mut *db.conn())
+        .await
+        .unwrap();
+}
+
+async fn created_at(db: &mut impl Db, id: ClientId, at: DateTime<Utc>) {
+    sqlx::query("UPDATE clients SET created_at = $2 WHERE id = $1")
         .bind(id.0)
         .bind(at)
         .execute(&mut *db.conn())
@@ -75,6 +84,20 @@ async fn главная_считает_подписки_и_выручку_в_в�
     paid_at(&mut conn, ten_days, now - Duration::days(10)).await;
     let old = paid(&mut conn, payer, "cryptopay", usd(4_000)).await;
     paid_at(&mut conn, old, now - Duration::days(40)).await;
+    let week_ago_earlier = paid(&mut conn, payer, "cryptopay", usd(30)).await;
+    paid_at(
+        &mut conn,
+        week_ago_earlier,
+        now - Duration::days(7) - Duration::hours(1),
+    )
+    .await;
+    let week_ago_later = paid(&mut conn, payer, "cryptopay", usd(40)).await;
+    paid_at(
+        &mut conn,
+        week_ago_later,
+        now - Duration::days(7) + Duration::hours(1),
+    )
+    .await;
     paid(&mut conn, payer, "balance", usd(300)).await;
     paid(
         &mut conn,
@@ -217,6 +240,26 @@ async fn главная_считает_подписки_и_выручку_в_в�
     conn.subscriptions().mark_missing(lost, true).await.unwrap();
     let j = client(&mut conn, &Person::NOBODY).await;
     subscription(&mut conn, j, sub(SubscriptionKind::Paid, None, 30, true)).await;
+    let late = client(&mut conn, &Person::NOBODY).await;
+    created_at(&mut conn, late, today_start - Duration::minutes(1)).await;
+    let late_paid = paid(&mut conn, late, "cryptopay", usd(1)).await;
+    paid_at(&mut conn, late_paid, now - Duration::days(40)).await;
+    let evening = client(&mut conn, &Person::NOBODY).await;
+    created_at(&mut conn, evening, today_start - Duration::hours(3)).await;
+    let five_days = client(&mut conn, &Person::NOBODY).await;
+    created_at(
+        &mut conn,
+        five_days,
+        today_start - Duration::days(5) + Duration::hours(1),
+    )
+    .await;
+    let long_ago = client(&mut conn, &Person::NOBODY).await;
+    created_at(&mut conn, long_ago, today_start - Duration::days(20)).await;
+    let ahead = client(&mut conn, &Person::NOBODY).await;
+    created_at(&mut conn, ahead, now + Duration::days(2)).await;
+    let removed = client(&mut conn, &Person::NOBODY).await;
+    created_at(&mut conn, removed, today_start - Duration::hours(2)).await;
+    conn.clients().soft_delete(removed).await.unwrap();
 
     let stats = conn
         .subscriptions()
@@ -237,13 +280,14 @@ async fn главная_считает_подписки_и_выручку_в_в�
     assert_eq!(stats.payments_today, 2);
     assert_eq!(stats.revenue_yesterday_minor, 500);
     assert_eq!(stats.revenue_7d_minor, 699 + 700 + 500);
-    assert_eq!(stats.revenue_30d_minor, 699 + 700 + 500 + 2_000);
+    assert_eq!(stats.revenue_prev_7d_minor, 30 + 2_000);
+    assert_eq!(stats.revenue_30d_minor, 699 + 700 + 500 + 2_000 + 30 + 40);
     assert_eq!(stats.revenue_today_stars, Stars(350));
     assert_eq!(stats.revenue_7d_stars, Stars(350));
     assert_eq!(stats.revenue_30d_stars, Stars(525));
     assert_eq!(
         (stats.new_clients_today, stats.new_clients_paid_today),
-        (10, 1)
+        (11, 1)
     );
     assert_eq!(stats.revenue_by_day.len(), REVENUE_DAYS as usize);
     let today = stats.revenue_by_day.last().unwrap();
@@ -255,8 +299,31 @@ async fn главная_считает_подписки_и_выручку_в_в�
     assert_eq!(back(10).minor, 2_000);
     assert_eq!(
         stats.revenue_by_day.iter().map(|d| d.minor).sum::<i64>(),
-        1_399 + 500 + 2_000
+        1_399 + 500 + 2_000 + 30 + 40
     );
+    assert_eq!(back(7).minor, 30 + 40);
+    assert_eq!(
+        (
+            today.payments,
+            back(1).payments,
+            back(7).payments,
+            back(8).payments,
+            back(10).payments
+        ),
+        (2, 1, 2, 0, 1)
+    );
+    assert_eq!(stats.clients_by_day.len(), REVENUE_DAYS as usize);
+    let clients = |days: usize| stats.clients_by_day[stats.clients_by_day.len() - 1 - days];
+    assert_eq!(
+        (clients(0).day, clients(0).new, clients(0).paid),
+        (today.day, 11, 1)
+    );
+    assert_eq!(
+        (clients(1).day, clients(1).new, clients(1).paid),
+        (back(1).day, 2, 1)
+    );
+    assert_eq!((clients(5).new, clients(5).paid), (1, 0));
+    assert_eq!(stats.clients_by_day.iter().map(|d| d.new).sum::<i64>(), 14);
 
     let rub = conn
         .subscriptions()

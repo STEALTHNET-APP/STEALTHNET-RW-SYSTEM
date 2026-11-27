@@ -1,4 +1,5 @@
 mod clients;
+mod days;
 mod lists;
 mod money;
 mod payments;

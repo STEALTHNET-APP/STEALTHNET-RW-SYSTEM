@@ -16,6 +16,7 @@ import './phone.css';
 import { Avatar } from '../Avatar';
 import { ImportHint } from './ImportHint';
 import { ConfigWarnings } from './ConfigWarnings';
+import { PhoneWeek } from './WeekLedger';
 
 function longSpan(minutes: number): string {
   return minutes < 60 ? count(Math.max(1, minutes), 'минуту', 'минуты', 'минут') : spanText(minutes);
@@ -210,6 +211,8 @@ export function HomePhone() {
           ) : null}
         </dl>
       </section>
+
+      {dashboard?.days?.length ? <PhoneWeek days={dashboard.days} before={revenue?.week_before} /> : null}
 
       <section aria-labelledby="hp-todo" className="hp-group">
         <h2 id="hp-todo" className="hp-h2">

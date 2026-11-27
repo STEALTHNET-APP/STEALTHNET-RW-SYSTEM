@@ -5,6 +5,7 @@ import type { Attention } from '../money/journal';
 import { START_VIA_TEXT, startMark, startVia } from '../../lib/utmTags';
 import { termText } from '../tariffs/model';
 import type { Decisions } from './todo';
+import type { DayStat } from './weekStats';
 
 export type NodeState = 'online' | 'connecting' | 'down' | 'disabled';
 
@@ -27,7 +28,8 @@ export type Dashboard = {
   currency: 'USD' | 'RUB';
   subscriptions: { active_paid: number; trials: number; expiring_soon: number; never_connected: number; limited: number } | null;
   today: { payments: number | null; new_clients: number; new_clients_paid: number | null } | null;
-  revenue: { today: Money; yesterday: Money; week: Money; month: Money; today_stars: number; by_day: Array<{ day: string; amount: Money }> } | null;
+  revenue: { today: Money; yesterday: Money; week: Money; week_before?: Money; month: Money; today_stars: number; by_day: Array<{ day: string; amount: Money }> } | null;
+  days?: DayStat[] | null;
   support_waiting: number;
   webhooks?: Attention | null;
   decisions?: Decisions;

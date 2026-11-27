@@ -361,3 +361,52 @@
 .np-toast strong {
   font-weight: 700;
 }
+
+.hp-week {
+  padding: 4px 16px 12px;
+}
+
+.hp-wrow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: baseline;
+  gap: 12px;
+  padding: 9px 0;
+  border-top: 1px solid var(--line);
+}
+
+.hp-wrow.short {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.hp-wrow.head {
+  padding-top: 10px;
+  border-top: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.hp-wrow.y,
+.hp-wrow.total {
+  font-weight: 700;
+}
+
+.hp-wrow.total {
+  border-top-width: 2px;
+}
+
+.hp-wsum {
+  min-width: 100px;
+  text-align: right;
+}
+
+.hp-wnew {
+  min-width: 64px;
+  text-align: right;
+}
+
+.hp-wnote {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--muted);
+}

@@ -15,6 +15,7 @@ import {
   format,
   PRESETS,
   periodText,
+  presetFromParam,
   TABS,
   useOptions,
   useQueryState,
@@ -49,8 +50,14 @@ export function Analytics() {
   const [params] = useSearchParams();
   const wanted = params.get('tab');
   const [tab, setTab] = useState(TABS.some((t) => t[0] === wanted) ? (wanted as string) : 'money');
-  const [q, setQ] = useQueryState(params.get('source') ? { source: params.get('source') as string } : {});
+  const [q, setQ, syncToday] = useQueryState(params.get('source') ? { source: params.get('source') as string } : {}, presetFromParam(params.get('period')) ?? 'month');
   const data = useTab(tab, q);
+  const panelToday = data.report?.range.today;
+  useEffect(() => {
+    if (panelToday) {
+      syncToday(panelToday);
+    }
+  }, [panelToday, syncToday]);
   const options = useOptions(data.allowed && !data.off);
   const [metric, select] = useSelected(data.report);
   const [opened, open] = useState<Opened | null>(null);

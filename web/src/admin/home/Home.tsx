@@ -36,6 +36,7 @@ import { Avatar } from '../Avatar';
 import { ImportHint } from './ImportHint';
 import { ConfigWarnings } from './ConfigWarnings';
 import { PanelServer } from './PanelServer';
+import { WeekLedger } from './WeekLedger';
 
 export function useOverview() {
   const { can } = useSession();
@@ -414,6 +415,7 @@ function MainBoard() {
           <span className="hm-num num">{subs ? groupDigits(subs.active_paid) : '—'}</span>
           <span className="muted">{subs ? `${groupDigits(subs.expiring_soon)} ${plural(subs.expiring_soon, 'истекает', 'истекают', 'истекают')} за 3${NBSP}дня` : ''}</span>
         </div>
+        {dashboard?.days?.length ? <WeekLedger days={dashboard.days} before={revenue?.week_before} /> : null}
       </section>
 
       <div className="hm-cols">
@@ -584,6 +586,8 @@ function Daylight() {
           ) : null}
         </p>
       </section>
+
+      {dashboard?.days?.length ? <WeekLedger days={dashboard.days} before={revenue?.week_before} card /> : null}
 
       <div className="hm-cols">
         {dashboard ? <TodoPane dashboard={dashboard} variant="day" /> : null}

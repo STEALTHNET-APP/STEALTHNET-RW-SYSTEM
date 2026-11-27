@@ -84,6 +84,18 @@ async fn поддержка_не_видит_utm_ноды_сервер_панел
     if dashboard["today"].is_object() {
         assert!(dashboard["today"]["payments"].is_number());
         assert!(dashboard["today"]["new_clients_paid"].is_number());
+        let days = dashboard["days"].as_array().expect("ряд по дням");
+        assert_eq!(days.len(), 14, "{dashboard}");
+        let last = &days[13];
+        assert_eq!(last["day"], dashboard["revenue"]["by_day"][13]["day"]);
+        assert_eq!(last["revenue"], dashboard["revenue"]["today"]);
+        assert_eq!(last["payments"], dashboard["today"]["payments"]);
+        assert_eq!(last["new_clients"], dashboard["today"]["new_clients"]);
+        assert_eq!(
+            last["new_clients_paid"],
+            dashboard["today"]["new_clients_paid"]
+        );
+        assert!(dashboard["revenue"]["week_before"]["minor"].is_number());
     }
     assert!(dashboard["orders_review"].is_number());
 
@@ -99,6 +111,14 @@ async fn поддержка_не_видит_utm_ноды_сервер_панел
         assert!(dashboard["today"]["payments"].is_null());
         assert!(dashboard["today"]["new_clients_paid"].is_null());
         assert!(dashboard["today"]["new_clients"].is_number());
+        let days = dashboard["days"].as_array().expect("ряд по дням");
+        assert_eq!(days.len(), 14, "{dashboard}");
+        for day in days {
+            assert!(day["new_clients"].is_number(), "{day}");
+            for hidden in ["revenue", "payments", "new_clients_paid"] {
+                assert!(day[hidden].is_null(), "{hidden}: {day}");
+            }
+        }
     }
     for field in [
         "orders_review",

@@ -72,9 +72,12 @@ export function SeriesChart({ points, prev, unit, currency, step, live, height, 
   const y = (v: number) => top + plot - ((v - floor) / (ceil - floor || 1)) * plot;
   const x = (i: number) => left + slot * i + slot / 2;
   const every = Math.max(1, Math.ceil((compact ? 44 : 52) / Math.max(slot, 1)));
-  const path = prev.length
-    ? prev.map((p, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(p.value).toFixed(1)}`).join(' ')
-    : '';
+  const single = prev.length === 1 ? prev[0] : undefined;
+  const path = single
+    ? `M${(x(0) - bar / 2 - 10).toFixed(1)},${y(single.value).toFixed(1)} L${(x(0) + bar / 2 + 10).toFixed(1)},${y(single.value).toFixed(1)}`
+    : prev.length
+      ? prev.map((p, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(p.value).toFixed(1)}`).join(' ')
+      : '';
   return (
     <div className="an-chart" ref={ref} style={{ height }} onMouseLeave={() => onActive(null)}>
       {width > 0 ? (
