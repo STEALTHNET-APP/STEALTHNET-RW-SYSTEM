@@ -14,7 +14,7 @@ use sn_domain::miniapp::{self, LIMITS, Limits, MiniAppConfig, STORED_IMAGES_MAX,
 use sn_domain::miniapp_css::{CssPlace, MiniCss};
 use sn_domain::module::ModuleId;
 use sn_domain::settings::keys;
-use sn_modules::catalog::referral::ReferralSettings;
+use sn_modules::catalog::referral::{LEVELS, ReferralSettings};
 use sn_modules::catalog::roulette;
 use sn_store::{Db, SiteAsset};
 use std::collections::BTreeMap;
@@ -42,6 +42,7 @@ pub struct MiniAppView {
     pub english: bool,
     pub off: Option<&'static str>,
     pub friends_percent: u8,
+    pub friends_levels: [u8; LEVELS],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -160,13 +161,14 @@ impl<'a> MiniAppOps<'a> {
         }
     }
 
-    fn friends_percent(&self) -> u8 {
+    fn friends_levels(&self) -> [u8; LEVELS] {
         let config = self.services.modules().config(ModuleId::Referral);
-        ReferralSettings::lenient(&config, self.services.settings().currency).levels[0]
+        ReferralSettings::lenient(&config, self.services.settings().currency).levels
     }
 
     pub async fn view(&self) -> ServiceResult<MiniAppView> {
         let settings = self.services.settings();
+        let levels = self.friends_levels();
         let mut sections = Vec::with_capacity(Section::ALL.len());
         for key in Section::ALL {
             sections.push(SectionView {
@@ -183,7 +185,8 @@ impl<'a> MiniAppOps<'a> {
             sections,
             english: settings.languages.several(),
             off: miniapp_off(self.services),
-            friends_percent: self.friends_percent(),
+            friends_percent: levels[0],
+            friends_levels: levels,
         })
     }
 
@@ -495,6 +498,7 @@ mod tests {
         assert_eq!(first.limits.tabs_max, 5);
         assert_eq!(first.image.max_bytes, 1024 * 1024);
         assert_eq!(first.friends_percent, 30);
+        assert_eq!(first.friends_levels, [30, 10, 10]);
         assert!(!first.english);
         assert_eq!(ops.public().await, None);
 

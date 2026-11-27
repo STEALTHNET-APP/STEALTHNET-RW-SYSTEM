@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link } from 'react-router';
+import { Link, useSearchParams } from 'react-router';
 import { api, ApiError } from '../../lib/api';
 import { dateLong } from '../../lib/format';
 import { useSession } from '../session';
@@ -239,7 +239,8 @@ export function SettingsBotTexts() {
   const [textsEn, setTextsEn] = useState<Record<string, string>>({});
   const [labelsEn, setLabelsEn] = useState<Record<string, string>>({});
   const [lang, setLang] = useState<Lang>('ru');
-  const [section, setSection] = useState('menu');
+  const [params] = useSearchParams();
+  const [section, setSection] = useState(() => params.get('section') || 'menu');
   const [query, setQuery] = useState('');
   const [active, setActive] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -248,6 +249,7 @@ export function SettingsBotTexts() {
 
   const apply = useCallback((data: View) => {
     setView(data);
+    setSection((current) => (data.sections.some((s) => s.key === current) ? current : 'menu'));
     const nextTexts: Record<string, string> = {};
     const nextButtons: Record<string, ButtonDraft> = {};
     const nextTextsEn: Record<string, string> = {};

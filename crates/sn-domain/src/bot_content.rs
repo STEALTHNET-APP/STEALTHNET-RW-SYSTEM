@@ -458,6 +458,14 @@ const PERCENT: Var = Var {
     name: "percent",
     hint: "процент с оплат друга",
 };
+const LEVEL2_PERCENT: Var = Var {
+    name: "percent",
+    hint: "процент с оплат тех, кого пригласят друзья",
+};
+const LEVEL3_PERCENT: Var = Var {
+    name: "percent",
+    hint: "процент с оплат тех, кого пригласят друзья друзей",
+};
 const LINK: Var = Var {
     name: "link",
     hint: "ссылка-приглашение",
@@ -1906,6 +1914,20 @@ pub static CATALOG: &[Entry] = &[
         "Условия",
         "Делитесь ссылкой: вы получаете {percent}% с каждой оплаты друга.",
         &[PERCENT],
+    ),
+    line(
+        "ref.level2",
+        Referral,
+        "Второй уровень",
+        "Ещё {percent}% — с оплат тех, кого пригласят ваши друзья.",
+        &[LEVEL2_PERCENT],
+    ),
+    line(
+        "ref.level3",
+        Referral,
+        "Третий уровень",
+        "И {percent}% — с оплат тех, кого пригласят друзья ваших друзей.",
+        &[LEVEL3_PERCENT],
     ),
     text(
         "ref.link",

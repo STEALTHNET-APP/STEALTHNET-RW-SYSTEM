@@ -4,7 +4,7 @@ import { api } from '../lib/api';
 import { money } from '../lib/format';
 import { t } from '../lib/i18n';
 import type { Referral } from '../cabinet/model';
-import { siteInviteLink } from '../lib/referral';
+import { deeperLevels, siteInviteLink } from '../lib/referral';
 import { pick, profileBlock, profileOn, sectionPath, withPercent } from './config';
 import { FRIENDS_TEXTS } from './labels';
 import { BackHead, useMini } from './MiniApp';
@@ -35,7 +35,8 @@ export function useFriendsText(): { title: string; text: (percent: number) => st
 export function FriendsCard({ referral, heading, part }: { referral: Referral; heading: boolean; part?: string }) {
   const [copied, setCopied] = useState<string | null>(null);
   const { title, text } = useFriendsText();
-  const line = text(referral.levels[0] ?? 0);
+  const first = text(referral.levels[0] ?? 0);
+  const line = first ? [first, ...deeperLevels(referral.levels)].join('\n') : '';
   const site = siteInviteLink(referral.code);
 
   const copy = async (value: string, key: string) => {

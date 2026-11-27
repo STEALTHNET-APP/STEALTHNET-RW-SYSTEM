@@ -202,6 +202,14 @@ async fn referral_screen(turn: &mut Turn<'_>, client: &Client) -> Result<Screen,
         "ref.percent",
         &[("percent", Text(&overview.levels[0].to_string()))],
     ));
+    for (key, percent) in [
+        ("ref.level2", overview.levels[1]),
+        ("ref.level3", overview.levels[2]),
+    ] {
+        if percent > 0 {
+            lines.add(ui::text(c, key, &[("percent", Text(&percent.to_string()))]));
+        }
+    }
     if let Some(link) = &link {
         lines.add(ui::text(c, "ref.link", &[("link", Text(link))]));
     }

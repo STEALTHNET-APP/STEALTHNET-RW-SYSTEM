@@ -412,5 +412,6 @@ export type MiniDraft = {
   screen: PreviewScreen;
   off: SectionKey[];
   percent: number;
+  levels?: number[];
   focus: Part | null;
 };

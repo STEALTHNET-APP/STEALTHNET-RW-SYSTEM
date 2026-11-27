@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { api, ApiError } from '../lib/api';
 import { dateLong, money } from '../lib/format';
 import { t } from '../lib/i18n';
-import { siteInviteLink } from '../lib/referral';
+import { deeperLevels, siteInviteLink } from '../lib/referral';
 import { Card, useCabinet } from './CabinetApp';
 import type { Referral, Withdrawal } from './model';
 import { firstPayout, payoutDetails, payoutLabel as methodLabel, WITHDRAWAL_STATUS as STATUS } from './withdrawals';
@@ -79,7 +79,7 @@ export function FriendsPage() {
   }
 
   const first = data.levels[0] ?? 0;
-  const second = data.levels[1] ?? 0;
+  const deeper = deeperLevels(data.levels);
   const siteLink = siteInviteLink(data.code);
   const balance = data.balance ?? me.referral_balance;
   const methods = data.payout_methods ?? [];
@@ -132,7 +132,7 @@ export function FriendsPage() {
         <h1 className="cb-title">{t('Друзья')}</h1>
         <p className="cb-lead muted">
           {first > 0 ? t('Пригласите друга и получайте {percent}% от его оплат.', { percent: first }) : t('Пригласите друга по своей ссылке.')}
-          {second > 0 ? ` ${t('Ещё {percent}% — от оплат тех, кого пригласят ваши друзья.', { percent: second })}` : ''}
+          {deeper.length ? ` ${deeper.join(' ')}` : ''}
         </p>
       </header>
       {error ? (

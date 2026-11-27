@@ -256,6 +256,8 @@ pub fn default(key: &str) -> Option<&'static str> {
         "promo.days_added" => "Added {days} to your subscription.",
         "ref.title" => "<b>Invite a friend</b>",
         "ref.percent" => "Share your link: you get {percent}% of every payment your friends make.",
+        "ref.level2" => "Plus {percent}% of payments from people your friends invite.",
+        "ref.level3" => "And {percent}% of payments from people your friends' friends invite.",
         "ref.link" => "<code>{link}</code>",
         "ref.invited" => "\nInvited: {count}",
         "ref.earned" => "Earned: {amount}",

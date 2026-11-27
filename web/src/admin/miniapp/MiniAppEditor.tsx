@@ -62,7 +62,7 @@ import { PreviewFrame, StateSegs, ThemeSegs, useSize, useViewportHeight, type Fo
 import '../form.css';
 import './mini-editor.css';
 
-type Meta = { limits: Limits; rules: ImageRules; sections: SectionInfo[]; english: boolean; off: string | null; percent: number };
+type Meta = { limits: Limits; rules: ImageRules; sections: SectionInfo[]; english: boolean; off: string | null; percent: number; levels: number[] };
 
 const API = '/api/admin/settings/miniapp';
 const CHROME = 182;
@@ -113,7 +113,7 @@ export function SettingsMiniApp() {
   const viewport = useViewportHeight();
   const [saved, setSaved] = useState<MiniConfig | null>(null);
   const [draft, setDraft] = useState<MiniConfig | null>(null);
-  const [meta, setMeta] = useState<Meta>({ limits: LIMITS, rules: IMAGE_RULES, sections: [], english: false, off: null, percent: 0 });
+  const [meta, setMeta] = useState<Meta>({ limits: LIMITS, rules: IMAGE_RULES, sections: [], english: false, off: null, percent: 0, levels: [] });
   const [loadError, setLoadError] = useState<string | null>(null);
   const [cssSaved, setCssSaved] = useState<CssTexts<MiniPlace>>({});
   const [cssDraft, setCssDraft] = useState<CssTexts<MiniPlace>>({});
@@ -154,6 +154,7 @@ export function SettingsMiniApp() {
       english: view.english === true,
       off: view.off ?? null,
       percent: view.friends_percent ?? 0,
+      levels: view.friends_levels ?? [],
     });
   }, [resetCss]);
 
@@ -505,7 +506,7 @@ export function SettingsMiniApp() {
   const previewScreen: PreviewScreen = friendsScreen ? 'friends' : screen === 'profile' ? 'profile' : 'home';
   const previewHeight = Math.max(400, Math.min(844, viewport - gridTop - CHROME));
   const frame = (height: number, pick: (part: Part) => void) => (
-    <PreviewFrame config={draft} css={previewCss} theme={theme} lang={shownLang} state={state} screen={previewScreen} off={off} percent={meta.percent} focus={focus} height={height} onPick={pick} />
+    <PreviewFrame config={draft} css={previewCss} theme={theme} lang={shownLang} state={state} screen={previewScreen} off={off} percent={meta.percent} levels={meta.levels} focus={focus} height={height} onPick={pick} />
   );
 
   let status: ReactNode;

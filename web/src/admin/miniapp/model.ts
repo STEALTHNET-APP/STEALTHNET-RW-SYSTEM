@@ -96,6 +96,7 @@ export type AdminView = {
   english?: boolean;
   off?: string | null;
   friends_percent?: number;
+  friends_levels?: number[];
 };
 
 export const SCREENS: Array<{ key: Screen; name: string }> = [

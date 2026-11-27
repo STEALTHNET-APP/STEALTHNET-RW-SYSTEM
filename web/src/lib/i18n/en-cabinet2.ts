@@ -136,6 +136,7 @@ export const CABINET2: Record<string, string> = {
   'Пригласите друга и получайте {percent}% от его оплат.': 'Invite a friend and get {percent}% of their payments.',
   'Пригласите друга по своей ссылке.': 'Invite a friend with your link.',
   'Ещё {percent}% — от оплат тех, кого пригласят ваши друзья.': 'Plus {percent}% of payments from people your friends invite.',
+  'И {percent}% — от оплат тех, кого пригласят друзья ваших друзей.': 'And {percent}% of payments from people your friends\' friends invite.',
   'Ссылки для приглашения': 'Invite links',
   'Ваша ссылка': 'Your link',
   'На сайт': 'Website',

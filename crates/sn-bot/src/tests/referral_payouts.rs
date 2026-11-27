@@ -154,3 +154,49 @@ async fn кнопки_вывода_в_боте_берутся_из_настро�
     assert_eq!(request.amount, Money::new(600, Currency::Usd));
     db.cleanup().await;
 }
+
+#[tokio::test]
+async fn экран_приглашения_называет_второй_и_третий_уровень() {
+    let Some((db, services, server, ctx)) = setup().await else {
+        return;
+    };
+    handle_update(&ctx, text_update(1, 741, "/start")).await;
+
+    handle_update(&ctx, callback_update(2, 741, "x:referral")).await;
+    let text = last_text(&server).await;
+    assert!(
+        text.contains(
+            "вы получаете 30% с каждой оплаты друга.\nЕщё 10% — с оплат тех, кого пригласят ваши друзья.\nИ 10% — с оплат тех, кого пригласят друзья ваших друзей."
+        ),
+        "{text}"
+    );
+
+    referral_config(
+        &services,
+        serde_json::json!({ "level2_percent": "5", "level3_percent": "0" }),
+    )
+    .await
+    .unwrap();
+    handle_update(&ctx, callback_update(3, 741, "x:referral")).await;
+    let text = last_text(&server).await;
+    assert!(
+        text.contains("Ещё 5% — с оплат тех, кого пригласят ваши друзья."),
+        "{text}"
+    );
+    assert!(!text.contains("друзья ваших друзей"), "{text}");
+
+    referral_config(
+        &services,
+        serde_json::json!({ "level2_percent": "0", "level3_percent": "7" }),
+    )
+    .await
+    .unwrap();
+    handle_update(&ctx, callback_update(4, 741, "x:referral")).await;
+    let text = last_text(&server).await;
+    assert!(!text.contains("пригласят ваши друзья"), "{text}");
+    assert!(
+        text.contains("И 7% — с оплат тех, кого пригласят друзья ваших друзей."),
+        "{text}"
+    );
+    db.cleanup().await;
+}

@@ -1,3 +1,5 @@
+import { t } from './i18n';
+
 const KEY = 'sn.ref';
 const TTL_MS = 30 * 24 * 3600 * 1000;
 const CODE = /^[A-Z0-9]{4,16}$/;
@@ -43,4 +45,16 @@ export function siteInviteLink(code: string): string {
 export function botLink(username: string, start?: string | null): string {
   const base = `https://t.me/${username.replace(/^@/, '')}`;
   return start ? `${base}?start=${encodeURIComponent(start)}` : base;
+}
+
+export function deeperLevels(levels: readonly number[]): string[] {
+  const [, second = 0, third = 0] = levels;
+  const lines: string[] = [];
+  if (second > 0) {
+    lines.push(t('Ещё {percent}% — от оплат тех, кого пригласят ваши друзья.', { percent: second }));
+  }
+  if (third > 0) {
+    lines.push(t('И {percent}% — от оплат тех, кого пригласят друзья ваших друзей.', { percent: third }));
+  }
+  return lines;
 }

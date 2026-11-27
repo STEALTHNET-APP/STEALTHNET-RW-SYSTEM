@@ -93,6 +93,7 @@ async fn мини_приложение_правится_в_настройках_
     assert_eq!(view["english"], false);
     assert!(view["off"].as_str().unwrap().contains("https"), "{view}");
     assert_eq!(view["friends_percent"], 30);
+    assert_eq!(view["friends_levels"], serde_json::json!([30, 10, 10]));
     let gifts = view["sections"]
         .as_array()
         .unwrap()

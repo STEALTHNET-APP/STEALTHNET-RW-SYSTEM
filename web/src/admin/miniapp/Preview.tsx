@@ -46,12 +46,13 @@ type FrameProps = {
   screen: PreviewScreen;
   off: SectionKey[];
   percent: number;
+  levels: number[];
   focus: Focus | null;
   height: number;
   onPick: (part: Part) => void;
 };
 
-export function PreviewFrame({ config, css, theme, lang, state, screen, off, percent, focus, height, onPick }: FrameProps) {
+export function PreviewFrame({ config, css, theme, lang, state, screen, off, percent, levels, focus, height, onPick }: FrameProps) {
   const [box, setBox] = useState<HTMLDivElement | null>(null);
   const { width } = useSize(box);
   const scale = width > 0 ? Math.min(1, width / WIDTH, Math.max(SMALLEST, height / TALL)) : 0;
@@ -71,11 +72,11 @@ export function PreviewFrame({ config, css, theme, lang, state, screen, off, per
       if (focus) {
         sent.current = focus.n;
       }
-      const message: MiniDraft = { type: MINI_PREVIEW.draft, config: withImages(config), css, theme, lang, state, screen, off, percent, focus: jump };
+      const message: MiniDraft = { type: MINI_PREVIEW.draft, config: withImages(config), css, theme, lang, state, screen, off, percent, levels, focus: jump };
       send(message);
     }, 120);
     return () => window.clearTimeout(timer);
-  }, [ready, send, config, css, theme, lang, state, screen, off, percent, focus]);
+  }, [ready, send, config, css, theme, lang, state, screen, off, percent, levels, focus]);
 
   return (
     <div ref={setBox} className="mce-frame" style={{ height }}>

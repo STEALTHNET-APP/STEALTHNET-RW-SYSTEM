@@ -179,6 +179,11 @@ export function ModulePage() {
           Открыть раздел «{section}»
         </Link>
       ) : null}
+      {view.info.id === 'referral' ? (
+        <Link to="/admin/settings/bot/texts?section=referral" className="md-back">
+          Текст «Пригласить друга» в боте
+        </Link>
+      ) : null}
       {view.info.id === 'oauth' ? <OauthSetup /> : null}
       {cfg.schema.length === 0 ? (
         <section className="card card-pad">

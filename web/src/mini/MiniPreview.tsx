@@ -75,7 +75,7 @@ function demoExtras(draft: MiniDraft, site: Site, currency: Currency): Extras {
           invited: 2,
           earned,
           balance: { minor: 0, currency },
-          levels: [draft.percent],
+          levels: [draft.percent, ...(draft.levels ?? []).slice(1)],
           withdrawals_enabled: false,
         },
     gifts: !draft.off.includes('gifts'),
