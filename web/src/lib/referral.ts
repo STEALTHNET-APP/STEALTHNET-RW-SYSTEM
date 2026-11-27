@@ -51,10 +51,16 @@ export function deeperLevels(levels: readonly number[]): string[] {
   const [, second = 0, third = 0] = levels;
   const lines: string[] = [];
   if (second > 0) {
-    lines.push(t('Ещё {percent}% — от оплат тех, кого пригласят ваши друзья.', { percent: second }));
+    lines.push(t('{percent}% — их друзья', { percent: second }));
   }
   if (third > 0) {
-    lines.push(t('И {percent}% — от оплат тех, кого пригласят друзья ваших друзей.', { percent: third }));
+    lines.push(t('{percent}% — друзья их друзей', { percent: third }));
   }
   return lines;
+}
+
+export function levelsText(levels: readonly number[]): string[] {
+  const [first = 0] = levels;
+  const lines = [first > 0 ? t('{percent}% — друзья', { percent: first }) : '', ...deeperLevels(levels)].filter(Boolean);
+  return lines.length ? [t('Ваш процент с каждой оплаты:'), ...lines] : [];
 }

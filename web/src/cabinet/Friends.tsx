@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useState } from 'react';
+import { Fragment, useCallback, useEffect, useState } from 'react';
 import { api, ApiError } from '../lib/api';
 import { dateLong, money } from '../lib/format';
 import { t } from '../lib/i18n';
-import { deeperLevels, siteInviteLink } from '../lib/referral';
+import { levelsText, siteInviteLink } from '../lib/referral';
 import { Card, useCabinet } from './CabinetApp';
 import type { Referral, Withdrawal } from './model';
 import { firstPayout, payoutDetails, payoutLabel as methodLabel, WITHDRAWAL_STATUS as STATUS } from './withdrawals';
@@ -78,8 +78,7 @@ export function FriendsPage() {
     );
   }
 
-  const first = data.levels[0] ?? 0;
-  const deeper = deeperLevels(data.levels);
+  const terms = levelsText(data.levels);
   const siteLink = siteInviteLink(data.code);
   const balance = data.balance ?? me.referral_balance;
   const methods = data.payout_methods ?? [];
@@ -131,8 +130,14 @@ export function FriendsPage() {
       <header className="cb-pay-head">
         <h1 className="cb-title">{t('Друзья')}</h1>
         <p className="cb-lead muted">
-          {first > 0 ? t('Пригласите друга и получайте {percent}% от его оплат.', { percent: first }) : t('Пригласите друга по своей ссылке.')}
-          {deeper.length ? ` ${deeper.join(' ')}` : ''}
+          {terms.length
+            ? terms.map((line, index) => (
+                <Fragment key={line}>
+                  {index > 0 ? <br /> : null}
+                  {line}
+                </Fragment>
+              ))
+            : t('Пригласите друга по своей ссылке.')}
         </p>
       </header>
       {error ? (

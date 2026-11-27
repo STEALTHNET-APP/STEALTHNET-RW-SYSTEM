@@ -166,7 +166,7 @@ async fn экран_приглашения_называет_второй_и_тр
     let text = last_text(&server).await;
     assert!(
         text.contains(
-            "вы получаете 30% с каждой оплаты друга.\nЕщё 10% — с оплат тех, кого пригласят ваши друзья.\nИ 10% — с оплат тех, кого пригласят друзья ваших друзей."
+            "Ваш процент с каждой оплаты:\n30% — друзья\n10% — их друзья\n10% — друзья их друзей\n"
         ),
         "{text}"
     );
@@ -179,11 +179,8 @@ async fn экран_приглашения_называет_второй_и_тр
     .unwrap();
     handle_update(&ctx, callback_update(3, 741, "x:referral")).await;
     let text = last_text(&server).await;
-    assert!(
-        text.contains("Ещё 5% — с оплат тех, кого пригласят ваши друзья."),
-        "{text}"
-    );
-    assert!(!text.contains("друзья ваших друзей"), "{text}");
+    assert!(text.contains("30% — друзья\n5% — их друзья\n"), "{text}");
+    assert!(!text.contains("друзья их друзей"), "{text}");
 
     referral_config(
         &services,
@@ -193,9 +190,9 @@ async fn экран_приглашения_называет_второй_и_тр
     .unwrap();
     handle_update(&ctx, callback_update(4, 741, "x:referral")).await;
     let text = last_text(&server).await;
-    assert!(!text.contains("пригласят ваши друзья"), "{text}");
+    assert!(!text.contains("— их друзья"), "{text}");
     assert!(
-        text.contains("И 7% — с оплат тех, кого пригласят друзья ваших друзей."),
+        text.contains("30% — друзья\n7% — друзья их друзей\n"),
         "{text}"
     );
     db.cleanup().await;
