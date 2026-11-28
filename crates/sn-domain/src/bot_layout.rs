@@ -110,9 +110,14 @@ pub static MENU: [Slot; 16] = [
     ),
 ];
 
-pub static SUBSCRIPTION: [Slot; 7] = [
+pub static SUBSCRIPTION: [Slot; 8] = [
     slot(
         "sub.btn.connect",
+        Audience::All,
+        "Если у подписки есть ссылка",
+    ),
+    slot(
+        "sub.btn.copy_link",
         Audience::All,
         "Если у подписки есть ссылка",
     ),
@@ -176,6 +181,7 @@ impl Screen {
                 .collect(),
             Screen::Subscription => vec![
                 vec!["sub.btn.connect".into()],
+                vec!["sub.btn.copy_link".into()],
                 vec!["sub.btn.devices".into()],
                 vec!["sub.btn.reissue".into()],
                 vec!["sub.btn.extend".into()],
@@ -244,7 +250,7 @@ pub struct SubscriptionFacts {
 impl SubscriptionFacts {
     pub fn shows(&self, key: &str) -> bool {
         match key {
-            "sub.btn.connect" => self.link,
+            "sub.btn.connect" | "sub.btn.copy_link" => self.link,
             "sub.btn.devices" => self.remna,
             "sub.btn.reissue" => self.remna && self.reissue,
             "sub.btn.renewal_off" => self.renewal,
@@ -596,6 +602,7 @@ mod tests {
             sub.keys(),
             vec![
                 "sub.btn.connect",
+                "sub.btn.copy_link",
                 "sub.btn.extend",
                 "sub.btn.all",
                 "common.btn.menu"

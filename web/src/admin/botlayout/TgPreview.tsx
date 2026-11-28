@@ -69,7 +69,7 @@ function TgKey({ slot, lang, marks, events }: { slot: Slot; lang: Lang; marks?: 
       {draggable ? <span className="tg-grip" aria-hidden="true" /> : null}
       {slot.emoji ? <span className="tg-emoji" title="Премиум-эмодзи" aria-hidden="true" /> : null}
       <span className="tg-key-text">{labelOf(slot, lang)}</span>
-      {slot.kind !== 'callback' ? <Icon name="external" size={11} stroke={2.4} className="tg-corner" /> : null}
+      {slot.kind === 'link' || slot.kind === 'web_app' ? <Icon name="external" size={11} stroke={2.4} className="tg-corner" /> : null}
     </button>
   );
 }

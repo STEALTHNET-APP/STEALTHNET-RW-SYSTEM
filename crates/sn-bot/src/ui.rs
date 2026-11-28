@@ -34,6 +34,14 @@ pub fn link(
     Some(Button::url(label.text, url).look(label.emoji_id, label.style.map(|s| s.as_str())))
 }
 
+pub fn copy(content: &BotContent, key: &str, value: &str) -> Option<Button> {
+    if value.is_empty() || value.chars().count() > crate::telegram::COPY_TEXT_MAX {
+        return None;
+    }
+    let label = content.content.button(key, &[])?;
+    Some(Button::copy(label.text, value).look(label.emoji_id, label.style.map(|s| s.as_str())))
+}
+
 pub fn web_app(content: &BotContent, key: &str, url: impl Into<String>) -> Option<Button> {
     let label = content.content.button(key, &[])?;
     Some(Button::web_app(label.text, url).look(label.emoji_id, label.style.map(|s| s.as_str())))

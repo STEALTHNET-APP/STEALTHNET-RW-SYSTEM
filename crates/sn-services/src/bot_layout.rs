@@ -228,6 +228,7 @@ impl Install {
             "menu.btn.app" | "menu.btn.roulette" => Kind::WebApp,
             "menu.btn.support" if self.support.is_some() => Kind::Link,
             "sub.btn.connect" => Kind::Link,
+            "sub.btn.copy_link" => Kind::Copy,
             _ => Kind::Callback,
         }
     }
@@ -247,6 +248,7 @@ pub enum Kind {
     Callback,
     Link,
     WebApp,
+    Copy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

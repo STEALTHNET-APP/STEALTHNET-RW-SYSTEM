@@ -187,6 +187,18 @@ async fn last_buttons(server: &MockServer) -> Vec<String> {
         .collect()
 }
 
+async fn copy_texts(server: &MockServer) -> Vec<String> {
+    sent(server)
+        .await
+        .last()
+        .and_then(|b| b["reply_markup"]["inline_keyboard"].as_array().cloned())
+        .unwrap_or_default()
+        .into_iter()
+        .flat_map(|row| row.as_array().cloned().unwrap_or_default())
+        .filter_map(|b| b["copy_text"]["text"].as_str().map(str::to_string))
+        .collect()
+}
+
 async fn last_labels(server: &MockServer) -> Vec<String> {
     sent(server)
         .await
@@ -1391,11 +1403,22 @@ async fn устройства_и_новая_ссылка_через_ядро_rem
     handle_update(&ctx, callback_update(5, 720, &format!("reiy:{sub}"))).await;
     let reissued = last_text(&server).await;
     assert!(reissued.contains("Новая ссылка подписки"), "{reissued}");
+    let copied = copy_texts(&server).await;
+    assert_eq!(copied.len(), 1, "{reissued}");
+    assert!(
+        copied[0].starts_with("http") && reissued.contains(copied[0].as_str()),
+        "{copied:?}\n{reissued}"
+    );
     assert!(fake.devices(user.id).is_empty());
     let stranger = text_update(6, 721, "/start");
     handle_update(&ctx, stranger).await;
     handle_update(&ctx, callback_update(7, 721, &format!("reiy:{sub}"))).await;
     let foreign = last_text(&server).await;
     assert!(foreign.contains("Не найдено"), "{foreign}");
+    handle_update(&ctx, callback_update(8, 720, &format!("sub:{sub}"))).await;
+    let screen = last_text(&server).await;
+    let copied = copy_texts(&server).await;
+    assert_eq!(copied.len(), 1, "{screen}");
+    assert!(screen.contains(copied[0].as_str()), "{copied:?}\n{screen}");
     db.cleanup().await;
 }

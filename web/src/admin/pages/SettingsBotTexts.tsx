@@ -53,6 +53,7 @@ const SAMPLES: Record<string, string> = {
   name: 'Алексей',
   tariff: 'Стандарт',
   current: 'Базовый',
+  mark: '🟢',
   status: 'активна',
   date: '14 февраля 2027',
   days: '90 дней',

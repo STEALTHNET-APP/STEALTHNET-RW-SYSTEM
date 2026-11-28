@@ -310,13 +310,26 @@ async fn меню_с_двумя_подписками_короткими_стро
     let expire_at = Utc::now() + Duration::days(30);
     give_mirror(&db, client.id, &standard, 82, detailed(expire_at)).await;
     give_mirror(&db, client.id, &premium, 83, detailed(expire_at)).await;
+    let ended_at = Utc::now() - Duration::days(3);
+    let ended = RemnaMirror {
+        status: Some(SubscriptionStatus::Expired),
+        ..detailed(ended_at)
+    };
+    let old = tariff_in(&db, "Старый", "Прошлый").await;
+    give_mirror(&db, client.id, &old, 84, ended).await;
     handle_update(&ctx, callback_update(2, 706, "m")).await;
     let menu = last_text(&server).await;
-    let date = crate::text::date(expire_at, services.settings().remna_offset());
+    let offset = services.settings().remna_offset();
+    let date = crate::text::date(expire_at, offset);
     for tariff in ["Базовый", "Премиум"] {
-        let line = format!("{tariff}: активна, до {date}");
+        let line = format!("🟢 {tariff}: активна, до {date}");
         assert_eq!(menu.matches(line.as_str()).count(), 1, "{line:?}:\n{menu}");
     }
+    let line = format!(
+        "🔴 Прошлый: истекла, до {}",
+        crate::text::date(ended_at, offset)
+    );
+    assert_eq!(menu.matches(line.as_str()).count(), 1, "{line:?}:\n{menu}");
     assert!(!menu.contains("Трафик"), "{menu}");
     assert!(!menu.contains("Баланс"), "{menu}");
     db.cleanup().await;

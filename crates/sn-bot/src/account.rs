@@ -271,6 +271,7 @@ pub async fn subscription(
                 "sub.btn.connect" => connect
                     .as_ref()
                     .and_then(|url| ui::link(c, key, &[], url.clone())),
+                "sub.btn.copy_link" => connect.as_ref().and_then(|url| ui::copy(c, key, url)),
                 "sub.btn.devices" => ui::button(c, key, &[], format!("dev:{id}")),
                 "sub.btn.reissue" => ui::button(c, key, &[], format!("rei:{id}")),
                 "sub.btn.renewal_off" => ui::button(c, key, &[], format!("rno:{id}")),
@@ -556,7 +557,9 @@ pub async fn reissue(turn: &mut Turn<'_>, client: &Client, id: i64) -> Result<Sc
         Ok(url) => {
             let mut keyboard = Keyboard::new();
             if url.starts_with("http") {
-                keyboard = keyboard.push(ui::link(c, "sub.btn.connect", &[], url.clone()));
+                keyboard = keyboard
+                    .push(ui::link(c, "sub.btn.connect", &[], url.clone()))
+                    .push(ui::copy(c, "sub.btn.copy_link", &url));
             }
             Ok(
                 Screen::new(ui::text(c, "sub.reissued", &[("url", Text(&url))]))

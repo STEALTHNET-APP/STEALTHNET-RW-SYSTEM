@@ -380,12 +380,21 @@ pub struct Button {
     pub url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub web_app: Option<WebApp>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub copy_text: Option<CopyText>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct WebApp {
     pub url: String,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CopyText {
+    pub text: String,
+}
+
+pub const COPY_TEXT_MAX: usize = 256;
 
 impl Button {
     pub fn callback(text: impl Into<String>, data: impl Into<String>) -> Self {
@@ -396,6 +405,7 @@ impl Button {
             callback_data: Some(data.into()),
             url: None,
             web_app: None,
+            copy_text: None,
         }
     }
 
@@ -407,6 +417,7 @@ impl Button {
             callback_data: None,
             url: Some(url.into()),
             web_app: None,
+            copy_text: None,
         }
     }
 
@@ -418,6 +429,19 @@ impl Button {
             callback_data: None,
             url: None,
             web_app: Some(WebApp { url: url.into() }),
+            copy_text: None,
+        }
+    }
+
+    pub fn copy(text: impl Into<String>, value: impl Into<String>) -> Self {
+        Button {
+            text: text.into(),
+            icon_custom_emoji_id: None,
+            style: None,
+            callback_data: None,
+            url: None,
+            web_app: None,
+            copy_text: Some(CopyText { text: value.into() }),
         }
     }
 

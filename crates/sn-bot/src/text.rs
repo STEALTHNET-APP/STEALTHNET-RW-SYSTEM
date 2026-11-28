@@ -164,6 +164,13 @@ pub fn status_key(subscription: &Subscription, now: DateTime<Utc>) -> &'static s
     }
 }
 
+pub fn status_mark(subscription: &Subscription, now: DateTime<Utc>) -> &'static str {
+    match status_key(subscription, now) {
+        "status.active" | "status.trial" => "🟢",
+        _ => "🔴",
+    }
+}
+
 pub fn plural_days(n: u32) -> String {
     days(n)
 }

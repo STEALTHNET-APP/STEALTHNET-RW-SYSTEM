@@ -1,5 +1,5 @@
 export type ClientState = 'new' | 'active' | 'ended';
-export type Kind = 'callback' | 'link' | 'web_app';
+export type Kind = 'callback' | 'link' | 'web_app' | 'copy';
 export type Style = 'primary' | 'success' | 'danger';
 export type Audience = 'all' | 'subscribed' | 'unsubscribed';
 export type Rows = string[][];
@@ -119,6 +119,9 @@ export function opensText(slot: Slot, web: boolean): string {
   }
   if (kind === 'link') {
     return 'Ссылку';
+  }
+  if (kind === 'copy') {
+    return 'Ничего: копирует ссылку подписки';
   }
   return 'Экран бота в чате';
 }

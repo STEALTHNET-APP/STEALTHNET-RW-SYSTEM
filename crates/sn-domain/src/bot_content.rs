@@ -322,6 +322,10 @@ const STATUS: Var = Var {
     name: "status",
     hint: "состояние подписки словом",
 };
+const MARK: Var = Var {
+    name: "mark",
+    hint: "🟢 — подписка работает, 🔴 — нет",
+};
 const DATE: Var = Var {
     name: "date",
     hint: "дата",
@@ -711,15 +715,15 @@ pub static CATALOG: &[Entry] = &[
         "menu.subscription",
         Menu,
         "Строка подписки, если их несколько",
-        "{tariff}: {status}, до {date}",
-        &[TARIFF, STATUS, DATE],
+        "{mark} {tariff}: {status}, до {date}",
+        &[MARK, TARIFF, STATUS, DATE],
     ),
     text(
         "menu.subscription_open",
         Menu,
         "Строка подписки без даты, если их несколько",
-        "{tariff}: {status}",
-        &[TARIFF, STATUS],
+        "{mark} {tariff}: {status}",
+        &[MARK, TARIFF, STATUS],
     ),
     hideable(
         "menu.btn.subscription",
@@ -966,6 +970,12 @@ pub static CATALOG: &[Entry] = &[
         Subscription,
         "Кнопка страницы подключения",
         "Открыть страницу подключения",
+    ),
+    hideable(
+        "sub.btn.copy_link",
+        Subscription,
+        "Кнопка «Скопировать ссылку»",
+        "Скопировать ссылку",
     ),
     hideable(
         "sub.btn.devices",
@@ -4427,8 +4437,11 @@ mod tests {
             "Отключить <iPhone>"
         );
         assert_eq!(
-            content.text("menu.subscription_open", &[("tariff", Value::Text("X"))]),
-            "X: "
+            content.text(
+                "menu.subscription_open",
+                &[("mark", Value::Text("🟢")), ("tariff", Value::Text("X"))]
+            ),
+            "🟢 X: "
         );
     }
 
