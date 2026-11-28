@@ -2,6 +2,7 @@ use crate::pacer::{Class, Pacer, SendLimits, sends};
 use chrono::DateTime;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use sn_domain::bot_content::clip_markup;
 use sn_services::bot_buttons::MenuButton;
 use sn_services::bot_webhook::ALLOWED_UPDATES;
 use sn_services::server_clock::ServerClock;
@@ -1213,9 +1214,14 @@ impl TelegramApi {
         keyboard: Option<&Keyboard>,
         html: bool,
     ) -> serde_json::Value {
+        let text = if html {
+            clip_markup(text, MESSAGE_MAX).into_owned()
+        } else {
+            truncate(text, MESSAGE_MAX)
+        };
         let mut body = serde_json::json!({
             "chat_id": chat_id,
-            "text": truncate(text, MESSAGE_MAX),
+            "text": text,
             "link_preview_options": { "is_disabled": true },
         });
         if html {
@@ -1662,6 +1668,25 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(pre.chat_key(), 43);
+    }
+
+    #[test]
+    fn длинное_сообщение_с_разметкой_обрезается_без_разрыва_тегов() {
+        let long = format!("<b>Заголовок</b>\n<i>{}</i> &amp; хвост", "ж".repeat(5_000));
+        let body = TelegramApi::message_body(7, &long, None, true);
+        let text = body["text"].as_str().unwrap();
+        assert!(text.starts_with("<b>Заголовок</b>\n<i>жжж"));
+        assert!(text.ends_with("ж…</i>"));
+        assert_eq!(sn_domain::bot_content::visible_len(text), MESSAGE_MAX);
+        assert!(sn_domain::bot_content::normalize_markup(text).is_ok());
+        let short = "<b>Тариф:</b> 30 дней";
+        assert_eq!(
+            TelegramApi::message_body(7, short, None, true)["text"],
+            short
+        );
+        let plain = "ж".repeat(5_000);
+        let body = TelegramApi::message_body(7, &plain, None, false);
+        assert_eq!(body["text"].as_str().unwrap().chars().count(), MESSAGE_MAX);
     }
 
     #[test]

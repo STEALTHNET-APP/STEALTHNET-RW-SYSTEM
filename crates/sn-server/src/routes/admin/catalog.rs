@@ -3,7 +3,7 @@ use crate::error::ApiResult;
 use crate::extract::{ApiJson, ApiQuery, CurrentAdmin};
 use crate::state::AppState;
 use axum::extract::{Path, State};
-use axum::routing::{get, put};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use serde::Deserialize;
 use sn_domain::access::Permission;
@@ -17,6 +17,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/tariffs", get(list).post(create))
         .route("/tariffs/squads", get(squads))
+        .route("/tariffs/description/clean", post(clean_description))
         .route(
             "/tariffs/promotions",
             get(promotions).post(create_promotion),
@@ -214,6 +215,21 @@ async fn channels(
             .set_channels(TariffId(id), body, admin.0.admin_id)
             .await?,
     ))
+}
+
+#[derive(Deserialize)]
+struct PasteBody {
+    html: String,
+}
+
+async fn clean_description(
+    admin: CurrentAdmin,
+    ApiJson(body): ApiJson<PasteBody>,
+) -> ApiResult<Json<serde_json::Value>> {
+    admin.require(Permission::Tariffs)?;
+    Ok(Json(serde_json::json!({
+        "html": sn_domain::documents::clean_paste(&body.html)
+    })))
 }
 
 async fn squads(

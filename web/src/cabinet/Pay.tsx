@@ -13,6 +13,7 @@ import { fullCategory, fullNote, NEWEST, newTargetNote, payTargets, remember, re
 import { methodKey } from '../lib/methods';
 import { categoryOffers, categoryPick, firstPick, flatFirst, flatPlans, flatTerm, offerById, offerCategories, renewsCurrent, SHORT_PERIOD_DAYS, tariffPick, targetPick, type OfferPick } from '../lib/offers';
 import { ReceiptEmail, useReceiptEmail } from '../lib/receiptEmail';
+import { TariffNote } from '../lib/TgText';
 
 type Payment = { payment_id: string; status: string; order_status: string; pay_url: string | null };
 
@@ -481,6 +482,7 @@ export function Pay() {
                 ))}
               </div>
             ) : null}
+            {offer?.tariff.description ? <TariffNote html={offer.tariff.description} className="cb-desc" toggleClass="cb-more" /> : null}
             {offerPromo ? <p className="cb-sale">{promoTitle(offerPromo)}</p> : null}
             <div role="radiogroup" aria-label={t('Срок')} className={starsMode ? 'cb-terms wide' : 'cb-terms'}>
               {rows.map(({ offer: o, period: p }) => {

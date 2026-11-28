@@ -2,6 +2,7 @@ use super::llm::ChatMessage;
 use chrono::{DateTime, FixedOffset, Utc};
 use serde::Deserialize;
 use sn_domain::access::ClientChannel;
+use sn_domain::bot_content::markup_plain;
 use sn_domain::client::Locale;
 use sn_domain::format;
 use sn_domain::money::{Currency, Money};
@@ -204,12 +205,12 @@ pub async fn facts(
             if let Some(description) = tariff
                 .description
                 .as_deref()
-                .map(str::trim)
-                .filter(|d| !d.is_empty())
+                .map(markup_plain)
+                .filter(|d| !d.trim().is_empty())
             {
                 line.push_str(&format!(
                     " Описание: {}",
-                    short(description, DESCRIPTION_CHARS)
+                    short(&description, DESCRIPTION_CHARS)
                 ));
             }
             lines.push(line);

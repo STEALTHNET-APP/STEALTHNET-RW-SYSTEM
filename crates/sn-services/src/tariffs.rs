@@ -8,7 +8,7 @@ use sn_domain::ids::{AdminId, CategoryId, PeriodId, RemnaUserId, SquadId, Tariff
 use sn_domain::money::{Currency, Stars};
 use sn_domain::tariff::{
     Category, CurrencyPrices, DeviceDiscount, DevicePolicy, Tariff, TariffChannels, TariffPeriod,
-    TrafficAddon, check_device_discounts, check_subscription_limit,
+    TrafficAddon, check_device_discounts, check_subscription_limit, clean_description,
 };
 use sn_domain::traffic::TrafficPolicy;
 use sn_remnawave::{BulkSquadsRequest, BulkUpdateRequest, BulkUserFields};
@@ -16,7 +16,6 @@ use sn_store::{Db, NewCategory, NewPeriod, NewTariff, TariffUsage};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 pub const MAX_NAME_CHARS: usize = 100;
-pub const MAX_DESCRIPTION_CHARS: usize = 2_000;
 pub const MAX_PERIOD_DAYS: u32 = 3_650;
 pub const MAX_DEVICES: u32 = 100;
 
@@ -179,12 +178,8 @@ impl TariffInput {
         if name.is_empty() || name.chars().count() > MAX_NAME_CHARS {
             return Err(invalid("Название", "от 1 до 100 символов"));
         }
-        if self
-            .description
-            .as_deref()
-            .is_some_and(|d| d.chars().count() > MAX_DESCRIPTION_CHARS)
-        {
-            return Err(invalid("Описание", "не длиннее 2000 символов"));
+        if let Some(description) = self.description.as_deref() {
+            clean_description(description).map_err(|err| invalid_from("Описание", err))?;
         }
         if self.periods.is_empty() {
             return Err(invalid("Сроки", "нужен хотя бы один срок"));
@@ -291,9 +286,7 @@ impl TariffInput {
             description: self
                 .description
                 .as_deref()
-                .map(str::trim)
-                .filter(|d| !d.is_empty())
-                .map(str::to_string),
+                .and_then(|d| clean_description(d).ok().flatten()),
             on_sale: self.on_sale,
             sort: self.sort,
             devices: self.devices.clone(),
@@ -838,6 +831,39 @@ mod tests {
         let mut free_stars = input();
         free_stars.periods[0].stars = Some(Stars(0));
         assert!(free_stars.validate().is_err());
+    }
+
+    #[test]
+    fn описание_тарифа_из_формы_проверяется_и_сохраняется_с_разметкой() {
+        let with = |text: &str| TariffInput {
+            description: Some(text.into()),
+            ..input()
+        };
+        let formatted = with("  <B>Тариф:</B> 30 дней\r\n\r\n<s>от 419 ₽</s> & <i>скидка</i>\n");
+        assert!(formatted.validate().is_ok());
+        assert_eq!(
+            formatted.to_new().description.as_deref(),
+            Some("<b>Тариф:</b> 30 дней\n\n<s>от 419 ₽</s> &amp; <i>скидка</i>")
+        );
+        assert_eq!(with("  \n ").to_new().description, None);
+        let unclosed = with("<b>Тариф: 30 дней")
+            .validate()
+            .unwrap_err()
+            .to_string();
+        assert!(
+            unclosed.contains("Описание: тег <b> не закрыт"),
+            "{unclosed}"
+        );
+        let long = with(&"я".repeat(2_001)).validate().unwrap_err().to_string();
+        assert!(
+            long.contains("Описание: описание длиннее 2000 знаков"),
+            "{long}"
+        );
+        assert!(
+            with(&format!("<b>{}</b>", "я".repeat(2_000)))
+                .validate()
+                .is_ok()
+        );
     }
 
     #[test]

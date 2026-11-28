@@ -1,0 +1,61 @@
+.tgh {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.tgh a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.tgh code {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 0.92em;
+}
+
+.tgh-pre,
+.tgh-quote {
+  display: block;
+}
+
+.tgh-quote {
+  padding-left: 10px;
+  border-left: 2px solid;
+  border-left-color: color-mix(in srgb, currentColor 30%, transparent);
+}
+
+.tgh-clamp {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  overflow: hidden;
+}
+
+.tgh-note {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+}
+
+.tgh-note > .tgh {
+  align-self: stretch;
+}
+
+.tgh-more {
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.tgh-inline {
+  display: inline;
+}

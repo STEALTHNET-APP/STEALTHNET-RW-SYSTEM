@@ -12,6 +12,7 @@ import { methodKey } from '../lib/methods';
 import { promoCut, promoOf, promoQuoteNote, promoTitle } from '../lib/promo';
 import { categoryOffers, categoryPick, firstPick, flatFirst, flatPlans, flatTerm, offerById, offerCategories, renewsCurrent, SHORT_PERIOD_DAYS, tariffPick, targetPick, type OfferPick } from '../lib/offers';
 import { ReceiptEmail, useReceiptEmail } from '../lib/receiptEmail';
+import { TariffNote } from '../lib/TgText';
 
 const PAY_STEP = 'pay';
 const TAP_GUARD_MS = 450;
@@ -490,6 +491,7 @@ export function MiniPlans() {
           ))}
         </div>
       ) : null}
+      {offer?.tariff.description ? <TariffNote html={offer.tariff.description} className="mn-desc" toggleClass="mn-more" onLink={openExternal} /> : null}
       {transition && offer ? (
         <div className="mn-card mn-move" role="note">
           <strong>{t('Будет переход на тариф «{name}»', { name: offer.tariff.name })}</strong>

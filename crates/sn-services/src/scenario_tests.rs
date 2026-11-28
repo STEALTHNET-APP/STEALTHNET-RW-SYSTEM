@@ -2316,6 +2316,88 @@ async fn тариф_из_админки_проверяет_сквады_в_remna
 }
 
 #[tokio::test]
+async fn описание_тарифа_с_оформлением_сохраняется_и_уходит_в_каталог() {
+    let Some(env) = env().await else { return };
+    let services = &env.services;
+    let admin = owner(services).await;
+    env.remna.set_squads(vec![InternalSquad {
+        uuid: Uuid::from_u128(1),
+        name: "Основной".into(),
+        view_position: 0,
+        info: SquadInfo::default(),
+        inbounds: Vec::new(),
+    }]);
+    let category = services
+        .tariffs()
+        .create_category(
+            &crate::tariffs::CategoryInput {
+                name: "Unblock".into(),
+                sort: 0,
+                visible: true,
+                subscription_limit: None,
+            },
+            admin,
+        )
+        .await
+        .unwrap();
+    let mut input = TariffInput {
+        traffic_addon: None,
+        category_id: category.id,
+        name: "Unblock".into(),
+        description: Some(
+            "🎉 <B>Чёрная пятница!</B>\r\n\r\n💰 <b>Цена:</b> <s>от 419 ₽</s> & <i>(доп. устройства)</i>\n"
+                .into(),
+        ),
+        on_sale: true,
+        sort: 0,
+        devices: DevicePolicy {
+            included: 4,
+            extra: None,
+        },
+        traffic: TrafficPolicy::UNLIMITED,
+        squads: vec![SquadId(Uuid::from_u128(1))],
+        external_squad: None,
+        periods: vec![PeriodInput {
+            days: 30,
+            prices: CurrencyPrices {
+                usd: Some(299),
+                rub: Some(39_900),
+            },
+            stars: None,
+            sort: 0,
+            active: true,
+        }],
+        device_discounts: Vec::new(),
+    };
+    let tariff = services.tariffs().create(&input, admin).await.unwrap();
+    let stored = "🎉 <b>Чёрная пятница!</b>\n\n💰 <b>Цена:</b> <s>от 419 ₽</s> &amp; <i>(доп. устройства)</i>";
+    assert_eq!(tariff.description.as_deref(), Some(stored));
+    let catalog = services.checkout().catalog().await.unwrap();
+    assert_eq!(catalog[0].tariff.description.as_deref(), Some(stored));
+    input.description = Some("<b>Цена: от 419 ₽".into());
+    assert_eq!(
+        code(services.tariffs().update(tariff.id, &input, admin).await),
+        "tariff.invalid"
+    );
+    input.description = Some("я".repeat(2_001));
+    assert_eq!(
+        code(services.tariffs().update(tariff.id, &input, admin).await),
+        "tariff.invalid"
+    );
+    input.description = Some("Для мобильного интернета".into());
+    let updated = services
+        .tariffs()
+        .update(tariff.id, &input, admin)
+        .await
+        .unwrap();
+    assert_eq!(
+        updated.description.as_deref(),
+        Some("Для мобильного интернета")
+    );
+    env.db.cleanup().await;
+}
+
+#[tokio::test]
 async fn сохранение_настроек_оповещает_другие_процессы() {
     let Some(env) = env().await else { return };
     let services = &env.services;

@@ -10,6 +10,8 @@ export const COMMON: Record<string, string> = {
   'Ошибка {status}': 'Error {status}',
   'Текущая подписка ({current}) будет удалена, новая станет доступна сразу после оплаты. Оставшиеся дни не переносятся, ссылка подписки останется прежней.': 'Your current subscription ({current}) will be removed, and the new one starts right after payment. Remaining days don\'t carry over, and your subscription link stays the same.',
   'без тарифа': 'no plan',
+  'Показать полностью': 'Show all',
+  'Свернуть': 'Show less',
   '{n} ГБ': '{n} GB',
   'обновится {date}': 'resets {date}',
   'До {date}': 'Until {date}',

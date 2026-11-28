@@ -106,7 +106,7 @@ background: #e8f3f1;
 | Первый экран | `.ld-hero`, `h1`, `.ld-lead` (текст), `.ld-hero-text > .ld-muted` (строка под кнопками), `.ld-art` (стандартная картинка), `.ld-pic-img` (своя) |
 | Преимущества | `.ld-item`, `.ld-item h3`, `.ld-item p`, `.ld-item-pic` |
 | Как подключиться | `.ld-item`, `.ld-step` (номер шага, на телефоне `.ld-num`) |
-| Тарифы | `.ld-card`, `.ld-card-name`, `.ld-card-price`, `.ld-seg` (переключатель тарифов, с четырьмя и больше — `.ld-seg.many`), `.ld-grid.cards.few` (один-два срока: карточки не шире 400 пикселей), на телефоне `.ld-term` |
+| Тарифы | `.ld-card`, `.ld-card-name`, `.ld-card-price`, `.ld-seg` (переключатель тарифов, с четырьмя и больше — `.ld-seg.many`), `.ld-grid.cards.few` (один-два срока: карточки не шире 400 пикселей), на телефоне `.ld-term`, `.ld-desc` (описание тарифа), `.ld-more` («Показать полностью») |
 | Серверы и приложения | `.ld-item`, `.ld-h2s` (заголовок колонки) |
 | Вопросы и ответы | `details`, `summary` (вопрос), `details p` (ответ) |
 | Призыв в конце | `.ld-band` (плашка), `.ld-band h2`, `.ld-band p` |

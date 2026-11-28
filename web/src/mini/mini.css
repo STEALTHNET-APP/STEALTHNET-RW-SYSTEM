@@ -2359,3 +2359,15 @@ button.mn-tab {
   font-size: 13px;
   color: var(--muted);
 }
+
+.mn-desc {
+  padding: 0 4px;
+  color: var(--ink-2);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.mn-more {
+  color: var(--ink);
+  font-size: 14px;
+}

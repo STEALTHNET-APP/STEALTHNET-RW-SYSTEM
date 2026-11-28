@@ -4,6 +4,8 @@ import { count, groupDigits, money, NBSP, plural } from '../../lib/format';
 import { Icon } from '../../lib/icons';
 import { ConfirmDialog, Dialog } from '../client/dialogs';
 import { DeleteTariff } from './DeleteTariff';
+import { DescriptionField } from './Description';
+import { tgLine } from '../../lib/tgMarkup';
 import { PromotionsDialog, promotionsSummary, type PromotionsView } from './Promotions';
 import { useSession } from '../session';
 import { Switch } from '../ui';
@@ -381,7 +383,7 @@ export function Tariffs() {
               <div className="tf-info">
                 <div className="tf-namerow">
                   <h2 className="tf-name">{tariff.name}</h2>
-                  {tariff.description ? <span className="muted">{tariff.description}</span> : null}
+                  {tariff.description ? <span className="muted tf-desc-line">{tgLine(tariff.description)}</span> : null}
                 </div>
                 <div className="tf-prices">
                   {tariff.periods.map((p) => (
@@ -582,11 +584,8 @@ function TariffForm({ draft, currency, squads, hwidOff, busy, error, renewals, o
           <span>Название</span>
           <input className="field" type="text" value={draft.name} maxLength={100} onChange={(e) => onEdit({ name: e.target.value })} disabled={busy} />
         </label>
-        <label className="tf-field">
-          <span>Описание для клиента</span>
-          <input className="field" type="text" value={draft.description} maxLength={2000} onChange={(e) => onEdit({ description: e.target.value })} disabled={busy} />
-        </label>
       </div>
+      <DescriptionField value={draft.description} name={draft.name} onChange={(description) => onEdit({ description })} disabled={busy} />
 
       <div className="tf-block" style={{ gap: 8 }}>
         <span className="tf-bt">Цены</span>

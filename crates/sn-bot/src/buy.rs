@@ -6,7 +6,7 @@ use crate::session::{Awaiting, Cart};
 use crate::telegram::Keyboard;
 use crate::text;
 use crate::ui::{self, Html, Lines, Text};
-use sn_domain::bot_content::Section;
+use sn_domain::bot_content::{Section, sanitize_markup};
 use sn_domain::client::Client;
 use sn_domain::client::mask_email;
 use sn_domain::ids::{PeriodId, SubscriptionId, TariffId};
@@ -286,23 +286,30 @@ pub async fn tariff(
         "buy.tariff_title",
         &[("tariff", Text(&tariff.name))],
     ));
+    let mut block = false;
     if let Some(description) = tariff
         .description
         .as_deref()
-        .filter(|d| !d.trim().is_empty())
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
     {
-        lines.add(text::escape(description));
+        block = description.contains('\n');
+        if block {
+            lines.blank();
+        }
+        lines.add(sanitize_markup(description));
     }
+    let mut rest = Lines::new();
     if let Some(note) = limit_note {
-        lines.add(note);
+        rest.add(note);
     }
-    lines.add(ui::text(
+    rest.add(ui::text(
         c,
         "buy.tariff_devices",
         &[("count", Text(&tariff.devices.included.to_string()))],
     ));
     match tariff.traffic.limit_bytes {
-        Some(limit) if limit > 0 => lines.add(ui::text(
+        Some(limit) if limit > 0 => rest.add(ui::text(
             c,
             "buy.tariff_traffic",
             &[
@@ -310,10 +317,15 @@ pub async fn tariff(
                 ("reset", Text(tariff.traffic.reset.short())),
             ],
         )),
-        _ => lines.add(ui::text(c, "buy.tariff_unlimited", &[])),
+        _ => rest.add(ui::text(c, "buy.tariff_unlimited", &[])),
     }
-    promotion_lines(c, &mut lines, &offer.periods);
-    lines.add(ui::text(c, "buy.choose_period", &[]));
+    promotion_lines(c, &mut rest, &offer.periods);
+    rest.add(ui::text(c, "buy.choose_period", &[]));
+    let rest = rest.text();
+    if block && !rest.starts_with('\n') {
+        lines.blank();
+    }
+    lines.add(rest);
     let mut keyboard = Keyboard::new();
     for period in &offer.periods {
         let days = text::days(period.days);

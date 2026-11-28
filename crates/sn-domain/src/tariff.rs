@@ -1,5 +1,6 @@
 use crate::DomainError;
 use crate::access::ClientChannel;
+use crate::bot_content::{normalize_static_markup, visible_len};
 use crate::ids::{CategoryId, PeriodId, SquadId, TariffId};
 use crate::money::{Currency, Money, Stars, div_round_half_up};
 use crate::promotion::{PromotionTerms, discounted, discounted_stars};
@@ -604,6 +605,35 @@ pub fn period_offers(
         .collect()
 }
 
+pub const DESCRIPTION_MAX: usize = 2_000;
+pub const DESCRIPTION_MARKUP_MAX: usize = 8_000;
+
+pub fn clean_description(raw: &str) -> Result<Option<String>, DomainError> {
+    let text = raw.replace("\r\n", "\n").replace('\r', "\n");
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(None);
+    }
+    let html = normalize_static_markup(text)
+        .map_err(|problem| DomainError::invalid("description", problem.message()))?;
+    let length = visible_len(&html);
+    if length > DESCRIPTION_MAX {
+        return Err(DomainError::invalid(
+            "description",
+            format!("описание длиннее {DESCRIPTION_MAX} знаков, сейчас {length}"),
+        ));
+    }
+    if html.chars().count() > DESCRIPTION_MARKUP_MAX {
+        return Err(DomainError::invalid(
+            "description",
+            format!(
+                "слишком много оформления: вместе с разметкой описание длиннее {DESCRIPTION_MARKUP_MAX} знаков"
+            ),
+        ));
+    }
+    Ok(Some(html))
+}
+
 #[cfg(test)]
 pub(crate) mod fixtures {
     use super::*;
@@ -703,6 +733,36 @@ pub(crate) mod fixtures {
 mod tests {
     use super::fixtures::*;
     use super::*;
+
+    #[test]
+    fn описание_тарифа_проверяется_и_нормализуется() {
+        let reason = |raw: &str| match clean_description(raw) {
+            Err(DomainError::InvalidValue { reason, .. }) => reason,
+            other => panic!("{raw}: {other:?}"),
+        };
+        assert!(matches!(clean_description("  \r\n "), Ok(None)));
+        assert_eq!(
+            clean_description(" Для мобильного интернета ")
+                .unwrap()
+                .as_deref(),
+            Some("Для мобильного интернета")
+        );
+        assert_eq!(
+            clean_description("<B>Тариф:</B> 30 дней\r\n\r\n<s>от 419 ₽</s> & скидка\n")
+                .unwrap()
+                .as_deref(),
+            Some("<b>Тариф:</b> 30 дней\n\n<s>от 419 ₽</s> &amp; скидка")
+        );
+        assert_eq!(reason("<b>не закрыт"), "тег <b> не закрыт");
+        assert_eq!(reason("<i>a</b>"), "лишний закрывающий тег </b>");
+        assert!(reason("<a href=\"{link}\">x</a>").contains("адрес"));
+        assert_eq!(
+            reason(&"я".repeat(DESCRIPTION_MAX + 1)),
+            "описание длиннее 2000 знаков, сейчас 2001"
+        );
+        assert!(clean_description(&format!("<b>{}</b>", "я".repeat(DESCRIPTION_MAX))).is_ok());
+        assert!(reason(&"<b>я</b>".repeat(1_200)).contains("8000"));
+    }
 
     #[test]
     fn месяцы_по_сроку_в_днях() {

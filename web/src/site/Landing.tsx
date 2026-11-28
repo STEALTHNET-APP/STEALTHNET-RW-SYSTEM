@@ -7,6 +7,7 @@ import { count, money, NBSP } from '../lib/format';
 import { countriesIn, countryName, joinAnd } from '../lib/geo';
 import { applyLang, guessLang, otherLang, rememberLang, siteLangs, t, useApplied, useLang, type Lang } from '../lib/i18n';
 import { Icon } from '../lib/icons';
+import { TariffNote, TgText } from '../lib/TgText';
 import { usePhone } from '../lib/media';
 import { styleFile, useOwnStyles, usePreviewStyles } from '../lib/ownStyles';
 import { maintenanceOf, maintenanceText, untilText } from '../lib/maintenance';
@@ -465,7 +466,7 @@ function LandingPage({ mode }: { mode: Mode }) {
               <div>
                 <h2 id="plans-h">{text(block.title, t(DEFAULT_TEXT.plansTitle)) || t(DEFAULT_TEXT.plansTitle)}</h2>
                 {plansText ? <p className="ld-ink2 ld-plans-text">{plansText}</p> : null}
-                {!phone && description ? <p className="ld-ink2">{description}</p> : null}
+                {!phone && description ? <TariffNote html={description} className="ld-ink2 ld-desc" toggleClass="ld-more" /> : null}
               </div>
               {!flat && (categories.length > 1 || siblings.length > 1) ? (
                 <div className="ld-plans-pick">
@@ -490,8 +491,14 @@ function LandingPage({ mode }: { mode: Mode }) {
                 </div>
               ) : null}
             </div>
+            {phone && description && description.trim().includes('\n') ? <TariffNote html={description} className="ld-ink2 ld-desc" toggleClass="ld-more" /> : null}
             <p className={phone ? 'ld-ink2' : 'ld-strong'}>
-              {phone && description ? `${description}. ` : ''}
+              {phone && description && !description.trim().includes('\n') ? (
+                <>
+                  <TgText html={description.trim()} className="tgh-inline" />
+                  {'. '}
+                </>
+              ) : null}
               {everywhere(head)}
             </p>
             {salePromo ? <p className="ld-sale">{promoTitle(salePromo)}</p> : null}

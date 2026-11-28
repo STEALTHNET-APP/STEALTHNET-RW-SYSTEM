@@ -232,6 +232,83 @@ fn unwrap_bare_links(html: String) -> String {
     out
 }
 
+const PASTE_TAGS: &[&str] = &[
+    "a",
+    "b",
+    "big",
+    "blockquote",
+    "br",
+    "code",
+    "dd",
+    "del",
+    "div",
+    "dl",
+    "dt",
+    "em",
+    "font",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "i",
+    "ins",
+    "kbd",
+    "li",
+    "mark",
+    "ol",
+    "p",
+    "pre",
+    "s",
+    "samp",
+    "small",
+    "span",
+    "strike",
+    "strong",
+    "sub",
+    "sup",
+    "table",
+    "tbody",
+    "td",
+    "tg-emoji",
+    "tg-spoiler",
+    "th",
+    "thead",
+    "tr",
+    "tt",
+    "u",
+    "ul",
+];
+
+const PASTE_STYLED: &[&str] = &[
+    "b", "big", "del", "div", "em", "font", "i", "li", "mark", "p", "s", "small", "span", "strike",
+    "strong", "td", "u",
+];
+
+pub fn clean_paste(raw: &str) -> String {
+    let mut attributes: HashMap<&str, HashSet<&str>> = PASTE_STYLED
+        .iter()
+        .map(|tag| (*tag, HashSet::from(["style"])))
+        .collect();
+    attributes.insert("a", HashSet::from(["href"]));
+    attributes.insert("span", HashSet::from(["style", "class"]));
+    attributes.insert("tg-emoji", HashSet::from(["emoji-id"]));
+    attributes.insert("code", HashSet::from(["class"]));
+    attributes.insert("blockquote", HashSet::from(["expandable"]));
+    let mut builder = Builder::empty();
+    builder
+        .tags(PASTE_TAGS.iter().copied().collect())
+        .clean_content_tags(DROPPED.iter().copied().collect())
+        .tag_attributes(attributes)
+        .generic_attributes(HashSet::new())
+        .url_schemes(HashSet::from(["http", "https", "tg"]))
+        .url_relative(UrlRelative::Deny)
+        .link_rel(None)
+        .strip_comments(true);
+    builder.clean(raw).to_string()
+}
+
 pub fn clean_html(raw: &str) -> String {
     let cleaned = unwrap_bare_links(sanitizer().clean(raw).to_string());
     let trimmed = cleaned.trim();
@@ -635,5 +712,35 @@ mod tests {
         );
         let cut = description(&sentences).unwrap();
         assert!(cut.ends_with("Конец первой части."), "{cut}");
+    }
+
+    #[test]
+    fn вставка_в_описание_тарифа_очищается_без_обработчиков() {
+        let clean = clean_paste(
+            "<meta charset=\"utf-8\"><b style=\"font-weight:normal\" id=\"docs-guid\"><p dir=\"ltr\"><span style=\"font-weight:700\" onclick=\"x()\">Жирный</span></p></b><img src=x onerror=\"alert(1)\"><script>alert(2)</script><a href=\"javascript:alert(3)\">ссылка</a><a href=\"https://t.me/x\" target=\"_blank\">t.me</a><span class=\"tg-spoiler\">тайна</span><tg-emoji emoji-id=\"5368324170671202286\">🔥</tg-emoji>",
+        );
+        for bad in [
+            "onclick",
+            "onerror",
+            "<img",
+            "<script",
+            "alert",
+            "javascript:",
+            "target",
+            " id=",
+            "dir=",
+        ] {
+            assert!(!clean.contains(bad), "{bad} остался в {clean}");
+        }
+        for part in [
+            "<b style=\"font-weight:normal\">",
+            "<span style=\"font-weight:700\">Жирный</span>",
+            "<a>ссылка</a>",
+            "<a href=\"https://t.me/x\">t.me</a>",
+            "<span class=\"tg-spoiler\">тайна</span>",
+            "<tg-emoji emoji-id=\"5368324170671202286\">🔥</tg-emoji>",
+        ] {
+            assert!(clean.contains(part), "{part} нет в {clean}");
+        }
     }
 }

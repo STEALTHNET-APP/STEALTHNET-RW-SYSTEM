@@ -89,7 +89,7 @@ body {
 | Вход | `.cb-solo-box` (окно), `.cb-login-form`, `.cb-login-help` |
 | Подписка | `.cb-sub`, `.cb-days`, `.cb-bar`, заполненная часть — `.cb-bar span`, `.cb-balance-card`, `.cb-sum` (баланс), `.cb-auto-row` (автопродление), `.cb-friends`, `.cb-help` |
 | Подключение | `.cb-plats button` (устройства), `.cb-step`, `.cb-num` (номер шага), `.cb-step-text` (текст шага) |
-| Тарифы и оплата | `.cb-cats button` (категории и тарифы, в общем списке сроков их нет), `.cb-term-card` (срок), `.cb-term-price`, `.cb-term-save`, `.cb-method` (способ оплаты), выбранный — `[aria-checked='true']`, `.cb-total`, `.cb-due-sum` (к оплате) |
+| Тарифы и оплата | `.cb-cats button` (категории и тарифы, в общем списке сроков их нет), `.cb-desc` (описание тарифа), `.cb-more` («Показать полностью»), `.cb-term-card` (срок), `.cb-term-price`, `.cb-term-save`, `.cb-method` (способ оплаты), выбранный — `[aria-checked='true']`, `.cb-total`, `.cb-due-sum` (к оплате) |
 | Устройства | `.cb-device`, `.cb-device-text strong` |
 | Пополнение и история | `.cb-amount` (сумма), `.cb-payrow` (платёж), `.cb-payrow-side strong` (сумма платежа) |
 | Друзья | `.cb-levels`, `.cb-levels-list` (проценты уровней), `.cb-link`, `.cb-facts`, `.cb-withdraw` |

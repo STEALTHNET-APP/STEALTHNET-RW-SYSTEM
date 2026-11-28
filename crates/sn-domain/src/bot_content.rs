@@ -3982,9 +3982,86 @@ fn escape_attr(value: &str) -> String {
     out
 }
 
-pub fn normalize_markup(raw: &str) -> Result<String, MarkupProblem> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Markup {
+    Template,
+    Static,
+    Lenient,
+}
+
+fn tag_name(body: &str) -> String {
+    body.chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+        .collect::<String>()
+        .to_ascii_lowercase()
+}
+
+fn link_allowed(href: &str, mode: Markup) -> bool {
+    href.starts_with("https://")
+        || href.starts_with("http://")
+        || href.starts_with("tg://")
+        || (mode == Markup::Template && href.starts_with('{'))
+}
+
+fn code_class(class: &str, mode: Markup) -> bool {
+    class.starts_with("language-")
+        && class.len() < 40
+        && (mode == Markup::Template
+            || class
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"-_+#.".contains(&b)))
+}
+
+fn opening_tag(
+    name: &str,
+    attributes: &str,
+    mode: Markup,
+) -> Result<Option<String>, MarkupProblem> {
+    let skip = |problem: MarkupProblem| {
+        if mode == Markup::Lenient {
+            Ok(None)
+        } else {
+            Err(problem)
+        }
+    };
+    let tag = match name {
+        "a" => match attribute(attributes, "href").filter(|h| link_allowed(h, mode)) {
+            Some(href) => format!("<a href=\"{}\">", escape_attr(href)),
+            None => return skip(MarkupProblem::BadLink),
+        },
+        "tg-emoji" => match attribute(attributes, "emoji-id").filter(|id| {
+            !id.is_empty() && id.len() <= EMOJI_ID_MAX && id.bytes().all(|b| b.is_ascii_digit())
+        }) {
+            Some(id) => format!("<tg-emoji emoji-id=\"{id}\">"),
+            None => return skip(MarkupProblem::BadEmoji),
+        },
+        "span" => {
+            if attribute(attributes, "class") != Some("tg-spoiler") {
+                return skip(MarkupProblem::BadSpan);
+            }
+            "<span class=\"tg-spoiler\">".to_string()
+        }
+        "blockquote" if attributes.contains("expandable") => "<blockquote expandable>".to_string(),
+        "code" => match attribute(attributes, "class").filter(|c| code_class(c, mode)) {
+            Some(class) => format!("<code class=\"{class}\">"),
+            None => "<code>".to_string(),
+        },
+        other => format!("<{other}>"),
+    };
+    Ok(Some(tag))
+}
+
+fn nested_away(open: &[(String, bool)], name: &str) -> bool {
+    let inside = |tag: &str| open.iter().any(|(n, real)| *real && n == tag);
+    inside("code")
+        || (inside("pre") && name != "code")
+        || (name == "a" && inside("a"))
+        || (name == "blockquote" && inside("blockquote"))
+}
+
+fn markup(raw: &str, mode: Markup) -> Result<String, MarkupProblem> {
     let mut out = String::with_capacity(raw.len() + 16);
-    let mut open: Vec<String> = Vec::new();
+    let mut open: Vec<(String, bool)> = Vec::new();
     let mut rest = raw;
     while let Some(index) = rest.find(['<', '>', '&']) {
         out.push_str(&rest[..index]);
@@ -4013,75 +4090,62 @@ pub fn normalize_markup(raw: &str) -> Result<String, MarkupProblem> {
         let inner = &tail[1..close];
         let closing = inner.starts_with('/');
         let body = inner.trim_start_matches('/');
-        let name: String = body
-            .chars()
-            .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
-            .collect::<String>()
-            .to_ascii_lowercase();
+        let name = tag_name(body);
         let known = ALLOWED_TAGS.contains(&name.as_str()) || name == "tg-emoji";
         if name.is_empty() || !known || inner.contains('<') {
             out.push_str("&lt;");
             rest = &tail[1..];
             continue;
         }
-        if closing {
-            match open.pop() {
-                Some(last) if last == name => {
-                    out.push_str(&format!("</{name}>"));
-                }
-                _ => return Err(MarkupProblem::Unexpected(name)),
-            }
-        } else {
-            let attributes = &body[name.len()..];
-            let tag = match name.as_str() {
-                "a" => {
-                    let href = attribute(attributes, "href")
-                        .filter(|h| {
-                            h.starts_with("https://")
-                                || h.starts_with("http://")
-                                || h.starts_with("tg://")
-                                || h.starts_with('{')
-                        })
-                        .ok_or(MarkupProblem::BadLink)?;
-                    format!("<a href=\"{}\">", escape_attr(href))
-                }
-                "tg-emoji" => {
-                    let id = attribute(attributes, "emoji-id")
-                        .filter(|id| {
-                            !id.is_empty()
-                                && id.len() <= EMOJI_ID_MAX
-                                && id.bytes().all(|b| b.is_ascii_digit())
-                        })
-                        .ok_or(MarkupProblem::BadEmoji)?;
-                    format!("<tg-emoji emoji-id=\"{id}\">")
-                }
-                "span" => {
-                    if attribute(attributes, "class") != Some("tg-spoiler") {
-                        return Err(MarkupProblem::BadSpan);
-                    }
-                    "<span class=\"tg-spoiler\">".to_string()
-                }
-                "blockquote" if attributes.contains("expandable") => {
-                    "<blockquote expandable>".to_string()
-                }
-                "code" => match attribute(attributes, "class")
-                    .filter(|c| c.starts_with("language-") && c.len() < 40)
-                {
-                    Some(class) => format!("<code class=\"{class}\">"),
-                    None => "<code>".to_string(),
-                },
-                other => format!("<{other}>"),
-            };
-            out.push_str(&tag);
-            open.push(name);
-        }
         rest = &tail[close + 1..];
+        if closing {
+            if mode != Markup::Lenient {
+                match open.pop() {
+                    Some((last, _)) if last == name => out.push_str(&format!("</{name}>")),
+                    _ => return Err(MarkupProblem::Unexpected(name)),
+                }
+                continue;
+            }
+            let Some(at) = open.iter().rposition(|(n, _)| *n == name) else {
+                continue;
+            };
+            for (shut, real) in open.drain(at..).rev() {
+                if real {
+                    out.push_str(&format!("</{shut}>"));
+                }
+            }
+            continue;
+        }
+        let tag = opening_tag(&name, &body[name.len()..], mode)?
+            .filter(|_| mode != Markup::Lenient || !nested_away(&open, &name));
+        if let Some(tag) = &tag {
+            out.push_str(tag);
+        }
+        open.push((name, tag.is_some()));
     }
     out.push_str(rest);
-    if let Some(last) = open.pop() {
+    if mode == Markup::Lenient {
+        for (shut, real) in open.drain(..).rev() {
+            if real {
+                out.push_str(&format!("</{shut}>"));
+            }
+        }
+    } else if let Some((last, _)) = open.pop() {
         return Err(MarkupProblem::Unclosed(last));
     }
     Ok(out)
+}
+
+pub fn normalize_markup(raw: &str) -> Result<String, MarkupProblem> {
+    markup(raw, Markup::Template)
+}
+
+pub fn normalize_static_markup(raw: &str) -> Result<String, MarkupProblem> {
+    markup(raw, Markup::Static)
+}
+
+pub fn sanitize_markup(raw: &str) -> String {
+    markup(raw, Markup::Lenient).unwrap_or_else(|_| escape(raw))
 }
 
 pub fn strip_custom_emoji(html: &str) -> String {
@@ -4129,6 +4193,127 @@ pub fn visible_len(html: &str) -> usize {
         }
     }
     count
+}
+
+fn entity_end(raw: &str) -> Option<usize> {
+    is_entity(raw).then(|| raw.find(';').unwrap_or(0) + 1)
+}
+
+pub fn clip_markup(html: &str, max: usize) -> std::borrow::Cow<'_, str> {
+    if visible_len(html) <= max {
+        return std::borrow::Cow::Borrowed(html);
+    }
+    let budget = max.saturating_sub(1);
+    let mut out = String::with_capacity(html.len().min(max.saturating_mul(4)));
+    let mut open: Vec<String> = Vec::new();
+    let mut used = 0usize;
+    let mut rest = html;
+    while let Some(ch) = rest.chars().next() {
+        if ch == '<' {
+            let Some(end) = rest.find('>') else {
+                break;
+            };
+            let tag = &rest[..=end];
+            let inner = &tag[1..end];
+            if let Some(name) = inner.strip_prefix('/') {
+                let name = tag_name(name);
+                if let Some(at) = open.iter().rposition(|n| *n == name) {
+                    open.truncate(at);
+                }
+                out.push_str(tag);
+                rest = &rest[end + 1..];
+                continue;
+            }
+            let name = tag_name(inner);
+            if name == "tg-emoji"
+                && let Some(at) = rest.find("</tg-emoji>")
+            {
+                let whole = &rest[..at + "</tg-emoji>".len()];
+                let size = visible_len(whole);
+                if used + size > budget {
+                    break;
+                }
+                used += size;
+                out.push_str(whole);
+                rest = &rest[whole.len()..];
+                continue;
+            }
+            open.push(name);
+            out.push_str(tag);
+            rest = &rest[end + 1..];
+            continue;
+        }
+        let (token, size) = match ch {
+            '&' => match entity_end(rest) {
+                Some(end) => (&rest[..end], 1),
+                None => (&rest[..1], 1),
+            },
+            other => (&rest[..other.len_utf8()], other.len_utf16()),
+        };
+        if used + size > budget {
+            break;
+        }
+        used += size;
+        out.push_str(token);
+        rest = &rest[token.len()..];
+    }
+    out.push('…');
+    for name in open.into_iter().rev() {
+        out.push_str(&format!("</{name}>"));
+    }
+    std::borrow::Cow::Owned(out)
+}
+
+fn decoded(entity: &str) -> Option<char> {
+    let name = entity.strip_prefix('&')?.strip_suffix(';')?;
+    match name {
+        "amp" => Some('&'),
+        "lt" => Some('<'),
+        "gt" => Some('>'),
+        "quot" => Some('"'),
+        _ => {
+            let code = name.strip_prefix('#')?;
+            let value = match code.strip_prefix(['x', 'X']) {
+                Some(hex) => u32::from_str_radix(hex, 16).ok()?,
+                None => code.parse::<u32>().ok()?,
+            };
+            char::from_u32(value)
+        }
+    }
+}
+
+pub fn markup_plain(html: &str) -> String {
+    let clean = sanitize_markup(html);
+    let mut out = String::with_capacity(clean.len());
+    let mut rest = clean.as_str();
+    while let Some(index) = rest.find(['<', '&']) {
+        out.push_str(&rest[..index]);
+        let tail = &rest[index..];
+        if tail.starts_with('<') {
+            match tail.find('>') {
+                Some(end) => rest = &tail[end + 1..],
+                None => {
+                    out.push_str(tail);
+                    rest = "";
+                }
+            }
+            continue;
+        }
+        match entity_end(tail) {
+            Some(end) => {
+                if let Some(ch) = decoded(&tail[..end]) {
+                    out.push(ch);
+                }
+                rest = &tail[end..];
+            }
+            None => {
+                out.push('&');
+                rest = &tail[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4675,6 +4860,141 @@ mod tests {
         assert_eq!(
             config.resolve(Section::Devices, all),
             Some(ImageSlot::Common)
+        );
+    }
+
+    #[test]
+    fn очистка_разметки_не_ломает_сообщение() {
+        for (raw, clean) in [
+            ("Для мобильного интернета", "Для мобильного интернета"),
+            ("Скорость < 100 & > 5", "Скорость &lt; 100 &amp; &gt; 5"),
+            ("<3 и всё", "&lt;3 и всё"),
+            ("<b>Тариф:</b> 30 дней", "<b>Тариф:</b> 30 дней"),
+            (
+                "<B>жирно</B> &amp; <em>курсив</em>",
+                "<b>жирно</b> &amp; <em>курсив</em>",
+            ),
+            ("<b>не закрыт", "<b>не закрыт</b>"),
+            ("лишний</i> текст", "лишний текст"),
+            ("<b><i>x</b>y</i>", "<b><i>x</i></b>y"),
+            ("<div>чужой</div>", "&lt;div&gt;чужой&lt;/div&gt;"),
+            (
+                "<script>alert(1)</script>",
+                "&lt;script&gt;alert(1)&lt;/script&gt;",
+            ),
+            ("<a href=\"javascript:alert(1)\">x</a>", "x"),
+            ("<a href=\"{link}\">x</a>", "x"),
+            ("<a>без адреса</a>", "без адреса"),
+            ("<span class=\"red\">x</span>", "x"),
+            ("<tg-emoji emoji-id=\"abc\">🔥</tg-emoji>", "🔥"),
+            ("<code><b>x</b></code>", "<code>x</code>"),
+            (
+                "<pre><code class=\"language-rust\">x</code></pre>",
+                "<pre><code class=\"language-rust\">x</code></pre>",
+            ),
+            ("<pre><i>x</i></pre>", "<pre>x</pre>"),
+            (
+                "<a href=\"https://t.me/x\"><a href=\"https://y.z\">in</a></a>",
+                "<a href=\"https://t.me/x\">in</a>",
+            ),
+            (
+                "<blockquote>a<blockquote>b</blockquote></blockquote>",
+                "<blockquote>ab</blockquote>",
+            ),
+            ("A &amp; B &lt;3 &#128512;", "A &amp; B &lt;3 &#128512;"),
+            (
+                "<s>от 419 ₽</s>\n\n<i>(можно докупить)</i>",
+                "<s>от 419 ₽</s>\n\n<i>(можно докупить)</i>",
+            ),
+        ] {
+            let got = sanitize_markup(raw);
+            assert_eq!(got, clean, "{raw}");
+            assert!(normalize_static_markup(&got).is_ok(), "{raw} → {got}");
+        }
+    }
+
+    #[test]
+    fn строгая_проверка_без_подстановок() {
+        assert_eq!(
+            normalize_static_markup("<B>жирно</B> &amp; <i>курсив</i> & <3").unwrap(),
+            "<b>жирно</b> &amp; <i>курсив</i> &amp; &lt;3"
+        );
+        assert_eq!(
+            normalize_static_markup("<b>не закрыт"),
+            Err(MarkupProblem::Unclosed("b".into()))
+        );
+        assert_eq!(
+            normalize_static_markup("<i>a</b>"),
+            Err(MarkupProblem::Unexpected("b".into()))
+        );
+        assert_eq!(
+            normalize_static_markup("<a href=\"javascript:alert(1)\">x</a>"),
+            Err(MarkupProblem::BadLink)
+        );
+        assert_eq!(
+            normalize_static_markup("<a href=\"{link}\">x</a>"),
+            Err(MarkupProblem::BadLink)
+        );
+        assert_eq!(
+            normalize_markup("<a href=\"{link}\">x</a>").unwrap(),
+            "<a href=\"{link}\">x</a>"
+        );
+        assert_eq!(
+            normalize_static_markup("<span class=\"red\">x</span>"),
+            Err(MarkupProblem::BadSpan)
+        );
+    }
+
+    #[test]
+    fn длинный_текст_обрезается_без_поломки_разметки() {
+        let html = format!("<b>{}</b> <i>{}</i>", "а".repeat(30), "б".repeat(30));
+        assert!(matches!(
+            clip_markup(&html, 61),
+            std::borrow::Cow::Borrowed(_)
+        ));
+        let cut = clip_markup(&html, 40);
+        assert_eq!(
+            cut,
+            format!("<b>{}</b> <i>{}…</i>", "а".repeat(30), "б".repeat(8))
+        );
+        assert!(visible_len(&cut) <= 40);
+        assert!(normalize_markup(&cut).is_ok());
+        let amp = format!("{}&amp;{}", "x".repeat(9), "y".repeat(10));
+        assert_eq!(clip_markup(&amp, 11), format!("{}&amp;…", "x".repeat(9)));
+        assert_eq!(clip_markup(&amp, 10), format!("{}…", "x".repeat(9)));
+        assert_eq!(clip_markup("🔥🔥🔥", 4), "🔥…");
+        assert_eq!(
+            clip_markup("ab<tg-emoji emoji-id=\"1\">🔥</tg-emoji>cd", 4),
+            "ab…"
+        );
+        let nested = format!(
+            "<a href=\"https://x.y/?a=1&amp;b=2\"><b>{}</b></a>",
+            "z".repeat(20)
+        );
+        assert_eq!(
+            clip_markup(&nested, 10),
+            format!(
+                "<a href=\"https://x.y/?a=1&amp;b=2\"><b>{}…</b></a>",
+                "z".repeat(9)
+            )
+        );
+        let long = format!("<b>{}</b>", "ж".repeat(5_000));
+        let cut = clip_markup(&long, TEXT_MAX);
+        assert_eq!(visible_len(&cut), TEXT_MAX);
+        assert!(cut.ends_with("…</b>"));
+    }
+
+    #[test]
+    fn простой_текст_из_разметки() {
+        assert_eq!(
+            markup_plain("<b>Тариф:</b> 30 дней\n<s>от 419 ₽</s> &amp; &lt;3 &#128512; &#x41;"),
+            "Тариф: 30 дней\nот 419 ₽ & <3 😀 A"
+        );
+        assert_eq!(markup_plain("Скорость < 100 & > 5"), "Скорость < 100 & > 5");
+        assert_eq!(markup_plain("<b>не закрыт"), "не закрыт");
+        assert_eq!(
+            markup_plain("<a href=\"https://t.me/x\">канал</a> <div>x</div>"),
+            "канал <div>x</div>"
         );
     }
 

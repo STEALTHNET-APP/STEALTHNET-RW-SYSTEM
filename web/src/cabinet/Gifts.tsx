@@ -10,6 +10,7 @@ import type { ItemQuote, PayResult } from './extras';
 import { codeDaysText, failText, firstTarget, giftItem, giftState, GIFTS, limitNote, planText, shareLink, targetBody, term, type GiftOffers, type GiftTarget, type MyGift, type RedeemPreview, type Redeemed } from './gifting';
 import { stars, type CheckoutMethod, type QuoteLineView } from './model';
 import { ReceiptEmail, useReceiptEmail } from '../lib/receiptEmail';
+import { TariffNote } from '../lib/TgText';
 
 const PAYMENT_KEY = 'sn.cabinet.gift';
 
@@ -548,7 +549,7 @@ export function GiftsPage() {
                       </div>
                     ) : null}
                   </div>
-                  {offer?.tariff.description ? <p className="cb-muted cb-small">{offer.tariff.description}</p> : null}
+                  {offer?.tariff.description ? <TariffNote html={offer.tariff.description} className="cb-desc" toggleClass="cb-more" /> : null}
                   {giftPromo ? <p className="cb-sale">{promoTitle(giftPromo)}</p> : null}
                   <div role="radiogroup" aria-label={t('Срок')} className={starsMode ? 'cb-terms wide' : 'cb-terms'}>
                     {offer?.periods.map((p) => (

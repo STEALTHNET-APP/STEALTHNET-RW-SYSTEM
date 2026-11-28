@@ -187,7 +187,9 @@ async fn tariff(store: &Store) {
         .create(&NewTariff {
             category_id: category.id,
             name: "Стандарт".into(),
-            description: Some("Для телефона и ноутбука".into()),
+            description: Some(
+                "Для <b>телефона</b> и ноутбука\n\n<s>от 419 ₽</s> &amp; без рекламы".into(),
+            ),
             on_sale: true,
             sort: 0,
             devices: DevicePolicy {
@@ -385,6 +387,11 @@ async fn ии_отвечает_по_данным_сервиса_и_ответ_п
     assert!(system.contains("199"));
     assert!(system.contains("499"));
     assert!(system.contains("Можно докупить до 2 устройств сверх тарифа"));
+    assert!(
+        system.contains("Описание: Для телефона и ноутбука от 419 ₽ & без рекламы"),
+        "{system}"
+    );
+    assert!(!system.contains("<b>"));
     assert!(!system.contains("Только бот"));
     assert!(system.contains("Пробный период: 3"));
     assert!(system.contains("активна до 25.12.2099"));
