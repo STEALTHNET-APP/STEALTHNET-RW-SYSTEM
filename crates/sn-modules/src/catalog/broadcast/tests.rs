@@ -2,12 +2,14 @@ use super::*;
 use crate::catalog::testing;
 use crate::context::{BalanceChange, CoreApi, Notification};
 use crate::registry::ModuleRegistry;
+use crate::sender::Media;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use sn_domain::access::{AdminPrincipal, AdminRole};
 use sn_domain::client::{IdentityKind, NewIdentity};
 use sn_domain::jobs::JobPayload;
 use sn_domain::money::{Currency, Money};
+use sn_domain::video::sample;
 use sn_store::Store;
 use sn_store::testing::{TestDb, test_store};
 use std::collections::{HashMap, VecDeque};
@@ -22,7 +24,7 @@ use tower::ServiceExt;
 pub(super) struct Sent {
     pub(super) chat: i64,
     pub(super) html: String,
-    photo: Option<String>,
+    media: Option<String>,
     pub(super) buttons: Vec<OutButton>,
     at: Instant,
 }
@@ -82,9 +84,20 @@ impl BotSender for FakeSender {
         self.log.lock().unwrap().push(Sent {
             chat: chat_id,
             html: message.html.to_string(),
-            photo: message.photo.map(|p| match p {
-                Photo::Cached(file) => format!("cached:{file}"),
-                Photo::Upload { content_type, .. } => format!("upload:{content_type}"),
+            media: message.media.map(|media| {
+                let file = match media.file() {
+                    MediaFile::Cached(file) => format!("cached:{file}"),
+                    MediaFile::Upload { content_type, .. } => format!("upload:{content_type}"),
+                };
+                match media {
+                    Media::Photo(_) => file,
+                    Media::Video(_, info) => {
+                        format!(
+                            "video {}x{} {}s {file}",
+                            info.width, info.height, info.duration
+                        )
+                    }
+                }
             }),
             buttons: message.buttons.to_vec(),
             at,
@@ -96,7 +109,10 @@ impl BotSender for FakeSender {
             .get_mut(&chat_id)
             .and_then(VecDeque::pop_front);
         scripted.unwrap_or_else(|| Delivery::Sent {
-            file_id: matches!(message.photo, Some(Photo::Upload { .. })).then(|| "F-1".into()),
+            file_id: message
+                .media
+                .is_some_and(|media| media.uploads())
+                .then(|| "F-1".into()),
         })
     }
 }
@@ -976,7 +992,7 @@ async fn рассылка_уходит_всем_и_отмечает_остано
     assert_eq!(sender.chats(), (2001..=2006).collect::<Vec<_>>());
     let first = &sender.sent()[0];
     assert_eq!(first.html, "<b>Скидка</b> 20%");
-    assert_eq!(first.photo, None);
+    assert_eq!(first.media, None);
     assert_eq!(first.buttons[0].callback.as_deref(), Some("n:buy"));
     assert_eq!(first.buttons[1].url.as_deref(), Some("https://t.me/news"));
     let mut conn = store.conn().await.unwrap();
@@ -1382,14 +1398,14 @@ async fn картинка_грузится_один_раз_а_дальше_ид�
     let photos: Vec<String> = sender
         .sent()
         .into_iter()
-        .map(|s| s.photo.unwrap_or_default())
+        .map(|s| s.media.unwrap_or_default())
         .collect();
     assert_eq!(photos[0], "upload:image/png");
     assert_eq!(photos.iter().filter(|p| p.starts_with("upload")).count(), 2);
     assert_eq!(photos.len(), 6);
     assert!(photos[1].starts_with("cached:F-1"));
     let mut conn = store.conn().await.unwrap();
-    let stored = store::image(&mut conn, image.id).await.unwrap();
+    let stored = store::image(&mut conn, image.id, false).await.unwrap();
     assert_eq!(stored.file_for(Some(77)), Some("F-1"));
     assert_eq!(stored.file_for(Some(78)), None);
     drop(conn);
@@ -1414,11 +1430,11 @@ async fn проверка_уходит_выбранному_клиенту() {
     assert_eq!(report.result, TestResult::Sent);
     let sent = sender.sent();
     assert_eq!(sent[0].chat, 9001);
-    assert_eq!(sent[0].photo.as_deref(), Some("upload:image/png"));
+    assert_eq!(sent[0].media.as_deref(), Some("upload:image/png"));
     send_test(&ctx, &message, TestTarget::Client(client), None)
         .await
         .unwrap();
-    assert_eq!(sender.sent()[1].photo.as_deref(), Some("cached:F-1"));
+    assert_eq!(sender.sent()[1].media.as_deref(), Some("cached:F-1"));
     let mail = testing::client(store).await;
     assert_eq!(
         code(
@@ -2897,4 +2913,340 @@ fn цвет_и_значок_кнопки_проверяются_и_старые_
         )
         .is_err()
     );
+}
+
+#[test]
+fn видео_и_картинка_проверяются_по_пределам_telegram() {
+    let info = check_video(&sample::mp4(1280, 720, 34, true)).unwrap();
+    assert_eq!(
+        (info.width, info.height, info.duration, info.streaming),
+        (1280, 720, 34, true)
+    );
+    let mov = check_video(&sample::quicktime(1280, 720, 3)).unwrap_err();
+    assert!(mov.to_string().contains("MP4"), "{mov}");
+    let sound = check_video(&sample::sound_only(10)).unwrap_err();
+    assert!(sound.to_string().contains("только звук"), "{sound}");
+    assert!(check_video(&[]).is_err());
+    assert!(check_video(&png(800, 600)).is_err());
+    let mut heavy = sample::mp4(640, 360, 5, true);
+    heavy.resize(VIDEO_MAX_BYTES + 1, 0);
+    let err = check_video(&heavy).unwrap_err();
+    assert!(err.to_string().contains("50 МБ"), "{err}");
+    let mut photo = png(800, 600);
+    photo.resize(IMAGE_MAX_BYTES, 0);
+    assert!(check_image(&photo).is_ok());
+    photo.push(0);
+    let err = check_image(&photo).unwrap_err();
+    assert!(err.to_string().contains("10 МБ"), "{err}");
+}
+
+#[test]
+fn подпись_к_видео_подчиняется_тем_же_правилам() {
+    let long = "а".repeat(CAPTION_MAX + 1);
+    let err = clean_caption(&long, Some(MediaKind::Video)).unwrap_err();
+    assert!(
+        err.to_string()
+            .starts_with("С видео Telegram показывает до 1024 знаков"),
+        "{err}"
+    );
+    assert!(err.to_string().ends_with("уберите видео"), "{err}");
+    assert!(clean_caption(&"а".repeat(CAPTION_MAX), Some(MediaKind::Video)).is_ok());
+    assert!(clean_caption(&long, None).is_ok());
+    assert!(
+        clean_text(&long, true)
+            .unwrap_err()
+            .to_string()
+            .starts_with("С картинкой")
+    );
+}
+
+#[test]
+fn диапазон_байтов_разбирается_и_не_больше_одной_части() {
+    assert_eq!(Wanted::parse("bytes=0-"), Some(Wanted::From(0, None)));
+    assert_eq!(
+        Wanted::parse("bytes=100-199"),
+        Some(Wanted::From(100, Some(199)))
+    );
+    assert_eq!(Wanted::parse(" bytes=-500 "), Some(Wanted::Last(500)));
+    assert_eq!(Wanted::parse("bytes=5-1"), None);
+    assert_eq!(Wanted::parse("bytes=0-1,5-9"), None);
+    assert_eq!(Wanted::parse("items=0-1"), None);
+    assert_eq!(Wanted::parse("bytes=-0"), None);
+    assert_eq!(Wanted::parse("bytes=a-b"), None);
+    assert_eq!(Wanted::From(0, Some(1)).bounds(1000), Some((0, 1)));
+    assert_eq!(Wanted::From(990, None).bounds(1000), Some((990, 999)));
+    assert_eq!(Wanted::From(1000, None).bounds(1000), None);
+    assert_eq!(Wanted::Last(10).bounds(1000), Some((990, 999)));
+    assert_eq!(Wanted::Last(5000).bounds(1000), Some((0, 999)));
+    assert_eq!(
+        Wanted::From(0, None).bounds(50_000_000),
+        Some((0, MEDIA_PART_BYTES - 1))
+    );
+}
+
+#[tokio::test]
+async fn видео_хранится_отдаётся_частями_и_не_открывается_по_ссылке_для_писем() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let ctx = context(&db.store, None);
+    let bytes = sample::mp4(1280, 720, 34, true);
+    let total = u64::try_from(bytes.len()).unwrap();
+    let video = upload_media(&ctx, &bytes, None).await.unwrap();
+    assert_eq!(video.kind, MediaKind::Video);
+    assert_eq!(
+        (video.width, video.height, video.duration),
+        (1280, 720, Some(34))
+    );
+    assert_eq!(video.content_type, "video/mp4");
+    assert_eq!(video.size, i64::try_from(bytes.len()).unwrap());
+    let photo = upload_media(&ctx, &png(640, 480), None).await.unwrap();
+    assert_eq!((photo.kind, photo.duration), (MediaKind::Photo, None));
+    assert_eq!(
+        media_part(&ctx, video.id, Wanted::parse("bytes=10-19"))
+            .await
+            .unwrap(),
+        MediaPart::Part {
+            content_type: "video/mp4".into(),
+            start: 10,
+            end: 19,
+            total,
+            bytes: bytes[10..20].to_vec(),
+        }
+    );
+    assert_eq!(
+        media_part(&ctx, video.id, Wanted::parse("bytes=999999-"))
+            .await
+            .unwrap(),
+        MediaPart::Outside { total }
+    );
+    assert_eq!(
+        media_part(&ctx, video.id, None).await.unwrap(),
+        MediaPart::Whole {
+            content_type: "video/mp4".into(),
+            kind: MediaKind::Video,
+            bytes: bytes.clone(),
+        }
+    );
+    let mut conn = db.store.conn().await.unwrap();
+    let video_key = store::image_key(&mut conn, video.id).await.unwrap();
+    let photo_key = store::image_key(&mut conn, photo.id).await.unwrap();
+    drop(conn);
+    assert!(public_image(&ctx, video_key).await.unwrap().is_none());
+    assert!(public_image(&ctx, photo_key).await.unwrap().is_some());
+    let mut letter = draft("Только письмо", Audience::All);
+    letter.channel = Channel::Email;
+    letter.subject = Some("Новости".into());
+    letter.image_id = Some(video.id);
+    let refused = create(&ctx, &letter, None).await.unwrap_err();
+    assert!(
+        refused
+            .to_string()
+            .contains("Видео уходит только в Telegram"),
+        "{refused}"
+    );
+    letter.channel = Channel::Both;
+    let saved = create(&ctx, &letter, None).await.unwrap();
+    assert_eq!(
+        saved.image.as_ref().map(|image| image.kind),
+        Some(MediaKind::Video)
+    );
+    let page = list(&ctx, PageRequest::new(None, None)).await.unwrap();
+    let item = page.items.iter().find(|item| item.id == saved.id).unwrap();
+    assert_eq!(item.media, Some(MediaKind::Video));
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn видео_грузится_один_раз_а_дальше_идёт_по_file_id() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let store = &db.store;
+    let sender = FakeSender::new();
+    let ctx = context(store, Some(sender.clone()));
+    clients(store, 8101, 4).await;
+    let video = upload_video(&ctx, &sample::turned(1920, 1080, 15), None)
+        .await
+        .unwrap();
+    assert_eq!((video.width, video.height), (1080, 1920));
+    let mut message = draft("С видео", Audience::All);
+    message.image_id = Some(video.id);
+    sender.answer(8103, vec![Delivery::StaleFile]);
+    let created = create(&ctx, &message, None).await.unwrap();
+    start(&ctx, created.id, None, None).await.unwrap();
+    let engine = spawn_engine(&ctx, &sender, fast());
+    let done = wait_status(store, created.id, Status::Done).await;
+    engine.stop().await;
+    assert_eq!(done.progress.sent, 4);
+    let sent: Vec<String> = sender
+        .sent()
+        .into_iter()
+        .map(|s| s.media.unwrap_or_default())
+        .collect();
+    assert_eq!(sent.len(), 5, "{sent:?}");
+    assert_eq!(sent[0], "video 1080x1920 15s upload:video/mp4");
+    assert_eq!(
+        sent.iter()
+            .filter(|s| s.ends_with("upload:video/mp4"))
+            .count(),
+        2,
+        "{sent:?}"
+    );
+    assert!(
+        sent.iter()
+            .all(|s| s.starts_with("video 1080x1920 15s ") && !s.contains("image")),
+        "{sent:?}"
+    );
+    assert_eq!(sent[1], "video 1080x1920 15s cached:F-1");
+    let mut conn = store.conn().await.unwrap();
+    let stored = store::image(&mut conn, video.id, false).await.unwrap();
+    assert_eq!(stored.file_for(Some(77)), Some("F-1"));
+    assert!(!stored.loaded());
+    assert!(stored.streaming);
+    drop(conn);
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn видео_в_рассылке_на_бот_и_почту_уходит_только_в_telegram() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let store = &db.store;
+    let sender = FakeSender::new();
+    let mail = FakeMail::new();
+    let ctx = context_with(store, Some(sender.clone()), Some(mail.clone()));
+    mail_client(store, Some(8301), Some("both@example.com")).await;
+    let video = upload_video(&ctx, &sample::mp4(1280, 720, 20, false), None)
+        .await
+        .unwrap();
+    let mut message = mail_draft("Смотрите ролик", Channel::Both);
+    message.image_id = Some(video.id);
+    let created = create(&ctx, &message, None).await.unwrap();
+    start(&ctx, created.id, None, None).await.unwrap();
+    let bot = spawn_engine(&ctx, &sender, fast());
+    let post = spawn_mail(&ctx, &mail, fast_mail());
+    let done = wait_status(store, created.id, Status::Done).await;
+    bot.stop().await;
+    post.stop().await;
+    assert_eq!(done.progress.sent, 2);
+    assert_eq!(
+        sender.sent()[0].media.as_deref(),
+        Some("video 1280x720 20s upload:video/mp4")
+    );
+    let letters = mail.mailed();
+    assert_eq!(letters.len(), 1);
+    assert!(letters[0].html.contains("Смотрите ролик"));
+    assert!(!letters[0].html.contains("<img"), "{}", letters[0].html);
+    let report = send_test(
+        &ctx,
+        &message,
+        TestTarget::Address("me@example.com".into()),
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(report.result, TestResult::Sent);
+    assert!(!mail.mailed()[1].html.contains("<img"));
+    let photo = upload_image(&ctx, &png(640, 480), None).await.unwrap();
+    message.image_id = Some(photo.id);
+    send_test(
+        &ctx,
+        &message,
+        TestTarget::Address("me@example.com".into()),
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(mail.mailed()[2].html.contains("<img"));
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn видео_грузится_через_маршрут_и_отдаётся_частями() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    owner(&db).await;
+    let ctx = context(&db.store, Some(FakeSender::new()));
+    let registry = Arc::new(ModuleRegistry::new(crate::catalog::all()).unwrap());
+    let router = registry.admin_router(ctx.clone());
+    let post = |kind: &str, body: Vec<u8>| {
+        Request::post("/broadcast/images")
+            .header("content-type", kind)
+            .extension(admin(AdminRole::Admin))
+            .body(Body::from(body))
+            .unwrap()
+    };
+    let mov = router
+        .clone()
+        .oneshot(post("video/quicktime", sample::quicktime(640, 360, 3)))
+        .await
+        .unwrap();
+    assert_eq!(mov.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    assert_eq!(json_of(mov).await["error"]["code"], "broadcast.image");
+    let bytes = sample::mp4(1280, 720, 34, true);
+    let uploaded = router
+        .clone()
+        .oneshot(post("video/mp4", bytes.clone()))
+        .await
+        .unwrap();
+    assert_eq!(uploaded.status(), StatusCode::OK);
+    let meta = json_of(uploaded).await;
+    assert_eq!(meta["kind"], "video");
+    assert_eq!(meta["duration"], 34);
+    assert_eq!(meta["width"], 1280);
+    let id = meta["id"].as_i64().unwrap();
+    let get = |range: Option<&str>| {
+        let mut request =
+            Request::get(format!("/broadcast/images/{id}")).extension(admin(AdminRole::Admin));
+        if let Some(range) = range {
+            request = request.header("range", range);
+        }
+        request.body(Body::empty()).unwrap()
+    };
+    let part = router
+        .clone()
+        .oneshot(get(Some("bytes=0-99")))
+        .await
+        .unwrap();
+    assert_eq!(part.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        part.headers()["content-range"],
+        format!("bytes 0-99/{}", bytes.len()).as_str()
+    );
+    assert_eq!(part.headers()["accept-ranges"], "bytes");
+    assert_eq!(part.headers()["content-type"], "video/mp4");
+    let body = axum::body::to_bytes(part.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(body.as_ref(), &bytes[..100]);
+    let whole = router.clone().oneshot(get(None)).await.unwrap();
+    assert_eq!(whole.status(), StatusCode::OK);
+    assert_eq!(whole.headers()["accept-ranges"], "bytes");
+    let outside = router
+        .clone()
+        .oneshot(get(Some("bytes=999999-")))
+        .await
+        .unwrap();
+    assert_eq!(outside.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+    assert_eq!(
+        outside.headers()["content-range"],
+        format!("bytes */{}", bytes.len()).as_str()
+    );
+    let options = router
+        .clone()
+        .oneshot(
+            Request::get("/broadcast/options")
+                .extension(admin(AdminRole::Admin))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let options = json_of(options).await;
+    assert_eq!(options["limits"]["image_bytes"], 10_000_000);
+    assert_eq!(options["limits"]["video_bytes"], 50_000_000);
+    db.cleanup().await;
 }

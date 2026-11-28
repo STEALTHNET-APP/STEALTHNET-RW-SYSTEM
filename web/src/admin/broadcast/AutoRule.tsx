@@ -34,7 +34,6 @@ import {
   failText,
   hasBot,
   hasEmail,
-  imageUrl,
   timing,
   unitWord,
   type AutoReach,
@@ -548,7 +547,7 @@ function RuleEditor({ options, rule, onSaved, onDeleted }: EditorProps) {
       channel={channel}
       subject={shown.subject.trim() ? shown.subject : message.subject}
       text={shown.text}
-      image={image ? imageUrl(image.id) : null}
+      image={image}
       buttons={shown.buttons.map(toSpec)}
       brand={me.brand_name}
     />

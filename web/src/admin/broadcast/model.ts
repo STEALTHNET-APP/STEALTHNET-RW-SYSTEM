@@ -1,6 +1,7 @@
 import { ApiError } from '../../lib/api';
 import { dateLong, groupDigits, plural, timeHM } from '../../lib/format';
 import { EMPTY, fromAudience, type Conditions, type FilterAudience, type FilterOptions } from '../clients/filters';
+import type { MediaKind } from './files';
 
 export const BASE = '/api/admin/m/broadcast';
 export const ROOT = '/admin/m/broadcast';
@@ -56,7 +57,9 @@ export type AudienceKind = Audience['kind'];
 
 export type ButtonSpec = { text: string; url?: string; section?: Section; style?: 'primary' | 'success' | 'danger'; emoji_id?: string };
 
-export type Image = { id: number; content_type: string; width: number; height: number; size: number };
+export type { MediaKind } from './files';
+
+export type Image = { id: number; kind: MediaKind; content_type: string; width: number; height: number; size: number; duration: number | null };
 
 export type Progress = { total: number; sent: number; failed: number; blocked: number; skipped: number; pending: number };
 
@@ -96,6 +99,7 @@ export type ListItem = {
   channel: Channel;
   preview: string;
   has_image: boolean;
+  media: MediaKind | null;
   buttons: number;
   audience: Audience;
   audience_label: string;
@@ -118,6 +122,7 @@ export type Limits = {
   days: number;
   schedule_days: number;
   image_bytes: number;
+  video_bytes: number;
   subject: number;
 };
 
@@ -411,6 +416,10 @@ export function outcome(p: Progress, kind: Channel | Lane = 'bot'): string {
 
 export function imageUrl(id: number): string {
   return `${BASE}/images/${id}`;
+}
+
+export function isVideo(image: Image | null | undefined): boolean {
+  return image?.kind === 'video';
 }
 
 export function localInput(date: Date): string {

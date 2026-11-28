@@ -17,6 +17,7 @@ pub use module::{BotEntry, ItemHook, Module, ModuleConfig, QuoteHook, QuoteOrigi
 pub use placeholder::Placeholder;
 pub use registry::{MenuItem, ModuleRegistry, ModuleView};
 pub use sender::{
-    BotSender, Delivery, MailDelivery, MailOut, MailSender, MailSite, OutButton, Outgoing, Photo,
+    BotSender, Delivery, MailDelivery, MailOut, MailSender, MailSite, Media, MediaFile, OutButton,
+    Outgoing,
 };
 pub use sn_domain::module::{CATALOG, CoreFeature, MenuEntry, ModuleGroup, ModuleId, ModuleInfo};

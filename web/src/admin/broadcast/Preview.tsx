@@ -1,23 +1,39 @@
 import { useState } from 'react';
 import { Icon } from '../../lib/icons';
 import { TelegramText } from '../pages/telegram';
-import type { ButtonSpec, Channel } from './model';
+import { clock } from './files';
+import { imageUrl, isVideo, type ButtonSpec, type Channel, type Image } from './model';
 import { premiumCount } from './emoji';
 import '../pages/bot.css';
 
 type Props = {
   text: string;
-  image: string | null;
+  image: Image | null;
   buttons: ButtonSpec[];
   className?: string;
 };
+
+function Clip({ image }: { image: Image }) {
+  const [playing, setPlaying] = useState(false);
+  const src = imageUrl(image.id);
+  if (playing) {
+    return <video src={src} className="bt-preview-img bt-clip" controls autoPlay playsInline aria-label="Видео сообщения" />;
+  }
+  return (
+    <button type="button" className="bt-clip" onClick={() => setPlaying(true)} aria-label="Посмотреть видео">
+      <video src={`${src}#t=0.1`} className="bt-preview-img" preload="metadata" muted playsInline tabIndex={-1} />
+      <span className="bt-clip-time">{clock(image.duration)}</span>
+      <span className="bt-clip-play" aria-hidden="true" />
+    </button>
+  );
+}
 
 export function Preview({ text, image, buttons, className }: Props) {
   return (
     <div className={`bc-preview ${className ?? ''}`} aria-label="Как увидит клиент">
       <span className="bc-preview-cap">Так увидит клиент</span>
       <div className="bt-preview">
-        {image ? <img src={image} alt="" className="bt-preview-img" /> : null}
+        {image && isVideo(image) ? <Clip key={image.id} image={image} /> : image ? <img src={imageUrl(image.id)} alt="" className="bt-preview-img" /> : null}
         {text.trim() ? (
           <div className="bt-bubble">
             <TelegramText html={text} />
@@ -47,7 +63,7 @@ export function Preview({ text, image, buttons, className }: Props) {
 type MailProps = {
   subject: string;
   text: string;
-  image: string | null;
+  image: Image | null;
   buttons: ButtonSpec[];
   brand: string;
 };
@@ -62,7 +78,11 @@ export function MailPreview({ subject, text, image, buttons, brand }: MailProps)
           <span className="bc-mail-subject">{subject.trim() || 'Тема письма'}</span>
         </div>
         <div className="bc-mail-card">
-          {image ? <img src={image} alt="" className="bc-mail-img" /> : null}
+          {image && isVideo(image) ? (
+            <span className="cap bc-mail-body">Видео в письмо не попадёт: его увидят только в Telegram.</span>
+          ) : image ? (
+            <img src={imageUrl(image.id)} alt="" className="bc-mail-img" />
+          ) : null}
           {text.trim() ? (
             <div className="bc-mail-body">
               <TelegramText html={text} />
@@ -92,7 +112,7 @@ type ChannelProps = {
   channel: Channel;
   subject: string;
   text: string;
-  image: string | null;
+  image: Image | null;
   buttons: ButtonSpec[];
   brand: string;
 };

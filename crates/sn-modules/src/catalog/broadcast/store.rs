@@ -1,4 +1,5 @@
-use super::{Audience, AudienceNames, ButtonSpec, Channel, Cleaned, Lane, Status};
+use super::{Audience, AudienceNames, ButtonSpec, Channel, Cleaned, Lane, MediaKind, Status};
+use crate::sender::{Media, MediaFile};
 use chrono::{DateTime, Duration, Utc};
 use serde::Serialize;
 use sn_domain::client::Locale;
@@ -6,6 +7,7 @@ use sn_domain::ids::{AdminId, ClientId, TariffId};
 use sn_domain::image::ImageInfo;
 use sn_domain::money::Currency;
 use sn_domain::paging::{Page, PageRequest};
+use sn_domain::video::VideoInfo;
 use sn_store::{ClientConditions, ClientSegment, Db, SqlArg, SqlArgs, StoreError, StoreResult};
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -17,17 +19,24 @@ const FAILED_EMAILS: i64 = 100;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ImageMeta {
     pub id: i64,
+    pub kind: MediaKind,
     pub content_type: String,
     pub width: i32,
     pub height: i32,
     pub size: i64,
+    pub duration: Option<i32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 pub struct ImageData {
     pub id: i64,
+    pub kind: String,
     pub content_type: String,
     pub bytes: Vec<u8>,
+    pub width: i32,
+    pub height: i32,
+    pub duration: Option<i32>,
+    pub streaming: bool,
     pub file_bot: Option<i64>,
     pub file_id: Option<String>,
     pub public_key: Uuid,
@@ -39,6 +48,40 @@ impl ImageData {
             (Some(bot), Some(file_bot)) if bot == file_bot => self.file_id.as_deref(),
             _ => None,
         }
+    }
+
+    pub fn kind(&self) -> MediaKind {
+        MediaKind::parse(&self.kind).unwrap_or_default()
+    }
+
+    pub fn loaded(&self) -> bool {
+        !self.bytes.is_empty()
+    }
+
+    pub fn video(&self) -> VideoInfo {
+        VideoInfo {
+            width: u32::try_from(self.width).unwrap_or(0),
+            height: u32::try_from(self.height).unwrap_or(0),
+            duration: self
+                .duration
+                .and_then(|seconds| u32::try_from(seconds).ok())
+                .unwrap_or(0),
+            streaming: self.streaming,
+        }
+    }
+
+    pub fn media<'a>(&self, file: MediaFile<'a>) -> Media<'a> {
+        match self.kind() {
+            MediaKind::Photo => Media::Photo(file),
+            MediaKind::Video => Media::Video(file, self.video()),
+        }
+    }
+
+    pub fn upload(&self) -> Media<'_> {
+        self.media(MediaFile::Upload {
+            bytes: &self.bytes,
+            content_type: &self.content_type,
+        })
     }
 }
 
@@ -122,6 +165,7 @@ pub struct ListItem {
     pub channel: Channel,
     pub preview: String,
     pub has_image: bool,
+    pub media: Option<MediaKind>,
     pub buttons: usize,
     pub audience: Audience,
     pub audience_label: String,
@@ -152,11 +196,13 @@ struct Row {
     notice: Option<String>,
     mail_notice: Option<String>,
     tariff_name: Option<String>,
+    media_kind: Option<String>,
 }
 
 const COLUMNS: &str = "b.id, b.channel, b.subject, b.text, b.image_id, b.buttons, b.audience, b.status, \
                        b.send_at, b.started_at, b.finished_at, b.created_at, b.updated_at, b.notice, b.mail_notice, \
-                       (SELECT t.name FROM tariffs t WHERE t.id = (b.audience ->> 'tariff_id')::bigint) AS tariff_name";
+                       (SELECT t.name FROM tariffs t WHERE t.id = (b.audience ->> 'tariff_id')::bigint) AS tariff_name, \
+                       (SELECT i.kind FROM broadcast_images i WHERE i.id = b.image_id) AS media_kind";
 
 struct Parsed {
     status: Status,
@@ -325,22 +371,34 @@ async fn progress_of(db: &mut impl Db, ids: &[i64]) -> StoreResult<HashMap<i64, 
     Ok(out)
 }
 
+#[derive(sqlx::FromRow)]
+struct MetaRow {
+    id: i64,
+    kind: String,
+    content_type: String,
+    width: i32,
+    height: i32,
+    size: i64,
+    duration: Option<i32>,
+}
+
 pub async fn image_meta(db: &mut impl Db, id: i64) -> StoreResult<Option<ImageMeta>> {
-    let row: Option<(i64, String, i32, i32, i64)> = sqlx::query_as(
-        "SELECT id, content_type, width, height, octet_length(bytes)::bigint FROM broadcast_images WHERE id = $1",
+    let row: Option<MetaRow> = sqlx::query_as(
+        "SELECT id, kind, content_type, width, height, octet_length(bytes)::bigint AS size, duration \
+         FROM broadcast_images WHERE id = $1",
     )
     .bind(id)
     .fetch_optional(db.conn())
     .await?;
-    Ok(
-        row.map(|(id, content_type, width, height, size)| ImageMeta {
-            id,
-            content_type,
-            width,
-            height,
-            size,
-        }),
-    )
+    Ok(row.map(|row| ImageMeta {
+        id: row.id,
+        kind: MediaKind::parse(&row.kind).unwrap_or_default(),
+        content_type: row.content_type,
+        width: row.width,
+        height: row.height,
+        size: row.size,
+        duration: row.duration,
+    }))
 }
 
 pub async fn view(db: &mut impl Db, id: i64) -> StoreResult<Broadcast> {
@@ -454,6 +512,7 @@ pub async fn list(db: &mut impl Db, page: PageRequest) -> StoreResult<Page<ListI
                 channel: parsed.channel,
                 preview: preview(&row.text),
                 has_image: row.image_id.is_some(),
+                media: row.media_kind.as_deref().and_then(MediaKind::parse),
                 buttons: parsed.buttons.len(),
                 audience: parsed.audience,
                 audience_label: parsed.audience_label,
@@ -855,13 +914,15 @@ pub async fn stop(db: &mut impl Db, id: i64, notice: Option<&str>) -> StoreResul
     Ok(())
 }
 
-pub async fn image_exists(db: &mut impl Db, id: i64) -> StoreResult<bool> {
-    Ok(
-        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM broadcast_images WHERE id = $1)")
+pub async fn media_kind(db: &mut impl Db, id: i64) -> StoreResult<Option<MediaKind>> {
+    let kind: Option<String> =
+        sqlx::query_scalar("SELECT kind FROM broadcast_images WHERE id = $1")
             .bind(id)
-            .fetch_one(db.conn())
-            .await?,
-    )
+            .fetch_optional(db.conn())
+            .await?;
+    Ok(kind
+        .as_deref()
+        .map(|kind| MediaKind::parse(kind).unwrap_or_default()))
 }
 
 pub async fn insert_image(
@@ -871,8 +932,8 @@ pub async fn insert_image(
     admin: Option<AdminId>,
 ) -> StoreResult<ImageMeta> {
     let id: i64 = sqlx::query_scalar(
-        "INSERT INTO broadcast_images (content_type, bytes, width, height, created_by) \
-         VALUES ($1, $2, $3, $4, $5) RETURNING id",
+        "INSERT INTO broadcast_images (kind, content_type, bytes, width, height, created_by) \
+         VALUES ('photo', $1, $2, $3, $4, $5) RETURNING id",
     )
     .bind(info.kind.content_type())
     .bind(bytes)
@@ -886,21 +947,89 @@ pub async fn insert_image(
         .ok_or(StoreError::NotFound("картинка рассылки"))
 }
 
-const IMAGE_COLUMNS: &str = "id, content_type, bytes, file_bot, file_id, public_key";
+pub async fn insert_video(
+    db: &mut impl Db,
+    bytes: &[u8],
+    info: VideoInfo,
+    admin: Option<AdminId>,
+) -> StoreResult<ImageMeta> {
+    let id: i64 = sqlx::query_scalar(
+        "INSERT INTO broadcast_images (kind, content_type, bytes, width, height, duration, streaming, created_by) \
+         VALUES ('video', $1, $2, $3, $4, $5, $6, $7) RETURNING id",
+    )
+    .bind(sn_domain::video::MP4_TYPE)
+    .bind(bytes)
+    .bind(i32::try_from(info.width).unwrap_or(i32::MAX))
+    .bind(i32::try_from(info.height).unwrap_or(i32::MAX))
+    .bind(i32::try_from(info.duration).unwrap_or(i32::MAX))
+    .bind(info.streaming)
+    .bind(admin.map(|a| a.0))
+    .fetch_one(db.conn())
+    .await?;
+    image_meta(db, id)
+        .await?
+        .ok_or(StoreError::NotFound("видео рассылки"))
+}
 
-pub async fn image(db: &mut impl Db, id: i64) -> StoreResult<ImageData> {
+const IMAGE_COLUMNS: &str =
+    "id, kind, content_type, width, height, duration, streaming, file_bot, file_id, public_key";
+
+pub async fn image(db: &mut impl Db, id: i64, bytes: bool) -> StoreResult<ImageData> {
     sqlx::query_as::<_, ImageData>(&format!(
-        "SELECT {IMAGE_COLUMNS} FROM broadcast_images WHERE id = $1"
+        "SELECT {IMAGE_COLUMNS}, CASE WHEN $2 THEN bytes ELSE ''::bytea END AS bytes \
+         FROM broadcast_images WHERE id = $1"
     ))
     .bind(id)
+    .bind(bytes)
     .fetch_optional(db.conn())
     .await?
-    .ok_or(StoreError::NotFound("картинка рассылки"))
+    .ok_or(StoreError::NotFound("вложение рассылки"))
+}
+
+pub async fn image_bytes(db: &mut impl Db, id: i64) -> StoreResult<Vec<u8>> {
+    sqlx::query_scalar("SELECT bytes FROM broadcast_images WHERE id = $1")
+        .bind(id)
+        .fetch_optional(db.conn())
+        .await?
+        .ok_or(StoreError::NotFound("вложение рассылки"))
+}
+
+pub struct Stored {
+    pub content_type: String,
+    pub size: i64,
+}
+
+pub async fn image_size(db: &mut impl Db, id: i64) -> StoreResult<Stored> {
+    let row: Option<(String, i64)> = sqlx::query_as(
+        "SELECT content_type, octet_length(bytes)::bigint FROM broadcast_images WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(db.conn())
+    .await?;
+    let (content_type, size) = row.ok_or(StoreError::NotFound("вложение рассылки"))?;
+    Ok(Stored { content_type, size })
+}
+
+pub async fn image_slice(
+    db: &mut impl Db,
+    id: i64,
+    from: i64,
+    length: i64,
+) -> StoreResult<Vec<u8>> {
+    sqlx::query_scalar(
+        "SELECT substring(bytes FROM $2::int FOR $3::int) FROM broadcast_images WHERE id = $1",
+    )
+    .bind(id)
+    .bind(i32::try_from(from.saturating_add(1)).unwrap_or(i32::MAX))
+    .bind(i32::try_from(length.max(0)).unwrap_or(i32::MAX))
+    .fetch_optional(db.conn())
+    .await?
+    .ok_or(StoreError::NotFound("вложение рассылки"))
 }
 
 pub async fn image_by_key(db: &mut impl Db, key: Uuid) -> StoreResult<Option<ImageData>> {
     Ok(sqlx::query_as::<_, ImageData>(&format!(
-        "SELECT {IMAGE_COLUMNS} FROM broadcast_images WHERE public_key = $1"
+        "SELECT {IMAGE_COLUMNS}, bytes FROM broadcast_images WHERE public_key = $1 AND kind = 'photo'"
     ))
     .bind(key)
     .fetch_optional(db.conn())
@@ -912,7 +1041,7 @@ pub async fn image_key(db: &mut impl Db, id: i64) -> StoreResult<Uuid> {
         .bind(id)
         .fetch_optional(db.conn())
         .await?
-        .ok_or(StoreError::NotFound("картинка рассылки"))
+        .ok_or(StoreError::NotFound("вложение рассылки"))
 }
 
 pub async fn remember_file(db: &mut impl Db, id: i64, bot: i64, file_id: &str) -> StoreResult<()> {
@@ -1112,15 +1241,7 @@ pub async fn message(db: &mut impl Db, id: i64, bytes: bool) -> StoreResult<Mess
     let buttons = serde_json::from_value(buttons)
         .map_err(|e| StoreError::Decode(format!("кнопки рассылки: {e}")))?;
     let image = match image_id {
-        Some(image_id) if bytes => Some(image(db, image_id).await?),
-        Some(image_id) => Some(ImageData {
-            id: image_id,
-            content_type: String::new(),
-            bytes: Vec::new(),
-            file_bot: None,
-            file_id: None,
-            public_key: image_key(db, image_id).await?,
-        }),
+        Some(image_id) => Some(image(db, image_id, bytes).await?),
         None => None,
     };
     Ok(Message {

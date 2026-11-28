@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Link } from 'react-router';
-import { api, upload } from '../../lib/api';
+import { api } from '../../lib/api';
 import { Icon } from '../../lib/icons';
 import { displayName, type ClientRow } from '../clients/types';
 import { unclosedTag, visibleLength } from '../pages/telegram';
-import { BASE, CHANNELS, count, failText, hasBot, hasEmail, imageUrl, type ButtonSpec, type Channel, type Image, type Options, type Section } from './model';
+import { BASE, CHANNELS, count, failText, hasBot, hasEmail, isVideo, type ButtonSpec, type Channel, type Image, type Options, type Section } from './model';
+import { MediaBlock } from './Media';
 import { BUTTON_STYLES, emojiIdProblem, insertAt, readPasted, type ButtonStyle } from './emoji';
 import '../form.css';
 
@@ -86,13 +87,6 @@ function handleOf(row: ClientRow): string {
   return row.email ?? '';
 }
 
-function fileSize(bytes: number): string {
-  if (bytes < 1024 * 1024) {
-    return `${Math.max(1, Math.round(bytes / 1024))} КБ`;
-  }
-  return `${(bytes / 1024 / 1024).toFixed(1).replace('.', ',')} МБ`;
-}
-
 function buttonProblem(button: ButtonDraft, max: number): string | null {
   const text = button.text.trim();
   if (!text) {
@@ -155,7 +149,9 @@ export function checkMessage(value: MessageValue, options: Options, tried: boole
       ? `Разметка: ${markup}`
       : length > limit
         ? image
-          ? `С картинкой Telegram показывает до ${limit} знаков. Сократите текст или уберите картинку`
+          ? isVideo(image)
+            ? `С видео Telegram показывает до ${limit} знаков. Сократите текст или уберите видео`
+            : `С картинкой Telegram показывает до ${limit} знаков. Сократите текст или уберите картинку`
           : `Telegram показывает до ${limit} знаков`
         : null;
   const buttonProblems = buttons.map((b) => buttonProblem(b, limits.button_text));
@@ -180,7 +176,7 @@ export function checkMessage(value: MessageValue, options: Options, tried: boole
     subjectLength,
     subjectProblem,
     messageOk,
-    contentOk: messageOk && subjectOk,
+    contentOk: messageOk && subjectOk && !(isVideo(image) && !hasBot(channel)),
     mailOff: hasEmail(channel) && !options.mail.ready,
   };
 }
@@ -205,7 +201,6 @@ export function MessageFields({ options, value, onChange, check, tried, busy, se
   const { channel, subject, text, image, buttons } = value;
   const { limit, length, textProblem, buttonProblems, subjectLength, subjectProblem, mailOff } = check;
   const area = useRef<HTMLTextAreaElement>(null);
-  const file = useRef<HTMLInputElement>(null);
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [pasted, setPasted] = useState('');
   const [pasteNote, setPasteNote] = useState<Note | null>(null);
@@ -262,34 +257,6 @@ export function MessageFields({ options, value, onChange, check, tried, busy, se
   const changeButton = (index: number, patch: Partial<ButtonDraft>) => {
     onChange({ buttons: buttons.map((b, i) => (i === index ? { ...b, ...patch } : b)) });
   };
-
-  const pickFile = async (picked: File | undefined) => {
-    if (!picked) {
-      return;
-    }
-    if (picked.type !== 'image/png' && picked.type !== 'image/jpeg') {
-      onNote({ text: 'Нужна картинка JPEG или PNG', tone: 'bad' });
-      return;
-    }
-    if (picked.size > limits.image_bytes) {
-      onNote({ text: 'Файл больше 5 МБ', tone: 'bad' });
-      return;
-    }
-    setBusy('upload');
-    onNote(null);
-    try {
-      onChange({ image: await upload<Image>(`${BASE}/images`, picked) });
-    } catch (err) {
-      onNote({ text: failText(err, 'Картинка не загрузилась'), tone: 'bad' });
-    } finally {
-      setBusy(null);
-      if (file.current) {
-        file.current.value = '';
-      }
-    }
-  };
-
-  const imageSrc = image ? imageUrl(image.id) : null;
 
   return (
     <>
@@ -446,7 +413,7 @@ export function MessageFields({ options, value, onChange, check, tried, busy, se
             />
             <span className="bc-count">
               <span id="bc-text-cap" className={textProblem ? 'err' : 'cap'}>
-                {textProblem ?? (image ? 'С картинкой текст становится подписью к ней' : '')}
+                {textProblem ?? (image ? (isVideo(image) ? 'С видео текст становится подписью к нему' : 'С картинкой текст становится подписью к ней') : '')}
               </span>
               <span className={`cap num ${length > limit ? 'err' : ''}`}>
                 {count(length)} / {count(limit)}
@@ -480,53 +447,7 @@ export function MessageFields({ options, value, onChange, check, tried, busy, se
         </div>
       </section>
 
-      <section className="sec" aria-labelledby="bc-image-h">
-        <div className="sec-head">
-          <h2 id="bc-image-h" className="section-title">
-            Картинка
-          </h2>
-          <span className="muted">Необязательно. JPEG или PNG до 5 МБ, текст к ней — до {count(limits.caption)} знаков.</span>
-        </div>
-        <div className="row">
-          <div className="rc">
-            <input
-              ref={file}
-              className="sr-only"
-              type="file"
-              accept="image/png,image/jpeg"
-              id="bc-file"
-              onChange={(e) => void pickFile(e.target.files?.[0])}
-              tabIndex={-1}
-            />
-            {image && imageSrc ? (
-              <div className="bc-image">
-                <img src={imageSrc} alt="Картинка сообщения" className="bc-thumb" />
-                <span className="bc-image-info">
-                  <span>
-                    {image.width} × {image.height}
-                  </span>
-                  <span className="cap">
-                    {image.content_type === 'image/png' ? 'PNG' : 'JPEG'}, {fileSize(image.size)}
-                  </span>
-                </span>
-                <button type="button" className="btn-line hov" onClick={() => file.current?.click()} disabled={busy !== null}>
-                  Заменить
-                </button>
-                <button type="button" className="bc-link bad" onClick={() => onChange({ image: null })} disabled={busy !== null}>
-                  Убрать
-                </button>
-              </div>
-            ) : (
-              <span>
-                <button type="button" className="btn-line hov bc-upload" onClick={() => file.current?.click()} disabled={busy !== null}>
-                  <Icon name="image" size={18} />
-                  &nbsp;{busy === 'upload' ? 'Загружаем…' : 'Загрузить картинку'}
-                </button>
-              </span>
-            )}
-          </div>
-        </div>
-      </section>
+      <MediaBlock options={options} channel={channel} image={image} busy={busy} setBusy={setBusy} onChange={(next) => onChange({ image: next })} onNote={onNote} />
 
       <section className="sec" aria-labelledby="bc-buttons-h">
         <div className="sec-head">

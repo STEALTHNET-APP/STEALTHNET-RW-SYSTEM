@@ -28,6 +28,7 @@ reqwest.workspace = true
 
 [dev-dependencies]
 wiremock.workspace = true
+sn-domain = { workspace = true, features = ["test-util"] }
 sn-store = { workspace = true, features = ["test-util"] }
 tokio = { workspace = true, features = ["test-util"] }
 tower.workspace = true

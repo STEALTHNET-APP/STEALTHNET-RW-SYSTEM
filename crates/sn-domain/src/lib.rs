@@ -36,6 +36,7 @@ pub mod subscription;
 pub mod support;
 pub mod tariff;
 pub mod traffic;
+pub mod video;
 
 pub use error::DomainError;
 pub use ids::*;

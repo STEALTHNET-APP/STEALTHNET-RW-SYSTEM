@@ -14,7 +14,6 @@ import {
   failText,
   hasBot,
   hasEmail,
-  imageUrl,
   outcome,
   percent,
   reachText,
@@ -296,7 +295,7 @@ export function Report({ broadcast, onChange, onCopy }: Props) {
             channel={b.channel}
             subject={b.subject ?? ''}
             text={b.text}
-            image={b.image ? imageUrl(b.image.id) : null}
+            image={b.image}
             buttons={b.buttons}
             brand={me.brand_name}
           />
@@ -307,7 +306,7 @@ export function Report({ broadcast, onChange, onCopy }: Props) {
           channel={b.channel}
           subject={b.subject ?? ''}
           text={b.text}
-          image={b.image ? imageUrl(b.image.id) : null}
+          image={b.image}
           buttons={b.buttons}
           brand={me.brand_name}
         />

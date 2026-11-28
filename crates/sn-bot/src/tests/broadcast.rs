@@ -3,7 +3,7 @@ use crate::broadcast::TelegramSender;
 use sn_modules::catalog::broadcast::{
     self, Audience, BotSection, ButtonSpec, Channel, Draft, Engine, EngineConfig, Sender, Status,
 };
-use sn_modules::{BotSender, Delivery, OutButton, Outgoing, Photo};
+use sn_modules::{BotSender, Delivery, Media, MediaFile, OutButton, Outgoing};
 use std::time::Instant;
 use tokio::sync::oneshot;
 use wiremock::matchers::{body_partial_json, body_string_contains};
@@ -278,6 +278,167 @@ async fn картинка_уходит_файлом_один_раз_а_даль�
 }
 
 #[tokio::test]
+async fn видео_уходит_через_send_video_файлом_один_раз_а_дальше_по_коду() {
+    let Some((db, services, server, _ctx)) = setup().await else {
+        return;
+    };
+    Mock::given(method("POST"))
+        .and(path_regex(r"/sendVideo$"))
+        .respond_with(ok(serde_json::json!({
+            "message_id": 310, "chat": {"id": 1, "type": "private"}, "date": 0,
+            "video": {
+                "file_id": "video-id", "file_unique_id": "v1",
+                "width": 1280, "height": 720, "duration": 34
+            }
+        })))
+        .mount(&server)
+        .await;
+    for id in [1101, 1102, 1103] {
+        person(&services, id).await;
+    }
+    let bytes = sn_domain::video::sample::mp4(1280, 720, 34, true);
+    let video = broadcast::upload_media(&services.module_context(), &bytes, None)
+        .await
+        .unwrap();
+    let done = send_all(
+        &services,
+        &server,
+        &Draft {
+            channel: Channel::Bot,
+            subject: None,
+            text: "<b>Новый ролик</b> о сервисе".into(),
+            image_id: Some(video.id),
+            buttons: vec![ButtonSpec {
+                text: "Продлить".into(),
+                url: None,
+                section: Some(BotSection::Buy),
+                style: None,
+                emoji_id: None,
+            }],
+            audience: Audience::All,
+        },
+    )
+    .await;
+    assert_eq!(done.progress.sent, 3);
+    let videos = requests(&server, "sendVideo").await;
+    assert_eq!(videos.len(), 3);
+    let kind = videos[0]
+        .headers
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert!(kind.starts_with("multipart/form-data"), "{kind}");
+    let form = String::from_utf8_lossy(&videos[0].body).into_owned();
+    for part in [
+        "name=\"video\"; filename=\"video.mp4\"",
+        "Content-Type: video/mp4",
+        "name=\"width\"\r\n\r\n1280\r\n",
+        "name=\"height\"\r\n\r\n720\r\n",
+        "name=\"duration\"\r\n\r\n34\r\n",
+        "name=\"supports_streaming\"\r\n\r\ntrue\r\n",
+        "name=\"parse_mode\"\r\n\r\nHTML\r\n",
+        "<b>Новый ролик</b> о сервисе",
+        "\"callback_data\":\"n:buy\"",
+    ] {
+        assert!(form.contains(part), "нет {part:?} в первой отправке");
+    }
+    assert!(
+        videos[0]
+            .body
+            .windows(bytes.len())
+            .any(|window| window == bytes.as_slice()),
+        "файл ушёл не целиком"
+    );
+    for later in &videos[1..] {
+        let json: serde_json::Value = serde_json::from_slice(&later.body).unwrap();
+        assert_eq!(json["video"], "video-id");
+        assert_eq!(json["caption"], "<b>Новый ролик</b> о сервисе");
+        assert_eq!(json["parse_mode"], "HTML");
+        assert_eq!(
+            json["reply_markup"]["inline_keyboard"][0][0]["callback_data"],
+            "n:buy"
+        );
+    }
+    assert!(requests(&server, "sendPhoto").await.is_empty());
+    assert!(requests(&server, "sendDocument").await.is_empty());
+    assert!(bodies(&server, "sendMessage").await.is_empty());
+    db.cleanup().await;
+}
+
+#[tokio::test]
+async fn устаревший_код_видео_отправляется_файлом_заново() {
+    let Some((db, services, server, _ctx)) = setup().await else {
+        return;
+    };
+    Mock::given(method("POST"))
+        .and(path_regex(r"/sendVideo$"))
+        .and(body_partial_json(
+            serde_json::json!({ "video": "old-video" }),
+        ))
+        .respond_with(fail(
+            400,
+            "Bad Request: wrong file identifier/HTTP URL specified",
+            None,
+        ))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path_regex(r"/sendVideo$"))
+        .respond_with(ok(serde_json::json!({
+            "message_id": 311, "chat": {"id": 1, "type": "private"}, "date": 0,
+            "video": {"file_id": "fresh-video", "file_unique_id": "v2", "width": 640, "height": 360, "duration": 5}
+        })))
+        .mount(&server)
+        .await;
+    let sender = TelegramSender::new(services.clone(), &server.uri());
+    let info = sn_domain::video::VideoInfo {
+        width: 640,
+        height: 360,
+        duration: 5,
+        streaming: false,
+    };
+    let stale = sender
+        .send(
+            1,
+            &Outgoing {
+                html: "Ролик",
+                media: Some(Media::Video(MediaFile::Cached("old-video"), info)),
+                buttons: &[],
+            },
+        )
+        .await;
+    assert_eq!(stale, Delivery::StaleFile);
+    let bytes = sn_domain::video::sample::mp4(640, 360, 5, false);
+    let fresh = sender
+        .send(
+            1,
+            &Outgoing {
+                html: "Ролик",
+                media: Some(Media::Video(
+                    MediaFile::Upload {
+                        bytes: &bytes,
+                        content_type: "video/mp4",
+                    },
+                    info,
+                )),
+                buttons: &[],
+            },
+        )
+        .await;
+    assert_eq!(
+        fresh,
+        Delivery::Sent {
+            file_id: Some("fresh-video".into())
+        }
+    );
+    let form = String::from_utf8_lossy(&requests(&server, "sendVideo").await[1].body).into_owned();
+    assert!(!form.contains("supports_streaming"), "{form}");
+    db.cleanup().await;
+}
+
+#[tokio::test]
 async fn премиум_эмодзи_снимаются_если_telegram_их_не_принял() {
     let Some((db, services, server, _ctx)) = setup().await else {
         return;
@@ -303,7 +464,7 @@ async fn премиум_эмодзи_снимаются_если_telegram_их_�
             42,
             &Outgoing {
                 html: "Огонь <tg-emoji emoji-id=\"5368324170671202286\">🔥</tg-emoji>",
-                photo: None,
+                media: None,
                 buttons: &buttons,
             },
         )
@@ -351,7 +512,7 @@ async fn цвет_и_значок_кнопки_уходят_в_telegram_а_пр�
                 chat,
                 &Outgoing {
                     html: "Скидка",
-                    photo: None,
+                    media: None,
                     buttons: &buttons,
                 },
             )
@@ -417,7 +578,7 @@ async fn устаревший_код_картинки_и_ошибки_разби
                     chat,
                     &Outgoing {
                         html: "Текст",
-                        photo: None,
+                        media: None,
                         buttons: &[],
                     },
                 )
@@ -429,7 +590,7 @@ async fn устаревший_код_картинки_и_ошибки_разби
             1,
             &Outgoing {
                 html: "x",
-                photo: Some(Photo::Cached("old-id")),
+                media: Some(Media::Photo(MediaFile::Cached("old-id"))),
                 buttons: &[],
             },
         )

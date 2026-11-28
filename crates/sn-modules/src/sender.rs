@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use serde::Serialize;
+use sn_domain::video::VideoInfo;
 use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -16,7 +17,7 @@ pub struct OutButton {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Photo<'a> {
+pub enum MediaFile<'a> {
     Cached(&'a str),
     Upload {
         bytes: &'a [u8],
@@ -25,9 +26,31 @@ pub enum Photo<'a> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Media<'a> {
+    Photo(MediaFile<'a>),
+    Video(MediaFile<'a>, VideoInfo),
+}
+
+impl<'a> Media<'a> {
+    pub const fn file(&self) -> MediaFile<'a> {
+        match self {
+            Media::Photo(file) | Media::Video(file, _) => *file,
+        }
+    }
+
+    pub const fn uploads(&self) -> bool {
+        matches!(self.file(), MediaFile::Upload { .. })
+    }
+
+    pub const fn cached(&self) -> bool {
+        matches!(self.file(), MediaFile::Cached(_))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Outgoing<'a> {
     pub html: &'a str,
-    pub photo: Option<Photo<'a>>,
+    pub media: Option<Media<'a>>,
     pub buttons: &'a [OutButton],
 }
 

@@ -144,6 +144,40 @@ export async function upload<T>(path: string, file: Blob): Promise<T> {
   return read<T>(response);
 }
 
+export type Progress = { loaded: number; total: number };
+
+export function uploadWithProgress<T>(path: string, file: Blob, onProgress: (progress: Progress) => void, signal?: AbortSignal): Promise<T> {
+  checkPath(path);
+  if (answer) {
+    return answer(path, { method: 'POST' }) as Promise<T>;
+  }
+  return new Promise<T>((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    const aborted = () => reject(new DOMException('aborted', 'AbortError'));
+    if (signal?.aborted) {
+      aborted();
+      return;
+    }
+    request.open('POST', path);
+    request.withCredentials = true;
+    for (const [name, value] of Object.entries(clientHeaders(path, { accept: 'application/json', 'content-type': file.type || 'application/octet-stream' }))) {
+      request.setRequestHeader(name, value);
+    }
+    request.upload.onprogress = (event) => onProgress({ loaded: event.loaded, total: event.lengthComputable ? event.total : file.size });
+    request.onerror = () => reject(new ApiError(0, 'network', t('Нет связи с сервером. Проверьте интернет и попробуйте ещё раз')));
+    request.onabort = aborted;
+    request.onload = () => {
+      const response = new Response(request.status === 204 ? null : request.responseText, {
+        status: request.status,
+        headers: { 'content-type': request.getResponseHeader('content-type') ?? 'application/json' },
+      });
+      read<T>(response).then(resolve, reject);
+    };
+    signal?.addEventListener('abort', () => request.abort(), { once: true });
+    request.send(file);
+  });
+}
+
 export async function fetchBlob(path: string): Promise<Blob> {
   checkPath(path);
   if (answer) {

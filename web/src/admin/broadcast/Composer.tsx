@@ -16,7 +16,6 @@ import {
   reachText,
   reachTotal,
   failText,
-  imageUrl,
   localInput,
   zoneLabel,
   type Audience,
@@ -196,9 +195,8 @@ export function Composer({ options, initial, onSaved, onDeleted }: Props) {
     }
   };
 
-  const imageSrc = image ? imageUrl(image.id) : null;
   const preview = (
-    <ChannelPreview channel={channel} subject={subject} text={text} image={imageSrc} buttons={buttons.map(toSpec)} brand={me.brand_name} />
+    <ChannelPreview channel={channel} subject={subject} text={text} image={image} buttons={buttons.map(toSpec)} brand={me.brand_name} />
   );
   const recipients = reach === null ? null : reachText(reach, channel);
   const sendLabel =

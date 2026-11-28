@@ -1,8 +1,8 @@
 use super::auto_store::{self, Bounds, NewCase, Probe, RuleRow, Tally};
 use super::store::{self, ImageMeta, Problem, Progress};
 use super::{
-    BroadcastError, ButtonSpec, Channel, DAYS_MAX, Lane, clean_buttons, clean_subject, clean_text,
-    invalid, mail_site, rejected,
+    BroadcastError, ButtonSpec, Channel, DAYS_MAX, Lane, MediaKind, check_media_channel,
+    clean_buttons, clean_caption, clean_subject, invalid, mail_site, media_of,
 };
 use crate::context::ModuleContext;
 use crate::error::ModuleError;
@@ -488,7 +488,7 @@ fn english(err: BroadcastError) -> BroadcastError {
 fn clean_en(
     en: Option<&Localized>,
     channel: Channel,
-    with_image: bool,
+    media: Option<MediaKind>,
 ) -> Result<Option<Localized>, BroadcastError> {
     let Some(en) = en.filter(|en| !en.is_blank()) else {
         return Ok(None);
@@ -501,7 +501,7 @@ fn clean_en(
     };
     Ok(Some(Localized {
         subject,
-        text: clean_text(&en.text, with_image).map_err(english)?,
+        text: clean_caption(&en.text, media).map_err(english)?,
         buttons: clean_buttons(&en.buttons).map_err(english)?,
     }))
 }
@@ -541,15 +541,8 @@ pub fn check_audience(
 
 async fn cleaned(db: &mut impl Db, draft: &RuleDraft) -> Result<RuleContent, BroadcastError> {
     let (delay, percent) = check_when(draft.trigger, draft.amount, draft.unit, draft.percent)?;
-    if let Some(id) = draft.image_id
-        && !store::image_exists(db, id).await?
-    {
-        return Err(rejected(
-            "broadcast.image",
-            "Картинка не найдена: загрузите её заново",
-        ));
-    }
-    let with_image = draft.image_id.is_some();
+    let media = media_of(db, draft.image_id).await?;
+    check_media_channel(media, draft.channel)?;
     Ok(RuleContent {
         trigger: draft.trigger,
         delay,
@@ -557,10 +550,10 @@ async fn cleaned(db: &mut impl Db, draft: &RuleDraft) -> Result<RuleContent, Bro
         with_autorenew: draft.with_autorenew && draft.trigger == Trigger::Expiring,
         channel: draft.channel,
         subject: clean_subject(draft.subject.as_deref(), draft.channel)?,
-        text: clean_text(&draft.text, with_image)?,
+        text: clean_caption(&draft.text, media)?,
         image_id: draft.image_id,
         buttons: clean_buttons(&draft.buttons)?,
-        en: clean_en(draft.en.as_ref(), draft.channel, with_image)?,
+        en: clean_en(draft.en.as_ref(), draft.channel, media)?,
         audience: check_audience(draft.trigger, draft.audience.as_ref())?,
     })
 }

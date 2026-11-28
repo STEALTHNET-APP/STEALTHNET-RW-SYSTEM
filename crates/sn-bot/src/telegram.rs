@@ -170,6 +170,8 @@ pub struct Message {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub document: Option<Document>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video: Option<Video>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub media_group_id: Option<String>,
 }
 
@@ -216,6 +218,19 @@ pub struct PhotoSize {
     pub height: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_size: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Video {
+    pub file_id: String,
+    #[serde(default)]
+    pub file_unique_id: String,
+    #[serde(default)]
+    pub width: i64,
+    #[serde(default)]
+    pub height: i64,
+    #[serde(default)]
+    pub duration: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -554,6 +569,16 @@ pub enum PhotoInput<'a> {
     },
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum VideoInput<'a> {
+    FileId(&'a str),
+    Upload {
+        bytes: &'a [u8],
+        content_type: &'a str,
+        info: sn_domain::video::VideoInfo,
+    },
+}
+
 #[derive(Deserialize)]
 struct ResponseParameters {
     #[serde(default)]
@@ -621,6 +646,12 @@ const PACED_RETRIES: u32 = 2;
 const POLL_TIMEOUT: Duration = Duration::from_secs(65);
 const CALL_TIMEOUT: Duration = Duration::from_secs(20);
 const UPLOAD_TIMEOUT: Duration = Duration::from_secs(60);
+const UPLOAD_BYTES_PER_SEC: u64 = 256 * 1024;
+
+fn upload_timeout(bytes: usize) -> Duration {
+    UPLOAD_TIMEOUT
+        + Duration::from_secs(u64::try_from(bytes).unwrap_or(u64::MAX) / UPLOAD_BYTES_PER_SEC)
+}
 
 fn http_builder() -> reqwest::ClientBuilder {
     reqwest::Client::builder()
@@ -827,6 +858,17 @@ impl TelegramApi {
         form: reqwest::multipart::Form,
         chat: Option<i64>,
     ) -> Result<T, TelegramError> {
+        self.call_form_within(method, form, chat, UPLOAD_TIMEOUT)
+            .await
+    }
+
+    async fn call_form_within<T: DeserializeOwned>(
+        &self,
+        method: &str,
+        form: reqwest::multipart::Form,
+        chat: Option<i64>,
+        timeout: Duration,
+    ) -> Result<T, TelegramError> {
         let pacer = self.pacer.as_ref().filter(|_| sends(method));
         if let Some(pacer) = pacer {
             pacer.acquire(chat, self.class).await;
@@ -834,7 +876,7 @@ impl TelegramApi {
         let response = self
             .http
             .post(format!("{}/{method}", self.base))
-            .timeout(UPLOAD_TIMEOUT)
+            .timeout(timeout)
             .multipart(form)
             .send()
             .await
@@ -905,6 +947,68 @@ impl TelegramApi {
                     form = form.text("reply_markup", markup.to_string());
                 }
                 self.call_form("sendPhoto", form, Some(chat_id)).await
+            }
+        }
+    }
+
+    pub async fn send_video(
+        &self,
+        chat_id: i64,
+        video: VideoInput<'_>,
+        caption: &str,
+        keyboard: Option<&Keyboard>,
+    ) -> Result<Message, TelegramError> {
+        let markup = keyboard
+            .filter(|k| !k.is_empty())
+            .map(|k| serde_json::json!(k));
+        match video {
+            VideoInput::FileId(file_id) => {
+                let mut body = serde_json::json!({
+                    "chat_id": chat_id,
+                    "video": file_id,
+                    "caption": caption,
+                    "parse_mode": "HTML",
+                });
+                if let Some(markup) = markup {
+                    body["reply_markup"] = markup;
+                }
+                self.call("sendVideo", &body).await
+            }
+            VideoInput::Upload {
+                bytes,
+                content_type,
+                info,
+            } => {
+                let part = reqwest::multipart::Part::bytes(bytes.to_vec())
+                    .file_name("video.mp4")
+                    .mime_str(content_type)
+                    .map_err(|e| TelegramError::Transport(e.without_url().to_string()))?;
+                let mut form = reqwest::multipart::Form::new()
+                    .text("chat_id", chat_id.to_string())
+                    .text("caption", caption.to_string())
+                    .text("parse_mode", "HTML")
+                    .part("video", part);
+                if info.width > 0 && info.height > 0 {
+                    form = form
+                        .text("width", info.width.to_string())
+                        .text("height", info.height.to_string());
+                }
+                if info.duration > 0 {
+                    form = form.text("duration", info.duration.to_string());
+                }
+                if info.streaming {
+                    form = form.text("supports_streaming", "true");
+                }
+                if let Some(markup) = markup {
+                    form = form.text("reply_markup", markup.to_string());
+                }
+                self.call_form_within(
+                    "sendVideo",
+                    form,
+                    Some(chat_id),
+                    upload_timeout(bytes.len()),
+                )
+                .await
             }
         }
     }

@@ -1,10 +1,11 @@
 use super::letter::{self, Letter};
 use super::store::{self, Claimed, ImageData, Lease, Message, Outcome};
-use super::{ButtonSpec, Lane, PREVIEW_TOKEN, Status, audit, letter_for};
+use super::{ButtonSpec, Lane, MediaKind, PREVIEW_TOKEN, Status, audit, letter_for};
 use crate::context::ModuleContext;
 use crate::error::ModuleError;
 use crate::sender::{
-    BotSender, Delivery, MailDelivery, MailOut, MailSender, MailSite, OutButton, Outgoing, Photo,
+    BotSender, Delivery, MailDelivery, MailOut, MailSender, MailSite, Media, MediaFile, OutButton,
+    Outgoing,
 };
 use sn_domain::client::Locale;
 use sn_domain::lang;
@@ -155,19 +156,16 @@ impl Pace {
 
 enum Source {
     Text,
-    Cached(Arc<str>),
+    Cached(Arc<ImageData>, Arc<str>),
     Upload(Arc<ImageData>),
 }
 
 impl Source {
-    fn photo(&self) -> Option<Photo<'_>> {
+    fn media(&self) -> Option<Media<'_>> {
         match self {
             Source::Text => None,
-            Source::Cached(file_id) => Some(Photo::Cached(file_id)),
-            Source::Upload(image) => Some(Photo::Upload {
-                bytes: &image.bytes,
-                content_type: &image.content_type,
-            }),
+            Source::Cached(image, file_id) => Some(image.media(MediaFile::Cached(file_id))),
+            Source::Upload(image) => Some(image.upload()),
         }
     }
 }
@@ -200,8 +198,36 @@ impl BotMessage {
             return Source::Text;
         };
         match (&self.file, bot) {
-            (Some((file_bot, file)), Some(bot)) if *file_bot == bot => Source::Cached(file.clone()),
+            (Some((file_bot, file)), Some(bot)) if *file_bot == bot => {
+                Source::Cached(image.clone(), file.clone())
+            }
             _ => Source::Upload(image.clone()),
+        }
+    }
+
+    fn missing(&self, bot: Option<i64>) -> Option<i64> {
+        match self.source(bot) {
+            Source::Upload(image) if !image.loaded() => Some(image.id),
+            _ => None,
+        }
+    }
+
+    fn fill(&mut self, bytes: Vec<u8>) {
+        if let Some(image) = &self.image {
+            let mut full = ImageData::clone(image);
+            full.bytes = bytes;
+            self.image = Some(Arc::new(full));
+        }
+    }
+
+    fn cache(&mut self, bot: i64, file_id: String) {
+        self.file = Some((bot, Arc::from(file_id)));
+        if let Some(image) = &self.image
+            && image.loaded()
+        {
+            let mut light = ImageData::clone(image);
+            light.bytes = Vec::new();
+            self.image = Some(Arc::new(light));
         }
     }
 }
@@ -410,7 +436,7 @@ impl Engine {
         id: i64,
     ) -> Result<Option<Prepared>, ModuleError> {
         let body = match &self.sender {
-            Sender::Bot(_) => Body::Bot(BotMessage::new(store::message(conn, id, true).await?)),
+            Sender::Bot(_) => Body::Bot(BotMessage::new(store::message(conn, id, false).await?)),
             Sender::Mail(mail) => {
                 let site = match mail.site() {
                     Ok(site) => site,
@@ -426,7 +452,11 @@ impl Engine {
                 let letter = letter_for(
                     message.subject.as_deref().unwrap_or_default(),
                     &message.text,
-                    message.image.as_ref().map(|image| image.public_key),
+                    message
+                        .image
+                        .as_ref()
+                        .filter(|image| image.kind() == MediaKind::Photo)
+                        .map(|image| image.public_key),
                     &message.buttons,
                     &site,
                 );
@@ -566,6 +596,12 @@ impl Engine {
                 }
                 continue;
             }
+            if let Body::Bot(message) = &mut prepared.body
+                && let Some(image) = message.missing(self.sender.bot_id())
+            {
+                let mut conn = self.ctx.store.conn().await?;
+                message.fill(store::image_bytes(&mut conn, image).await?);
+            }
             let claimed = {
                 let mut conn = self.ctx.store.conn().await?;
                 store::claim(&mut conn, id, self.lane(), 1).await?
@@ -636,7 +672,7 @@ impl Engine {
                                     chat,
                                     &Outgoing {
                                         html: &text,
-                                        photo: source.photo(),
+                                        media: source.media(),
                                         buttons: &buttons,
                                     },
                                 )
@@ -648,7 +684,7 @@ impl Engine {
                         },
                     };
                     Flight {
-                        cached: matches!(source, Source::Cached(_)),
+                        cached: matches!(source, Source::Cached(..)),
                         recipient,
                         answer: Answer::Bot(delivery),
                     }
@@ -771,7 +807,7 @@ impl Engine {
                     && let Some(image) = message.image.as_ref()
                 {
                     store::remember_file(&mut conn, image.id, bot, &file_id).await?;
-                    message.file = Some((bot, Arc::from(file_id)));
+                    message.cache(bot, file_id);
                 }
                 if prepared.notice {
                     store::set_notice(&mut conn, id, lane, None).await?;

@@ -30,6 +30,7 @@ tracing.workspace = true
 
 [dev-dependencies]
 base64.workspace = true
+sn-domain = { workspace = true, features = ["test-util"] }
 sn-store = { workspace = true, features = ["test-util"] }
 sn-remnawave = { workspace = true, features = ["fake"] }
 wiremock.workspace = true

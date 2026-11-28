@@ -13,7 +13,9 @@ type PageData = { items: ListItem[]; next: number | null };
 
 function meta(item: ListItem): string {
   const parts = [item.audience_label, channelLabel(item.channel)];
-  if (item.has_image) {
+  if (item.media === 'video') {
+    parts.push('с видео');
+  } else if (item.has_image) {
     parts.push('с картинкой');
   }
   if (item.buttons > 0) {

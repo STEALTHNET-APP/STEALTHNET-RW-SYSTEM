@@ -2241,3 +2241,49 @@ async fn во_время_технических_работ_уходят_толь
     );
     db.cleanup().await;
 }
+
+#[tokio::test]
+async fn правило_с_видео_уходит_только_в_бот_и_с_подписью_до_1024_знаков() {
+    let Some(db) = test_store().await else {
+        return;
+    };
+    let store = &db.store;
+    let ctx = context_with(store, Some(FakeSender::new()), Some(FakeMail::new()));
+    let video = upload_video(
+        &ctx,
+        &sn_domain::video::sample::mp4(640, 360, 9, true),
+        None,
+    )
+    .await
+    .unwrap();
+    let mut draft = rule_draft(Trigger::Expiring, 3, Channel::Email);
+    draft.image_id = Some(video.id);
+    let err = create_rule(&ctx, &draft, None).await.unwrap_err();
+    assert!(
+        err.to_string().contains("Видео уходит только в Telegram"),
+        "{err}"
+    );
+    draft.channel = Channel::Bot;
+    draft.subject = None;
+    draft.text = "а".repeat(CAPTION_MAX + 1);
+    let err = create_rule(&ctx, &draft, None).await.unwrap_err();
+    assert!(err.to_string().starts_with("С видео"), "{err}");
+    draft.text = "Подписка скоро закончится".into();
+    draft.en = Some(Localized {
+        subject: None,
+        text: "b".repeat(CAPTION_MAX + 1),
+        buttons: Vec::new(),
+    });
+    let err = create_rule(&ctx, &draft, None).await.unwrap_err();
+    assert!(
+        err.to_string().starts_with("Текст на английском. С видео"),
+        "{err}"
+    );
+    draft.en = None;
+    let rule = create_rule(&ctx, &draft, None).await.unwrap();
+    assert_eq!(
+        rule.image.map(|image| (image.kind, image.duration)),
+        Some((MediaKind::Video, Some(9)))
+    );
+    db.cleanup().await;
+}

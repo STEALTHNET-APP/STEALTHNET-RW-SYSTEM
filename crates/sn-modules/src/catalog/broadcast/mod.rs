@@ -19,7 +19,8 @@ use crate::context::ModuleContext;
 use crate::error::ModuleError;
 use crate::module::{Module, ScheduledTask};
 use crate::sender::{
-    BotSender, Delivery, MailDelivery, MailOut, MailSender, MailSite, OutButton, Outgoing, Photo,
+    BotSender, Delivery, MailDelivery, MailOut, MailSender, MailSite, MediaFile, OutButton,
+    Outgoing,
 };
 use async_trait::async_trait;
 use axum::Router;
@@ -35,6 +36,7 @@ use sn_domain::image::{self, ImageKind};
 use sn_domain::module::ModuleId;
 use sn_domain::money::Currency;
 use sn_domain::paging::{Page, PageRequest};
+use sn_domain::video::{self, VideoInfo, VideoProblem};
 use sn_store::{ActorKind, AuditEntry, ClientConditions, ClientSegment, Db, StoreError};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -62,7 +64,9 @@ pub const URL_MAX: usize = 512;
 pub const RAW_MAX: usize = 16_384;
 pub const DAYS_MAX: u16 = 90;
 pub const SCHEDULE_DAYS_MAX: i64 = 90;
-pub const IMAGE_MAX_BYTES: usize = 5 * 1024 * 1024;
+pub const IMAGE_MAX_BYTES: usize = 10_000_000;
+pub const VIDEO_MAX_BYTES: usize = 50_000_000;
+pub const MEDIA_PART_BYTES: u64 = 2 * 1024 * 1024;
 pub const IMAGE_MIN_SIDE: u32 = 100;
 pub const IMAGE_MAX_SIDES: u32 = 10_000;
 pub const IMAGE_MAX_RATIO: u32 = 20;
@@ -148,6 +152,43 @@ impl Channel {
 
     pub fn has(self, lane: Lane) -> bool {
         self.lanes().contains(&lane)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaKind {
+    #[default]
+    Photo,
+    Video,
+}
+
+impl MediaKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            MediaKind::Photo => "photo",
+            MediaKind::Video => "video",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        [MediaKind::Photo, MediaKind::Video]
+            .into_iter()
+            .find(|kind| kind.as_str() == value)
+    }
+
+    const fn with(self) -> &'static str {
+        match self {
+            MediaKind::Photo => "С картинкой",
+            MediaKind::Video => "С видео",
+        }
+    }
+
+    const fn object(self) -> &'static str {
+        match self {
+            MediaKind::Photo => "картинку",
+            MediaKind::Video => "видео",
+        }
     }
 }
 
@@ -446,6 +487,10 @@ fn invalid(message: impl Into<String>) -> BroadcastError {
 }
 
 pub fn clean_text(raw: &str, with_image: bool) -> Result<String, BroadcastError> {
+    clean_caption(raw, with_image.then_some(MediaKind::Photo))
+}
+
+pub fn clean_caption(raw: &str, media: Option<MediaKind>) -> Result<String, BroadcastError> {
     let raw = raw.replace("\r\n", "\n");
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -463,9 +508,13 @@ pub fn clean_text(raw: &str, with_image: bool) -> Result<String, BroadcastError>
         ));
     }
     let length = visible_len(&html);
-    if with_image && length > CAPTION_MAX {
+    if let Some(kind) = media
+        && length > CAPTION_MAX
+    {
         return Err(invalid(format!(
-            "С картинкой Telegram показывает до {CAPTION_MAX} знаков, а в тексте {length}. Сократите текст или уберите картинку"
+            "{} Telegram показывает до {CAPTION_MAX} знаков, а в тексте {length}. Сократите текст или уберите {}",
+            kind.with(),
+            kind.object()
         )));
     }
     if length > TEXT_MAX {
@@ -608,7 +657,10 @@ pub fn check_image(bytes: &[u8]) -> Result<image::ImageInfo, BroadcastError> {
         return Err(bad("Файл пустой".into()));
     }
     if bytes.len() > IMAGE_MAX_BYTES {
-        return Err(bad("Файл больше 5 МБ".into()));
+        return Err(bad(format!(
+            "Картинка больше {} МБ: Telegram не примет её как фото",
+            IMAGE_MAX_BYTES / 1_000_000
+        )));
     }
     let info = image::inspect(bytes).ok_or_else(|| {
         bad("Нужна картинка JPEG или PNG: этот файл не открылся как картинка".into())
@@ -641,15 +693,62 @@ pub fn check_image(bytes: &[u8]) -> Result<image::ImageInfo, BroadcastError> {
     Ok(info)
 }
 
-async fn cleaned(db: &mut impl Db, draft: &Draft) -> Result<Cleaned, BroadcastError> {
-    if let Some(id) = draft.image_id
-        && !store::image_exists(db, id).await?
-    {
-        return Err(rejected(
+pub fn check_video(bytes: &[u8]) -> Result<VideoInfo, BroadcastError> {
+    let bad = |message: String| rejected("broadcast.image", message);
+    if bytes.is_empty() {
+        return Err(bad("Файл пустой".into()));
+    }
+    if bytes.len() > VIDEO_MAX_BYTES {
+        return Err(bad(format!(
+            "Видео больше {} МБ: Telegram не даёт ботам отправлять файлы больше",
+            VIDEO_MAX_BYTES / 1_000_000
+        )));
+    }
+    video::inspect(bytes).map_err(|problem| {
+        bad(match problem {
+            VideoProblem::NotMp4 => "Нужно видео MP4: этот файл не открылся как MP4".into(),
+            VideoProblem::QuickTime => {
+                "Это ролик MOV, а видео с проигрывателем Telegram показывает из MP4. Сохраните ролик в MP4 и загрузите снова".into()
+            }
+            VideoProblem::Damaged => {
+                "MP4 не открылся: файл повреждён или загружен не до конца".into()
+            }
+            VideoProblem::NoPicture => "В файле нет изображения, только звук".into(),
+        })
+    })
+}
+
+pub async fn media_of(
+    db: &mut impl Db,
+    id: Option<i64>,
+) -> Result<Option<MediaKind>, BroadcastError> {
+    let Some(id) = id else {
+        return Ok(None);
+    };
+    match store::media_kind(db, id).await? {
+        Some(kind) => Ok(Some(kind)),
+        None => Err(rejected(
             "broadcast.image",
-            "Картинка не найдена: загрузите её заново",
+            "Картинка или видео не найдены: загрузите файл заново",
+        )),
+    }
+}
+
+pub fn check_media_channel(
+    media: Option<MediaKind>,
+    channel: Channel,
+) -> Result<(), BroadcastError> {
+    if media == Some(MediaKind::Video) && !channel.has(Lane::Bot) {
+        return Err(invalid(
+            "Видео уходит только в Telegram: для письма загрузите картинку или уберите видео",
         ));
     }
+    Ok(())
+}
+
+async fn cleaned(db: &mut impl Db, draft: &Draft) -> Result<Cleaned, BroadcastError> {
+    let media = media_of(db, draft.image_id).await?;
+    check_media_channel(media, draft.channel)?;
     let audience = draft.audience.clone().check()?;
     if let Some(tariff) = audience.tariff()
         && !store::tariff_alive(db, tariff).await?
@@ -659,7 +758,7 @@ async fn cleaned(db: &mut impl Db, draft: &Draft) -> Result<Cleaned, BroadcastEr
     Ok(Cleaned {
         channel: draft.channel,
         subject: clean_subject(draft.subject.as_deref(), draft.channel)?,
-        text: clean_text(&draft.text, draft.image_id.is_some())?,
+        text: clean_caption(&draft.text, media)?,
         image_id: draft.image_id,
         buttons: clean_buttons(&draft.buttons)?,
         audience,
@@ -961,14 +1060,15 @@ async fn test_bot(
             )
         })?;
         let image = match content.image_id {
-            Some(id) => Some(store::image(&mut conn, id).await?),
+            Some(id) => Some(store::image(&mut conn, id, false).await?),
             None => None,
         };
         (content, chat, image)
     };
     let buttons: Vec<OutButton> = content.buttons.iter().map(ButtonSpec::out).collect();
     let bot = sender.bot_id();
-    let delivery = deliver_once(&*sender, bot, chat, &content.text, image.as_ref(), &buttons).await;
+    let (delivery, image) =
+        deliver_once(ctx, &*sender, bot, chat, &content.text, image, &buttons).await?;
     let mut conn = ctx.store.conn().await?;
     if let (
         Delivery::Sent {
@@ -1005,7 +1105,7 @@ async fn test_bot(
         )),
         Delivery::StaleFile => Err(rejected(
             "broadcast.telegram",
-            "Telegram не принял сообщение: картинка не принята",
+            "Telegram не принял сообщение: файл вложения не принят",
         )),
         Delivery::Failed { error, .. } => Err(rejected(
             "broadcast.telegram",
@@ -1055,6 +1155,9 @@ async fn test_mail(
     email_draft.channel = Channel::Email;
     let (content, key) = {
         let mut conn = ctx.store.conn().await?;
+        if media_of(&mut conn, email_draft.image_id).await? == Some(MediaKind::Video) {
+            email_draft.image_id = None;
+        }
         let content = cleaned(&mut conn, &email_draft).await?;
         let key = match content.image_id {
             Some(id) => Some(store::image_key(&mut conn, id).await?),
@@ -1097,42 +1200,49 @@ async fn test_mail(
 }
 
 async fn deliver_once(
+    ctx: &ModuleContext,
     sender: &dyn BotSender,
     bot: Option<i64>,
     chat: i64,
     text: &str,
-    image: Option<&store::ImageData>,
+    image: Option<store::ImageData>,
     buttons: &[OutButton],
-) -> Delivery {
-    let cached = image.and_then(|i| i.file_for(bot));
-    if let Some(file_id) = cached {
+) -> Result<(Delivery, Option<store::ImageData>), BroadcastError> {
+    if let Some(image) = &image
+        && let Some(file_id) = image.file_for(bot)
+    {
         let delivery = sender
             .send(
                 chat,
                 &Outgoing {
                     html: text,
-                    photo: Some(Photo::Cached(file_id)),
+                    media: Some(image.media(MediaFile::Cached(file_id))),
                     buttons,
                 },
             )
             .await;
         if delivery != Delivery::StaleFile {
-            return delivery;
+            return Ok((delivery, None));
         }
     }
-    sender
+    let mut image = image;
+    if let Some(image) = image.as_mut()
+        && !image.loaded()
+    {
+        let mut conn = ctx.store.conn().await?;
+        image.bytes = store::image_bytes(&mut conn, image.id).await?;
+    }
+    let delivery = sender
         .send(
             chat,
             &Outgoing {
                 html: text,
-                photo: image.map(|i| Photo::Upload {
-                    bytes: &i.bytes,
-                    content_type: &i.content_type,
-                }),
+                media: image.as_ref().map(store::ImageData::upload),
                 buttons,
             },
         )
-        .await
+        .await;
+    Ok((delivery, image))
 }
 
 pub async fn upload_image(
@@ -1145,10 +1255,126 @@ pub async fn upload_image(
     Ok(store::insert_image(&mut conn, bytes, info, admin).await?)
 }
 
+pub async fn upload_video(
+    ctx: &ModuleContext,
+    bytes: &[u8],
+    admin: Option<AdminId>,
+) -> Result<ImageMeta, BroadcastError> {
+    let info = check_video(bytes)?;
+    let mut conn = ctx.store.conn().await?;
+    Ok(store::insert_video(&mut conn, bytes, info, admin).await?)
+}
+
+pub async fn upload_media(
+    ctx: &ModuleContext,
+    bytes: &[u8],
+    admin: Option<AdminId>,
+) -> Result<ImageMeta, BroadcastError> {
+    if video::sniff(bytes) {
+        upload_video(ctx, bytes, admin).await
+    } else {
+        upload_image(ctx, bytes, admin).await
+    }
+}
+
 pub async fn image_file(ctx: &ModuleContext, id: i64) -> Result<(String, Vec<u8>), BroadcastError> {
     let mut conn = ctx.store.conn().await?;
-    let image = store::image(&mut conn, id).await?;
+    let image = store::image(&mut conn, id, true).await?;
     Ok((image.content_type, image.bytes))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wanted {
+    From(u64, Option<u64>),
+    Last(u64),
+}
+
+impl Wanted {
+    pub fn parse(header: &str) -> Option<Wanted> {
+        let spec = header.trim().strip_prefix("bytes=")?;
+        if spec.contains(',') {
+            return None;
+        }
+        let (start, end) = spec.split_once('-')?;
+        let (start, end) = (start.trim(), end.trim());
+        if start.is_empty() {
+            return end.parse().ok().filter(|n| *n > 0).map(Wanted::Last);
+        }
+        let start = start.parse().ok()?;
+        let end = match end {
+            "" => None,
+            end => Some(end.parse().ok().filter(|end| *end >= start)?),
+        };
+        Some(Wanted::From(start, end))
+    }
+
+    fn bounds(self, total: u64) -> Option<(u64, u64)> {
+        let (start, end) = match self {
+            Wanted::From(start, end) => (start, end.unwrap_or(u64::MAX)),
+            Wanted::Last(count) => (total.saturating_sub(count), u64::MAX),
+        };
+        if start >= total {
+            return None;
+        }
+        let last = end
+            .min(total - 1)
+            .min(start.saturating_add(MEDIA_PART_BYTES - 1));
+        Some((start, last))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MediaPart {
+    Whole {
+        content_type: String,
+        kind: MediaKind,
+        bytes: Vec<u8>,
+    },
+    Part {
+        content_type: String,
+        start: u64,
+        end: u64,
+        total: u64,
+        bytes: Vec<u8>,
+    },
+    Outside {
+        total: u64,
+    },
+}
+
+pub async fn media_part(
+    ctx: &ModuleContext,
+    id: i64,
+    wanted: Option<Wanted>,
+) -> Result<MediaPart, BroadcastError> {
+    let mut conn = ctx.store.conn().await?;
+    let Some(wanted) = wanted else {
+        let image = store::image(&mut conn, id, true).await?;
+        return Ok(MediaPart::Whole {
+            kind: image.kind(),
+            content_type: image.content_type,
+            bytes: image.bytes,
+        });
+    };
+    let stored = store::image_size(&mut conn, id).await?;
+    let total = u64::try_from(stored.size).unwrap_or(0);
+    let Some((start, end)) = wanted.bounds(total) else {
+        return Ok(MediaPart::Outside { total });
+    };
+    let bytes = store::image_slice(
+        &mut conn,
+        id,
+        i64::try_from(start).unwrap_or(i64::MAX),
+        i64::try_from(end - start + 1).unwrap_or(i64::MAX),
+    )
+    .await?;
+    Ok(MediaPart::Part {
+        content_type: stored.content_type,
+        start,
+        end,
+        total,
+        bytes,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1175,6 +1401,7 @@ pub struct Limits {
     pub days: u16,
     pub schedule_days: i64,
     pub image_bytes: usize,
+    pub video_bytes: usize,
     pub subject: usize,
 }
 
@@ -1188,6 +1415,7 @@ pub const LIMITS: Limits = Limits {
     days: DAYS_MAX,
     schedule_days: SCHEDULE_DAYS_MAX,
     image_bytes: IMAGE_MAX_BYTES,
+    video_bytes: VIDEO_MAX_BYTES,
     subject: SUBJECT_MAX,
 };
 

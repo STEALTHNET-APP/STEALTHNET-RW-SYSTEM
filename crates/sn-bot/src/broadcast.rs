@@ -1,10 +1,10 @@
 use crate::telegram::{
-    Button, Keyboard, Message, PhotoInput, TelegramApi, TelegramError, strip_tags,
+    Button, Keyboard, Message, PhotoInput, TelegramApi, TelegramError, VideoInput, strip_tags,
 };
 use crate::text::escape;
 use async_trait::async_trait;
 use sn_domain::bot_content::strip_custom_emoji;
-use sn_modules::{BotSender, Delivery, OutButton, Outgoing, Photo};
+use sn_modules::{BotSender, Delivery, Media, MediaFile, OutButton, Outgoing};
 use sn_services::Services;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -74,11 +74,18 @@ async fn transmit(
     api: &TelegramApi,
     chat_id: i64,
     html: &str,
-    photo: Option<Photo<'_>>,
+    media: Option<Media<'_>>,
     keyboard: &Keyboard,
     markup: bool,
 ) -> Result<Message, TelegramError> {
-    match photo {
+    let caption = || {
+        if markup {
+            html.to_string()
+        } else {
+            escape(html)
+        }
+    };
+    match media {
         None => {
             let mut body = serde_json::json!({
                 "chat_id": chat_id,
@@ -93,15 +100,10 @@ async fn transmit(
             }
             api.call("sendMessage", &body).await
         }
-        Some(photo) => {
-            let caption = if markup {
-                html.to_string()
-            } else {
-                escape(html)
-            };
-            let input = match photo {
-                Photo::Cached(file_id) => PhotoInput::FileId(file_id),
-                Photo::Upload {
+        Some(Media::Photo(file)) => {
+            let input = match file {
+                MediaFile::Cached(file_id) => PhotoInput::FileId(file_id),
+                MediaFile::Upload {
                     bytes,
                     content_type,
                 } => PhotoInput::Upload {
@@ -109,7 +111,22 @@ async fn transmit(
                     content_type,
                 },
             };
-            api.send_photo(chat_id, input, &caption, Some(keyboard))
+            api.send_photo(chat_id, input, &caption(), Some(keyboard))
+                .await
+        }
+        Some(Media::Video(file, info)) => {
+            let input = match file {
+                MediaFile::Cached(file_id) => VideoInput::FileId(file_id),
+                MediaFile::Upload {
+                    bytes,
+                    content_type,
+                } => VideoInput::Upload {
+                    bytes,
+                    content_type,
+                    info,
+                },
+            };
+            api.send_video(chat_id, input, &caption(), Some(keyboard))
                 .await
         }
     }
@@ -156,9 +173,11 @@ fn readable(err: &TelegramError) -> String {
     } else if text.contains("message is too long") || text.contains("message_too_long") {
         "Текст слишком длинный для Telegram".into()
     } else if text.contains("caption is too long") || text.contains("caption_too_long") {
-        "Подпись к картинке слишком длинная для Telegram".into()
+        "Подпись к картинке или видео слишком длинная для Telegram".into()
     } else if text.contains("photo_invalid") || text.contains("image_process_failed") {
         "Telegram не принял картинку".into()
+    } else if text.contains("too big") || text.contains("too large") {
+        "Telegram не принял файл: он слишком большой".into()
     } else {
         match err {
             TelegramError::Transport(_) => "Нет связи с Telegram".into(),
@@ -171,12 +190,22 @@ fn readable(err: &TelegramError) -> String {
     }
 }
 
-fn delivered(message: Message, uploaded: bool) -> Delivery {
-    Delivery::Sent {
-        file_id: uploaded
-            .then(|| message.largest_photo().map(|p| p.file_id.clone()))
-            .flatten(),
-    }
+fn delivered(message: Message, media: Option<Media<'_>>) -> Delivery {
+    let file_id = match media {
+        Some(Media::Photo(MediaFile::Upload { .. })) => {
+            message.largest_photo().map(|p| p.file_id.clone())
+        }
+        Some(Media::Video(MediaFile::Upload { .. }, _)) => {
+            if message.video.is_none() {
+                tracing::warn!(
+                    "рассылка: Telegram принял видео не как видео, код файла не запоминаем"
+                );
+            }
+            message.video.map(|video| video.file_id)
+        }
+        _ => None,
+    };
+    Delivery::Sent { file_id }
 }
 
 fn classify(err: &TelegramError, cached: bool) -> Delivery {
@@ -216,11 +245,10 @@ impl BotSender for TelegramSender {
         };
         let api = self.api(&token);
         let keyboard = keyboard(message.buttons);
-        let uploaded = matches!(message.photo, Some(Photo::Upload { .. }));
-        let cached = matches!(message.photo, Some(Photo::Cached(_)));
-        let first = transmit(&api, chat_id, message.html, message.photo, &keyboard, true).await;
+        let cached = message.media.is_some_and(|media| media.cached());
+        let first = transmit(&api, chat_id, message.html, message.media, &keyboard, true).await;
         let err = match first {
-            Ok(sent) => return delivered(sent, uploaded),
+            Ok(sent) => return delivered(sent, message.media),
             Err(err) => err,
         };
         let plain_emoji = (message.html.contains("<tg-emoji") || keyboard.has_custom_emoji())
@@ -234,7 +262,7 @@ impl BotSender for TelegramSender {
                     &api,
                     chat_id,
                     &strip_custom_emoji(message.html),
-                    message.photo,
+                    message.media,
                     &keyboard.plain(),
                     true,
                 )
@@ -246,7 +274,7 @@ impl BotSender for TelegramSender {
                     &api,
                     chat_id,
                     &strip_tags(message.html),
-                    message.photo,
+                    message.media,
                     &keyboard,
                     false,
                 )
@@ -256,7 +284,7 @@ impl BotSender for TelegramSender {
             None
         };
         match retried {
-            Some(Ok(sent)) => delivered(sent, uploaded),
+            Some(Ok(sent)) => delivered(sent, message.media),
             Some(Err(again)) => classify(&again, cached),
             None => classify(&err, cached),
         }

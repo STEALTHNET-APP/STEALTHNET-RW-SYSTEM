@@ -1,8 +1,8 @@
 use super::page::{Form, page};
 use super::{
     Audience, AutoReach, Broadcast, BroadcastError, ButtonSpec, Channel, Draft, IMAGE_MAX_BYTES,
-    ImageMeta, ListItem, Options, Reach, ReachQuery, Rule, RuleDraft, RuleItem, TestReport,
-    TestTarget, Unsubscribe, UnsubscribeView,
+    ImageMeta, ListItem, MediaKind, MediaPart, Options, Reach, ReachQuery, Rule, RuleDraft,
+    RuleItem, TestReport, TestTarget, Unsubscribe, UnsubscribeView, VIDEO_MAX_BYTES, Wanted,
 };
 use crate::catalog::web::{Admin, WebError};
 use crate::context::{ModuleContext, RateLimit};
@@ -23,7 +23,11 @@ use sn_domain::paging::{Page, PageRequest};
 use sn_store::ClientConditions;
 use uuid::Uuid;
 
-const UPLOAD_LIMIT: usize = IMAGE_MAX_BYTES + 64 * 1024;
+const UPLOAD_LIMIT: usize = if IMAGE_MAX_BYTES > VIDEO_MAX_BYTES {
+    IMAGE_MAX_BYTES
+} else {
+    VIDEO_MAX_BYTES
+} + 64 * 1024;
 
 pub const TEST_LETTERS: RateLimit = RateLimit {
     scope: "broadcast_test_letters",
@@ -404,29 +408,83 @@ async fn upload(
                 .to_ascii_lowercase()
         })
         .unwrap_or_default();
-    if !matches!(declared.as_str(), "image/png" | "image/jpeg") {
-        return Err(WebError::new(
+    let refused = |message: &str| {
+        WebError::new(
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
             "broadcast.image",
-            "Нужна картинка JPEG или PNG",
-        ));
-    }
-    Ok(Json(
-        super::upload_image(&ctx, &body, Some(admin.0.admin_id)).await?,
-    ))
+            message.to_string(),
+        )
+    };
+    let uploaded = match declared.as_str() {
+        "image/png" | "image/jpeg" => {
+            super::upload_image(&ctx, &body, Some(admin.0.admin_id)).await?
+        }
+        "video/mp4" => super::upload_video(&ctx, &body, Some(admin.0.admin_id)).await?,
+        "video/quicktime" => {
+            return Err(refused(
+                "Это ролик MOV, а видео с проигрывателем Telegram показывает из MP4. Сохраните ролик в MP4 и загрузите снова",
+            ));
+        }
+        _ => return Err(refused("Нужна картинка JPEG или PNG или видео MP4")),
+    };
+    Ok(Json(uploaded))
 }
 
 async fn image(
     State(ctx): State<ModuleContext>,
     admin: Admin,
     Path(id): Path<i64>,
+    headers: HeaderMap,
 ) -> Result<Response, WebError> {
     admin.require(Permission::Marketing)?;
-    let (content_type, bytes) = super::image_file(&ctx, id).await?;
-    let mut response = bytes.into_response();
+    let wanted = headers
+        .get(header::RANGE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(Wanted::parse);
+    let (status, content_type, range, bytes, video) =
+        match super::media_part(&ctx, id, wanted).await? {
+            MediaPart::Whole {
+                content_type,
+                kind,
+                bytes,
+            } => (
+                StatusCode::OK,
+                content_type,
+                None,
+                bytes,
+                kind == MediaKind::Video,
+            ),
+            MediaPart::Part {
+                content_type,
+                start,
+                end,
+                total,
+                bytes,
+            } => (
+                StatusCode::PARTIAL_CONTENT,
+                content_type,
+                Some(format!("bytes {start}-{end}/{total}")),
+                bytes,
+                true,
+            ),
+            MediaPart::Outside { total } => {
+                let mut response = StatusCode::RANGE_NOT_SATISFIABLE.into_response();
+                if let Ok(value) = HeaderValue::from_str(&format!("bytes */{total}")) {
+                    response.headers_mut().insert(header::CONTENT_RANGE, value);
+                }
+                return Ok(response);
+            }
+        };
+    let mut response = (status, bytes).into_response();
     let headers = response.headers_mut();
     if let Ok(value) = HeaderValue::from_str(&content_type) {
         headers.insert(header::CONTENT_TYPE, value);
+    }
+    if let Some(range) = range.and_then(|range| HeaderValue::from_str(&range).ok()) {
+        headers.insert(header::CONTENT_RANGE, range);
+    }
+    if video {
+        headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
     }
     headers.insert(
         header::CACHE_CONTROL,
