@@ -424,3 +424,57 @@ async fn юkassa_спрашивает_почту_только_с_чеками() 
     assert!(!needed(&services).await, "почта уже есть — не спрашиваем");
     db.cleanup().await;
 }
+
+#[tokio::test]
+async fn служебная_почта_старой_панели_не_уходит_в_lava() {
+    let lava = lava_api().await;
+    let Some((db, services, server, ctx)) = lava_bot(&lava).await else {
+        return;
+    };
+    let tariff = standard(&db).await;
+    let chat = 7105;
+    handle_update(&ctx, text_update(1, chat, "/start")).await;
+    let client = client_of(&services, chat).await.unwrap();
+    {
+        let mut conn = services.store().conn().await.unwrap();
+        conn.clients()
+            .add_identity(
+                client.id,
+                &NewIdentity::new(IdentityKind::Email, "tg_5250903268@telegram.local", true)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+    }
+    handle_update(&ctx, callback_update(2, chat, "buy")).await;
+    handle_update(&ctx, callback_update(3, chat, &format!("t:{}", tariff.id))).await;
+    handle_update(
+        &ctx,
+        callback_update(4, chat, &format!("p:{}", tariff.periods[0].id)),
+    )
+    .await;
+    handle_update(&ctx, callback_update(5, chat, "pay:lava:card")).await;
+    let ask = last_text(&server).await;
+    assert!(
+        ask.contains("Для оплаты через Lava.top нужна почта"),
+        "{ask}"
+    );
+    assert!(
+        invoices(&lava).await.is_empty(),
+        "служебная почта в Lava.top не уходит"
+    );
+
+    handle_update(&ctx, text_update(6, chat, "tg_5250903268@telegram.local")).await;
+    assert!(last_text(&server).await.contains("опечатка"));
+    assert!(invoices(&lava).await.is_empty());
+
+    handle_update(&ctx, text_update(7, chat, "anna@example.com")).await;
+    let sent = invoices(&lava).await;
+    assert_eq!(sent.len(), 1, "{}", last_text(&server).await);
+    assert_eq!(sent[0]["email"], "anna@example.com");
+    assert_eq!(
+        receipt_of(&services, chat).await.as_deref(),
+        Some("anna@example.com")
+    );
+    db.cleanup().await;
+}

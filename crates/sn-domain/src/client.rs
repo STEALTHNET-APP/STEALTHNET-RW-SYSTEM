@@ -304,6 +304,20 @@ impl NewIdentity {
     }
 }
 
+const UNDELIVERABLE_DOMAINS: [&str; 5] = ["local", "localhost", "invalid", "internal", "home.arpa"];
+
+pub fn deliverable_email(email: &str) -> bool {
+    let Some((name, domain)) = email.trim().rsplit_once('@') else {
+        return false;
+    };
+    let domain = domain.trim_end_matches('.').to_ascii_lowercase();
+    !name.is_empty()
+        && domain.contains('.')
+        && !UNDELIVERABLE_DOMAINS
+            .iter()
+            .any(|reserved| domain == *reserved || domain.ends_with(&format!(".{reserved}")))
+}
+
 pub fn mask_email(email: &str) -> String {
     match email.split_once('@') {
         Some((name, domain)) => {
@@ -394,6 +408,32 @@ impl TelegramProfile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn служебная_почта_не_считается_настоящей() {
+        for email in [
+            "anna@example.com",
+            "Client-17@3apes.pro",
+            "a@mail.ru",
+            "x@sub.domain.org.",
+        ] {
+            assert!(deliverable_email(email), "{email}");
+        }
+        for email in [
+            "tg_5250903268@telegram.local",
+            "tg_1@TELEGRAM.LOCAL",
+            "root@localhost",
+            "a@box.localhost",
+            "a@x.invalid",
+            "a@corp.internal",
+            "a@router.home.arpa",
+            "a@nodot",
+            "@example.com",
+            "no-at-sign",
+        ] {
+            assert!(!deliverable_email(email), "{email}");
+        }
+    }
 
     #[test]
     fn почта_без_кода_только_логин_пока_не_подтверждена() {

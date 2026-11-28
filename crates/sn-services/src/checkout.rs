@@ -5,7 +5,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use sn_domain::DomainError;
 use sn_domain::access::ClientChannel;
-use sn_domain::client::{Client, IdentityKind, proven_identities};
+use sn_domain::client::{Client, IdentityKind, deliverable_email, proven_identities};
 use sn_domain::events::DomainEvent;
 use sn_domain::format;
 use sn_domain::ids::{
@@ -418,10 +418,15 @@ pub(crate) async fn client_ref(db: &mut impl Db, client: &Client) -> ServiceResu
     let login = identities
         .iter()
         .find(|i| i.kind == IdentityKind::Email)
-        .map(|i| i.value.clone());
+        .map(|i| i.value.clone())
+        .filter(|email| deliverable_email(email));
     let email = match login {
         Some(email) => Some(email),
-        None => db.clients().receipt_email(client.id).await?,
+        None => db
+            .clients()
+            .receipt_email(client.id)
+            .await?
+            .filter(|email| deliverable_email(email)),
     };
     Ok(ClientRef {
         client_id: client.id,
@@ -1188,8 +1193,14 @@ impl<'a> Checkout<'a> {
     pub async fn billing_email(&self, client_id: ClientId) -> ServiceResult<BillingEmail> {
         let mut conn = self.services.store().conn().await?;
         Ok(BillingEmail {
-            login: login_email(&mut conn, client_id).await?,
-            receipt: conn.clients().receipt_email(client_id).await?,
+            login: login_email(&mut conn, client_id)
+                .await?
+                .filter(|email| deliverable_email(email)),
+            receipt: conn
+                .clients()
+                .receipt_email(client_id)
+                .await?
+                .filter(|email| deliverable_email(email)),
         })
     }
 

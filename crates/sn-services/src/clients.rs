@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sn_domain::client::{
     Client, ClientStatus, Identity, IdentityKind, Locale, NewIdentity, RegistrationSource,
-    TelegramProfile, normalize_identity,
+    TelegramProfile, deliverable_email, normalize_identity,
 };
 use sn_domain::events::DomainEvent;
 use sn_domain::ids::{
@@ -520,12 +520,15 @@ impl<'a> ClientOps<'a> {
         raw: &str,
         actor: Actor,
     ) -> ServiceResult<String> {
-        let email = normalize_identity(IdentityKind::Email, raw).map_err(|_| {
-            ServiceError::rejected(
-                RECEIPT_EMAIL_INVALID,
-                "Похоже, в почте опечатка: нужен адрес вида name@example.com",
-            )
-        })?;
+        let email = normalize_identity(IdentityKind::Email, raw)
+            .ok()
+            .filter(|email| deliverable_email(email))
+            .ok_or_else(|| {
+                ServiceError::rejected(
+                    RECEIPT_EMAIL_INVALID,
+                    "Похоже, в почте опечатка: нужен адрес вида name@example.com",
+                )
+            })?;
         let mut tx = self.services.store().begin().await?;
         tx.clients().get(id).await?;
         let before = tx.clients().receipt_email(id).await?;
