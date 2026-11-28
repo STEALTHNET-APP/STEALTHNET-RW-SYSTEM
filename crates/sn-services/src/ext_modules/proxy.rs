@@ -19,13 +19,29 @@ type HmacSha256 = Hmac<Sha256>;
 pub const PREFIX: &str = "/m/";
 pub const CAP_HOURS: i64 = 12;
 const LABEL: &[u8] = b"stealthnet module page\0";
+const CARD_LABEL: &[u8] = b"stealthnet module card\0";
 const TAG_LEN: usize = 16;
 const CACHE_SECONDS: u64 = 15;
 const CACHE_MAX: usize = 1000;
 
-fn mac(key: &[u8], module: &str, payload: &[u8]) -> Option<HmacSha256> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    Page,
+    Card,
+}
+
+impl Scope {
+    const fn label(self) -> &'static [u8] {
+        match self {
+            Scope::Page => LABEL,
+            Scope::Card => CARD_LABEL,
+        }
+    }
+}
+
+fn mac(key: &[u8], module: &str, payload: &[u8], scope: Scope) -> Option<HmacSha256> {
     let mut mac = HmacSha256::new_from_slice(key).ok()?;
-    mac.update(LABEL);
+    mac.update(scope.label());
     mac.update(module.as_bytes());
     mac.update(b"\0");
     mac.update(payload);
@@ -33,11 +49,26 @@ fn mac(key: &[u8], module: &str, payload: &[u8]) -> Option<HmacSha256> {
 }
 
 pub fn cap(key: &[u8], module: &str, admin: i64, session: i64, exp: i64) -> String {
+    scoped_cap(key, module, admin, session, exp, Scope::Page)
+}
+
+pub fn card_cap(key: &[u8], module: &str, admin: i64, session: i64, exp: i64) -> String {
+    scoped_cap(key, module, admin, session, exp, Scope::Card)
+}
+
+fn scoped_cap(
+    key: &[u8],
+    module: &str,
+    admin: i64,
+    session: i64,
+    exp: i64,
+    scope: Scope,
+) -> String {
     let mut payload = Vec::with_capacity(24);
     payload.extend_from_slice(&admin.to_be_bytes());
     payload.extend_from_slice(&session.to_be_bytes());
     payload.extend_from_slice(&exp.to_be_bytes());
-    let tag = mac(key, module, &payload)
+    let tag = mac(key, module, &payload, scope)
         .map(|m| m.finalize().into_bytes()[..TAG_LEN].to_vec())
         .unwrap_or_default();
     format!(
@@ -55,6 +86,12 @@ pub struct CapClaims {
 }
 
 pub fn read_cap(key: &[u8], module: &str, cap: &str, now: i64) -> Option<CapClaims> {
+    read_scoped(key, module, cap, now)
+        .filter(|(_, scope)| *scope == Scope::Page)
+        .map(|(claims, _)| claims)
+}
+
+pub fn read_scoped(key: &[u8], module: &str, cap: &str, now: i64) -> Option<(CapClaims, Scope)> {
     if cap.len() > 80 {
         return None;
     }
@@ -64,9 +101,9 @@ pub fn read_cap(key: &[u8], module: &str, cap: &str, now: i64) -> Option<CapClai
     if payload.len() != 24 || tag.len() != TAG_LEN {
         return None;
     }
-    mac(key, module, &payload)?
-        .verify_truncated_left(&tag)
-        .ok()?;
+    let scope = [Scope::Page, Scope::Card].into_iter().find(|scope| {
+        mac(key, module, &payload, *scope).is_some_and(|m| m.verify_truncated_left(&tag).is_ok())
+    })?;
     let number = |range: std::ops::Range<usize>| -> Option<i64> {
         Some(i64::from_be_bytes(payload.get(range)?.try_into().ok()?))
     };
@@ -75,7 +112,31 @@ pub fn read_cap(key: &[u8], module: &str, cap: &str, now: i64) -> Option<CapClai
         session: number(8..16)?,
         exp: number(16..24)?,
     };
-    (claims.exp > now).then_some(claims)
+    (claims.exp > now).then_some((claims, scope))
+}
+
+pub fn plain_path(rest: &str) -> bool {
+    let path = rest.split('?').next().unwrap_or_default();
+    let lower = path.to_ascii_lowercase();
+    !path.contains('\\')
+        && !["%2e", "%2f", "%5c"]
+            .iter()
+            .any(|code| lower.contains(code))
+        && !path
+            .split('/')
+            .any(|segment| segment == "." || segment == "..")
+}
+
+pub fn within(only: Option<&str>, rest: &str) -> bool {
+    let Some(base) = only else {
+        return true;
+    };
+    if !plain_path(rest) {
+        return false;
+    }
+    let base = base.trim_end_matches('/');
+    let path = rest.split('?').next().unwrap_or_default();
+    base.is_empty() || path == base || path.starts_with(&format!("{base}/"))
 }
 
 #[derive(Debug, Clone)]
@@ -83,6 +144,7 @@ pub struct PageEntry {
     pub module: String,
     pub base: String,
     pub prefix: String,
+    pub only: Option<String>,
     key: Vec<u8>,
     admin_id: i64,
     email: String,
@@ -329,8 +391,7 @@ impl ExtModulesOps<'_> {
         if !row.managed || !row.enabled {
             return Ok(None);
         }
-        let (Some(page), Some(run)) = (row.manifest.page.as_ref(), row.manifest.run.as_ref())
-        else {
+        let Some(run) = row.manifest.run.as_ref() else {
             return Ok(None);
         };
         let Some(key) = read_secret(&mut conn, self.services.secrets(), &secret_key(module))
@@ -341,8 +402,18 @@ impl ExtModulesOps<'_> {
             return Ok(None);
         };
         let now = self.services.now();
-        let Some(claims) = read_cap(&key, module, cap, now.timestamp()) else {
+        let Some((claims, scope)) = read_scoped(&key, module, cap, now.timestamp()) else {
             return Ok(None);
+        };
+        let (needs, only) = match scope {
+            Scope::Page => match row.manifest.page.as_ref() {
+                Some(page) => (page.permission, None),
+                None => return Ok(None),
+            },
+            Scope::Card => match row.manifest.client_card.as_ref() {
+                Some(card) => (card.permission, Some(card.path.clone())),
+                None => return Ok(None),
+            },
         };
         let admin_id = AdminId(claims.admin);
         if conn
@@ -361,7 +432,7 @@ impl ExtModulesOps<'_> {
             session_id: claims.session,
             api_key: None,
         };
-        if !principal.can(page.permission) {
+        if !principal.can(needs) {
             return Ok(None);
         }
         let entry = Arc::new(PageEntry {
@@ -373,6 +444,7 @@ impl ExtModulesOps<'_> {
                 "",
             ),
             prefix: format!("{PREFIX}{module}/{cap}"),
+            only,
             key,
             admin_id: claims.admin,
             email: admin.email,
@@ -405,6 +477,41 @@ mod tests {
         assert!(request_header("authorization"));
         assert!(!request_header("cookie"));
         assert!(!request_header("x-forwarded-for"));
+    }
+
+    #[test]
+    fn раздел_карточки_не_выходит_за_свой_путь() {
+        assert!(within(None, "/anything"));
+        assert!(within(Some("/card"), "/card"));
+        assert!(within(Some("/card"), "/card?client_id=7"));
+        assert!(within(Some("/card/"), "/card/app.js"));
+        assert!(!within(Some("/card"), "/cardx"));
+        assert!(!within(Some("/card"), "/"));
+        assert!(!within(Some("/card"), "/card/../api/state"));
+        assert!(!within(Some("/card"), "/card/%2e%2e/api"));
+        assert!(!within(Some("/card"), "/card/%2E%2E%2Fapi"));
+        assert!(!within(Some("/card"), "/card\\..\\api"));
+        assert!(plain_path("/api/internal/game/fulfill?x=1"));
+        assert!(!plain_path("/../healthz"));
+        assert!(!plain_path("/./x"));
+    }
+
+    #[test]
+    fn пропуск_раздела_карточки_не_открывает_страницу() {
+        let key = [9u8; 32];
+        let page = cap(&key, "game", 3, 41, 2_000_000_000);
+        let card = card_cap(&key, "game", 3, 41, 2_000_000_000);
+        assert_ne!(page, card);
+        assert_eq!(
+            read_scoped(&key, "game", &page, 1_900_000_000).map(|(_, s)| s),
+            Some(Scope::Page)
+        );
+        assert_eq!(
+            read_scoped(&key, "game", &card, 1_900_000_000).map(|(_, s)| s),
+            Some(Scope::Card)
+        );
+        assert!(read_cap(&key, "game", &card, 1_900_000_000).is_none());
+        assert!(read_scoped(&key, "other", &card, 1_900_000_000).is_none());
     }
 
     #[test]

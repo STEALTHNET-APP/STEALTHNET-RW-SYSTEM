@@ -235,6 +235,15 @@ export function plainSummary(preview: PackagePreview): string {
   if (preview.page) {
     parts.push(`Его страница «${preview.page.title}» появится у администраторов с правом «${preview.page.permission_title}».`);
   }
+  if (preview.client_card) {
+    parts.push(`В карточке клиента появится раздел «${preview.client_card.title}» для тех, у кого есть право «${preview.client_card.permission_title}».`);
+  }
+  if (preview.bot) {
+    parts.push(`В главном меню бота появится кнопка «${preview.bot.button}».`);
+  }
+  if (preview.inbound) {
+    parts.push('Модуль принимает запросы сторонних сервисов через адрес панели.');
+  }
   return parts.join(' ');
 }
 

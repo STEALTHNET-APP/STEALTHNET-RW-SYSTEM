@@ -1,9 +1,13 @@
 pub mod address;
+pub mod bot;
+pub mod cards;
 pub mod delivery;
+pub mod inbound;
 pub mod manifest;
 pub mod package;
 pub mod packages;
 pub mod proxy;
+pub mod rewards;
 pub mod runtime;
 pub mod signing;
 pub mod store;
@@ -107,6 +111,46 @@ pub struct PageView {
     pub title: String,
     pub permission: Permission,
     pub permission_title: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ClientCardView {
+    pub title: String,
+    pub permission: Permission,
+    pub permission_title: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BotView {
+    pub button: String,
+}
+
+pub const INBOUND_PREFIX: &str = "/api/ext/";
+
+pub fn inbound_address(module: &str) -> String {
+    format!("{INBOUND_PREFIX}{module}/")
+}
+
+fn client_card_view(manifest: &Manifest) -> Option<ClientCardView> {
+    manifest.client_card.as_ref().map(|card| ClientCardView {
+        title: card.title.clone(),
+        permission: card.permission,
+        permission_title: permission_title(card.permission),
+    })
+}
+
+fn bot_view(manifest: &Manifest) -> Option<BotView> {
+    manifest.bot.as_ref().map(|bot| BotView {
+        button: bot.button.clone(),
+    })
+}
+
+fn inbound_view(manifest: &Manifest) -> Option<String> {
+    manifest
+        .run
+        .as_ref()
+        .and_then(|run| run.inbound_path.as_ref())
+        .map(|_| inbound_address(&manifest.id))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -241,6 +285,9 @@ pub struct Preview {
     pub site: Option<String>,
     pub webhook: Option<String>,
     pub page: Option<PageView>,
+    pub client_card: Option<ClientCardView>,
+    pub bot: Option<BotView>,
+    pub inbound: Option<String>,
     pub settings: Vec<String>,
     pub events: Vec<EventView>,
     pub permissions: Vec<PermissionView>,
@@ -321,6 +368,9 @@ pub struct Card {
     pub events: Vec<EventView>,
     pub permissions: Vec<PermissionView>,
     pub page: Option<PageView>,
+    pub client_card: Option<ClientCardView>,
+    pub bot: Option<BotView>,
+    pub inbound: Option<String>,
     pub has_settings: bool,
     pub key: KeyInfo,
     pub installed_by: String,
@@ -602,6 +652,9 @@ pub(crate) fn build_preview(manifest: Manifest, existing: Option<&ModuleRow>) ->
         events: events_diff(&manifest, old),
         permissions,
         page: page_view(&manifest),
+        client_card: client_card_view(&manifest),
+        bot: bot_view(&manifest),
+        inbound: inbound_view(&manifest),
         settings: manifest.settings.iter().map(|f| f.label.clone()).collect(),
         installed: existing.map(|row| InstalledVersion {
             version: row.manifest.version.clone(),
@@ -615,6 +668,32 @@ pub(crate) fn build_preview(manifest: Manifest, existing: Option<&ModuleRow>) ->
         site: manifest.site,
         webhook: manifest.webhook,
     }
+}
+
+pub(crate) fn admin_claims(
+    actor: &AdminPrincipal,
+    email: String,
+    module: &str,
+    now: DateTime<Utc>,
+) -> (signing::PageClaims, DateTime<Utc>) {
+    let expires_at = now + Duration::seconds(signing::PAGE_TOKEN_SECONDS);
+    let claims = signing::PageClaims {
+        iss: signing::ISSUER.into(),
+        aud: signing::audience(module),
+        sub: actor.admin_id.0.to_string(),
+        iat: now.timestamp(),
+        exp: expires_at.timestamp(),
+        jti: signing::nonce(),
+        module: module.to_string(),
+        admin_id: actor.admin_id.0,
+        email,
+        role: actor.role,
+        permissions: Permission::ALL
+            .into_iter()
+            .filter(|p| actor.can(*p))
+            .collect(),
+    };
+    (claims, expires_at)
 }
 
 pub struct ExtModulesOps<'a> {
@@ -993,6 +1072,9 @@ impl<'a> ExtModulesOps<'a> {
             events: events_diff(&row.manifest, None),
             permissions: permissions_diff(&row.manifest, None),
             page: page_view(&row.manifest),
+            client_card: client_card_view(&row.manifest),
+            bot: bot_view(&row.manifest),
+            inbound: inbound_view(&row.manifest),
             has_settings: !row.manifest.settings.is_empty(),
             key,
             stats,
@@ -1493,23 +1575,7 @@ impl<'a> ExtModulesOps<'a> {
             })?;
         let admin = conn.admins().get(actor.admin_id).await?;
         let now = self.services.now();
-        let expires_at = now + Duration::seconds(signing::PAGE_TOKEN_SECONDS);
-        let claims = signing::PageClaims {
-            iss: signing::ISSUER.into(),
-            aud: signing::audience(id),
-            sub: actor.admin_id.0.to_string(),
-            iat: now.timestamp(),
-            exp: expires_at.timestamp(),
-            jti: signing::nonce(),
-            module: id.to_string(),
-            admin_id: actor.admin_id.0,
-            email: admin.email,
-            role: actor.role,
-            permissions: Permission::ALL
-                .into_iter()
-                .filter(|p| actor.can(*p))
-                .collect(),
-        };
+        let (claims, expires_at) = admin_claims(actor, admin.email, id, now);
         let token = signing::page_token(&key, &claims)
             .ok_or_else(|| ServiceError::Internal("токен страницы не подписан".into()))?;
         if row.managed {

@@ -1873,12 +1873,7 @@ impl<'a> PaymentInbox<'a> {
                         .await?;
                     if changed {
                         tx.events()
-                            .push(&DomainEvent::OrderFulfilled {
-                                order_id: fulfilled.id,
-                                client_id: fulfilled.client_id,
-                                order_kind: fulfilled.kind,
-                                subscription_id: None,
-                            })
+                            .push(&DomainEvent::order_fulfilled(&fulfilled, None))
                             .await?;
                     }
                     fulfilled

@@ -712,6 +712,13 @@ pub static CATALOG: &[Entry] = &[
         &[BALANCE],
     ),
     text(
+        "menu.module_unavailable",
+        Menu,
+        "Если экран внешнего модуля не открылся",
+        "Раздел сейчас недоступен. Попробуйте через минуту.",
+        &[],
+    ),
+    text(
         "menu.subscription",
         Menu,
         "Строка подписки, если их несколько",
@@ -770,6 +777,12 @@ pub static CATALOG: &[Entry] = &[
         Menu,
         "Кнопка рулетки в мини-приложении",
         "Рулетка",
+    ),
+    hideable(
+        "menu.btn.modules",
+        Menu,
+        "Кнопки внешних модулей: надпись задаёт модуль",
+        "Модуль",
     ),
     hideable(
         "menu.btn.gifts",

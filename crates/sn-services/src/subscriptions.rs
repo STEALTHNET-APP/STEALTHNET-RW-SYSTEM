@@ -213,6 +213,17 @@ fn ensure_live(subscription: &Subscription) -> ServiceResult<()> {
     Ok(())
 }
 
+fn noted(mut details: serde_json::Value, note: Option<&serde_json::Value>) -> serde_json::Value {
+    if let (serde_json::Value::Object(map), Some(serde_json::Value::Object(extra))) =
+        (&mut details, note)
+    {
+        for (key, value) in extra {
+            map.insert(key.clone(), value.clone());
+        }
+    }
+    details
+}
+
 fn staff_only(actor: Actor) -> ServiceResult<()> {
     match actor {
         Actor::Client(_) => Err(ServiceError::Forbidden),
@@ -914,6 +925,16 @@ impl<'a> SubscriptionOps<'a> {
         days: u32,
         actor: Actor,
     ) -> ServiceResult<SubscriptionView> {
+        self.add_days_noted(id, days, actor, None).await
+    }
+
+    pub async fn add_days_noted(
+        &self,
+        id: SubscriptionId,
+        days: u32,
+        actor: Actor,
+        note: Option<&serde_json::Value>,
+    ) -> ServiceResult<SubscriptionView> {
         let subscription = self.owned(id, actor).await?;
         staff_only(actor)?;
         if days == 0 || days > MAX_ADD_DAYS {
@@ -937,13 +958,16 @@ impl<'a> SubscriptionOps<'a> {
                 subscription: &subscription,
                 actor,
                 action: actions::ADD_DAYS,
-                details: json!({
-                    "days": days,
-                    "previous_expire_at": before.expire_at,
-                    "expire_at": after.expire_at,
-                    "previous_status": status_of(&before),
-                    "status": status_of(&after),
-                }),
+                details: noted(
+                    json!({
+                        "days": days,
+                        "previous_expire_at": before.expire_at,
+                        "expire_at": after.expire_at,
+                        "previous_status": status_of(&before),
+                        "status": status_of(&after),
+                    }),
+                    note,
+                ),
                 user: Some(&after),
                 devices: None,
                 purchase: None,
@@ -1569,6 +1593,16 @@ impl<'a> SubscriptionOps<'a> {
         change: &LimitsChange,
         actor: Actor,
     ) -> ServiceResult<SubscriptionView> {
+        self.change_limits_noted(id, change, actor, None).await
+    }
+
+    pub async fn change_limits_noted(
+        &self,
+        id: SubscriptionId,
+        change: &LimitsChange,
+        actor: Actor,
+        note: Option<&serde_json::Value>,
+    ) -> ServiceResult<SubscriptionView> {
         let subscription = self.owned(id, actor).await?;
         staff_only(actor)?;
         ensure_live(&subscription)?;
@@ -1712,19 +1746,22 @@ impl<'a> SubscriptionOps<'a> {
                 subscription: &subscription,
                 actor,
                 action: actions::CHANGE_LIMITS,
-                details: json!({
-                    "traffic_limit_before": before.traffic_limit_bytes,
-                    "traffic_limit": after.traffic_limit_bytes,
-                    "hwid_limit_before": before.hwid_device_limit,
-                    "hwid_limit": after.hwid_device_limit,
-                    "extra_devices_before": subscription.extra_devices,
-                    "extra_devices": extra_target.unwrap_or(subscription.extra_devices),
-                    "device_limit_before": subscription.device_limit,
-                    "device_limit": manual_target.unwrap_or(subscription.device_limit),
-                    "removed_devices": trimmed.removed,
-                    "previous_status": status_of(&before),
-                    "status": status_of(&after),
-                }),
+                details: noted(
+                    json!({
+                        "traffic_limit_before": before.traffic_limit_bytes,
+                        "traffic_limit": after.traffic_limit_bytes,
+                        "hwid_limit_before": before.hwid_device_limit,
+                        "hwid_limit": after.hwid_device_limit,
+                        "extra_devices_before": subscription.extra_devices,
+                        "extra_devices": extra_target.unwrap_or(subscription.extra_devices),
+                        "device_limit_before": subscription.device_limit,
+                        "device_limit": manual_target.unwrap_or(subscription.device_limit),
+                        "removed_devices": trimmed.removed,
+                        "previous_status": status_of(&before),
+                        "status": status_of(&after),
+                    }),
+                    note,
+                ),
                 user: Some(&after),
                 devices: trimmed.left,
                 purchase,

@@ -24,6 +24,7 @@ pub fn routes() -> Router<AppState> {
         .route("/clients/grant-options", get(grant_options))
         .route("/clients/{id}", get(card))
         .route("/clients/{id}/history", get(history))
+        .route("/clients/{id}/module-cards", get(module_cards))
         .route("/clients/{id}/note", put(note))
         .route("/clients/{id}/balance", post(balance))
         .route("/clients/{id}/message", post(message))
@@ -221,6 +222,21 @@ async fn grant_options(
         "tariffs": tariffs,
         "multi_subscriptions": state.services.settings().multi_subscriptions,
     })))
+}
+
+async fn module_cards(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> ApiResult<Json<Vec<sn_services::ext_modules::cards::CardFrame>>> {
+    admin.require(Permission::ClientsRead)?;
+    Ok(Json(
+        state
+            .services
+            .ext_modules()
+            .client_cards(&admin.0, ClientId(id))
+            .await?,
+    ))
 }
 
 async fn grant(

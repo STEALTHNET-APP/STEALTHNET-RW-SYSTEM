@@ -128,6 +128,7 @@ export type HistoryItem = { at: string } & (
       actor_kind: string;
       actor_id: number | null;
       actor_email: string | null;
+      module?: string | null;
       entity_kind: string | null;
       entity_id: number | null;
       details: Record<string, unknown>;

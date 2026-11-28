@@ -3,6 +3,7 @@ pub mod client;
 mod client_email;
 mod client_oauth;
 mod client_photo;
+mod module_inbound;
 mod module_pages;
 pub mod public_app;
 mod public_pay;
@@ -152,6 +153,7 @@ pub fn router(state: AppState) -> Router {
         .merge(public_pay::routes())
         .merge(public_verify::routes())
         .merge(webhooks::routes())
+        .merge(module_inbound::routes())
         .merge(support_files::public_routes())
         .merge(crate::security::routes())
         .nest(

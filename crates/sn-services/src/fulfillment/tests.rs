@@ -218,7 +218,7 @@ async fn покупка_с_баланса_доходит_до_пользоват
     )));
     assert!(events.iter().any(|e| matches!(
         e,
-        DomainEvent::OrderFulfilled { order_id, .. } if *order_id == order.id
+        DomainEvent::OrderFulfilled { order_id, days: 90, devices: 0, .. } if *order_id == order.id
     )));
     assert!(jobs(&kit.services).await.iter().any(|job| matches!(
         job,

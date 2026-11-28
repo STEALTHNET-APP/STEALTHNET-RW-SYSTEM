@@ -470,6 +470,13 @@ export function ExtModule() {
           Открыть страницу «{card.page.title}»
         </Link>
       ) : null}
+      {card.managed && card.inbound ? (
+        <section className="card card-pad md-inbound" aria-label="Входящий адрес модуля">
+          <span className="md-name">Входящий адрес</span>
+          <span className="mono ext-url">{`${window.location.origin}${card.inbound}`}</span>
+          <span className="cap">Сюда сторонний сервис шлёт запросы модулю. Панель пересылает их модулю как есть, подпись проверяет сам модуль.</span>
+        </section>
+      ) : null}
       {error ? (
         <p className="err" role="alert">
           {error}

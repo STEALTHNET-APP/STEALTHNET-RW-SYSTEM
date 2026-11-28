@@ -339,3 +339,9 @@
   height: 100%;
   background: var(--accent);
 }
+
+.md-inbound {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}

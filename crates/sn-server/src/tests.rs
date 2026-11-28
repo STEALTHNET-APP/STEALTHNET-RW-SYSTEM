@@ -64,6 +64,7 @@ mod migrated_providers;
 mod mini_account;
 mod mini_support;
 mod miniapp;
+mod module_hooks;
 mod module_packages;
 mod multi_subscriptions;
 mod oauth;

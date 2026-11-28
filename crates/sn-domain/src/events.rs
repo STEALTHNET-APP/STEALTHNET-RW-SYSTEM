@@ -3,7 +3,7 @@ use crate::client::RegistrationSource;
 use crate::ids::{ClientId, OrderId, PaymentId, SubscriptionId, TariffId, TicketId};
 use crate::ledger::{LedgerKind, Wallet};
 use crate::money::{Amount, Money};
-use crate::order::OrderKind;
+use crate::order::{Order, OrderKind};
 use crate::payment::ProviderId;
 use crate::subscription::{SubscriptionKind, SubscriptionStatus};
 use chrono::{DateTime, Utc};
@@ -43,6 +43,14 @@ pub enum DomainEvent {
         client_id: ClientId,
         order_kind: OrderKind,
         subscription_id: Option<SubscriptionId>,
+        #[serde(default)]
+        days: u32,
+        #[serde(default)]
+        devices: u32,
+    },
+    ClientTelegramLinked {
+        client_id: ClientId,
+        telegram_id: i64,
     },
     SubscriptionCreated {
         subscription_id: SubscriptionId,
@@ -83,11 +91,23 @@ pub enum DomainEvent {
 }
 
 impl DomainEvent {
+    pub fn order_fulfilled(order: &Order, subscription_id: Option<SubscriptionId>) -> Self {
+        DomainEvent::OrderFulfilled {
+            order_id: order.id,
+            client_id: order.client_id,
+            order_kind: order.kind,
+            subscription_id,
+            days: order.quote.days,
+            devices: order.bought_devices(),
+        }
+    }
+
     pub const fn kind(&self) -> &'static str {
         match self {
             DomainEvent::ClientRegistered { .. } => "client_registered",
             DomainEvent::ClientBlocked { .. } => "client_blocked",
             DomainEvent::ClientUnblocked { .. } => "client_unblocked",
+            DomainEvent::ClientTelegramLinked { .. } => "client_telegram_linked",
             DomainEvent::PaymentPaid { .. } => "payment_paid",
             DomainEvent::PaymentRefunded { .. } => "payment_refunded",
             DomainEvent::OrderFulfilled { .. } => "order_fulfilled",
@@ -112,6 +132,7 @@ impl DomainEvent {
             DomainEvent::ClientRegistered { .. }
             | DomainEvent::ClientBlocked { .. }
             | DomainEvent::ClientUnblocked { .. }
+            | DomainEvent::ClientTelegramLinked { .. }
             | DomainEvent::OrderFulfilled { .. }
             | DomainEvent::SubscriptionCreated { .. }
             | DomainEvent::SubscriptionRenewed { .. }
@@ -125,6 +146,7 @@ impl DomainEvent {
             DomainEvent::ClientRegistered { client_id, .. }
             | DomainEvent::ClientBlocked { client_id, .. }
             | DomainEvent::ClientUnblocked { client_id }
+            | DomainEvent::ClientTelegramLinked { client_id, .. }
             | DomainEvent::PaymentPaid { client_id, .. }
             | DomainEvent::PaymentRefunded { client_id, .. }
             | DomainEvent::OrderFulfilled { client_id, .. }
@@ -143,6 +165,32 @@ impl DomainEvent {
 mod tests {
     use super::*;
     use crate::money::PayCurrency;
+
+    #[test]
+    fn покупка_выдана_несёт_срок_и_докупленные_устройства() {
+        let stored = serde_json::json!({
+            "type": "order_fulfilled",
+            "order_id": 4,
+            "client_id": 3,
+            "order_kind": "renewal",
+            "subscription_id": 2
+        });
+        match serde_json::from_value::<DomainEvent>(stored).unwrap() {
+            DomainEvent::OrderFulfilled { days, devices, .. } => {
+                assert_eq!((days, devices), (0, 0));
+            }
+            other => panic!("{other:?}"),
+        }
+        let linked = DomainEvent::ClientTelegramLinked {
+            client_id: ClientId(3),
+            telegram_id: 5_093_118_422,
+        };
+        assert_eq!(linked.kind(), "client_telegram_linked");
+        assert_eq!(linked.permission(), Permission::ClientsRead);
+        assert_eq!(linked.client_id(), ClientId(3));
+        let json = serde_json::to_value(&linked).unwrap();
+        assert_eq!(json["telegram_id"], 5_093_118_422_i64);
+    }
 
     #[test]
     fn событие_сериализуется_с_типом() {

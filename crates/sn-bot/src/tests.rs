@@ -36,6 +36,7 @@ mod layout;
 mod maintenance;
 mod menu_mode;
 mod miniapp;
+mod module_screen;
 mod photos;
 mod promotions;
 mod receipt_email;

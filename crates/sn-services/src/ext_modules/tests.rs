@@ -345,6 +345,12 @@ fn права_событий_модулей_совпадают_с_правами
             client_id,
             order_kind: OrderKind::New,
             subscription_id: Some(subscription_id),
+            days: 30,
+            devices: 1,
+        },
+        DomainEvent::ClientTelegramLinked {
+            client_id,
+            telegram_id: 5_093_118_422,
         },
         DomainEvent::SubscriptionCreated {
             subscription_id,

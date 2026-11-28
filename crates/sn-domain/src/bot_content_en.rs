@@ -3,6 +3,9 @@ pub fn default(key: &str) -> Option<&'static str> {
         "menu.title" => "<b>{brand}</b>",
         "menu.greeting" => "",
         "menu.no_subscription" => "No subscription yet.",
+        "menu.module_unavailable" => {
+            "This section is unavailable right now. Please try again in a minute."
+        }
         "menu.single" => "\n<b>{tariff}</b> · {status}",
         "menu.single_until" => "Until {date}, {days} left",
         "menu.single_ended" => "Ended {date}",
@@ -24,6 +27,7 @@ pub fn default(key: &str) -> Option<&'static str> {
         "menu.btn.options" => "Add-ons",
         "menu.btn.contests" => "Giveaways",
         "menu.btn.roulette" => "Lucky spin",
+        "menu.btn.modules" => "Module",
         "menu.btn.gifts" => "Gift a subscription",
         "menu.btn.documents" => "Documents",
         "menu.btn.support" => "Support",

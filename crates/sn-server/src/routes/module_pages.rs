@@ -149,6 +149,10 @@ async fn serve(state: AppState, id: String, cap: String, incoming: Incoming) -> 
             );
         }
     };
+    let rest = raw_rest(&uri, &id, &cap);
+    if !proxy::within(entry.only.as_deref(), &rest) {
+        return denied();
+    }
     if method == Method::OPTIONS {
         let mut response = guarded(StatusCode::NO_CONTENT.into_response());
         let out = response.headers_mut();
@@ -185,7 +189,6 @@ async fn serve(state: AppState, id: String, cap: String, incoming: Incoming) -> 
                 .map(|v| (name.as_str().to_string(), v.to_string()))
         })
         .collect();
-    let rest = raw_rest(&uri, &id, &cap);
     let public_url = state.services.settings().public_url.clone();
     let result = proxy::forward(
         &entry,

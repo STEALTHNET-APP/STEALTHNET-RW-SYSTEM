@@ -180,6 +180,15 @@ async fn кабинет_привязывает_telegram_и_видит_итог()
         history.to_string().contains("client.telegram_linked"),
         "{history}"
     );
+    let linked: Vec<Value> = sqlx::query_scalar(
+        "SELECT payload FROM domain_events WHERE client_id = $1 AND kind = 'client_telegram_linked'",
+    )
+    .bind(client.0)
+    .fetch_all(h.services().store().conn().await.unwrap().conn())
+    .await
+    .unwrap();
+    assert_eq!(linked.len(), 1, "{linked:?}");
+    assert_eq!(linked[0]["telegram_id"], 9401);
     h.db.cleanup().await;
 }
 

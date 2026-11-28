@@ -556,6 +556,7 @@ impl ExtModulesOps<'_> {
             port: 0,
             events_path: None,
             health_path: String::new(),
+            inbound_path: None,
             memory_mb: 0,
             cpu_tenths: 0,
             internet: false,

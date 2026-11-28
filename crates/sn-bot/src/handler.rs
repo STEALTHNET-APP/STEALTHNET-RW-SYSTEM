@@ -31,6 +31,7 @@ use sn_services::bot_content::{BotContent, Document};
 use sn_services::bot_flood::Signup;
 use sn_services::bot_layout::{Install, link_button};
 use sn_services::clients::Entered;
+use sn_services::ext_modules::bot as ext_bot;
 use sn_services::subscriptions::SubscriptionView;
 use sn_store::Db;
 use std::sync::Arc;
@@ -789,6 +790,7 @@ pub(crate) async fn callback(
         "ga" => gifts::ask_code(turn),
         "gr" => gifts::redeem(turn, client, rest).await?,
         gifts::PROMO_CONFIRM => gifts::promo_link_confirmed(turn, client, rest).await?,
+        ext_bot::CALLBACK_PREFIX => module_screen(turn, client, rest).await?,
         "auth" => login_decision(turn, rest).await?,
         email::CALLBACK => email::action(turn, client, rest).await?,
         "docs" => documents_screen(
@@ -904,6 +906,64 @@ async fn trial_available(services: &Services, client: &Client) -> Result<bool, B
     let mut conn = services.store().conn().await?;
     let identities = proven_identities(conn.clients().identities(client.id).await?);
     Ok(!conn.trials().was_claimed(client.id, &identities).await?)
+}
+
+const MODULES_SLOT: &str = "menu.btn.modules";
+
+fn module_buttons(c: &BotContent, install: &Install) -> Vec<Button> {
+    let Some(slot) = c.content.button(MODULES_SLOT, &[]) else {
+        return Vec::new();
+    };
+    let style = slot.style.map(|s| s.as_str());
+    install
+        .module_buttons
+        .iter()
+        .map(|b| Button::callback(b.button.clone(), ext_bot::callback(&b.module)).look(None, style))
+        .collect()
+}
+
+async fn module_screen(
+    turn: &mut Turn<'_>,
+    client: &Client,
+    module: &str,
+) -> Result<Screen, BotError> {
+    let request = ext_bot::ScreenRequest {
+        client_id: client.id,
+        telegram_id: turn.user.id,
+        locale: turn.locale,
+        first_name: &turn.user.first_name,
+    };
+    let result = turn
+        .services()
+        .ext_modules()
+        .bot_screen(module, request)
+        .await;
+    let content = turn.content();
+    let c = &*content;
+    match result {
+        Ok(screen) => {
+            let rows: Vec<Vec<Button>> = screen
+                .rows
+                .into_iter()
+                .map(|row| {
+                    row.into_iter()
+                        .map(|button| match button.action {
+                            ext_bot::ScreenAction::WebApp(url) => Button::web_app(button.text, url),
+                            ext_bot::ScreenAction::Url(url) => Button::url(button.text, url),
+                        })
+                        .collect()
+                })
+                .collect();
+            Ok(Screen::new(screen.html)
+                .keyboard(Keyboard::new().rows(rows))
+                .with_menu())
+        }
+        Err(ext_bot::ScreenFailure::Missing) => main_menu(turn.ctx, client).await,
+        Err(failure) => {
+            tracing::warn!(module, why = %ext_bot::describe(&failure), "экран внешнего модуля не открылся");
+            Ok(Screen::notice(ui::text(c, "menu.module_unavailable", &[])))
+        }
+    }
 }
 
 fn menu_button(c: &BotContent, install: &Install, key: &'static str) -> Option<Button> {
@@ -1120,7 +1180,18 @@ pub async fn main_menu(ctx: &BotCtx, client: &Client) -> Result<Screen, BotError
     let present: Vec<(&str, Button)> = facts
         .keys()
         .into_iter()
-        .filter_map(|key| menu_button(c, &install, key).map(|button| (key, button)))
+        .flat_map(|key| {
+            if key == MODULES_SLOT {
+                return module_buttons(c, &install)
+                    .into_iter()
+                    .map(|button| (key, button))
+                    .collect::<Vec<_>>();
+            }
+            menu_button(c, &install, key)
+                .map(|button| (key, button))
+                .into_iter()
+                .collect()
+        })
         .collect();
     let rows = if c.content.has_own_layout(LayoutScreen::Menu) {
         arrange(&c.content.layout(LayoutScreen::Menu), present)

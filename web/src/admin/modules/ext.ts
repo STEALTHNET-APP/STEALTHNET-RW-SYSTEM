@@ -9,6 +9,10 @@ export type ExtPermission = { key: Permission; title: string; about: string; sen
 
 export type ExtPage = { url: string; path: string | null; title: string; permission: Permission; permission_title: string };
 
+export type ExtClientCard = { title: string; permission: Permission; permission_title: string };
+
+export type ExtBot = { button: string };
+
 export type ExtSummary = {
   id: string;
   name: string;
@@ -37,6 +41,9 @@ export type ExtCard = {
   events: ExtEvent[];
   permissions: ExtPermission[];
   page: ExtPage | null;
+  client_card?: ExtClientCard | null;
+  bot?: ExtBot | null;
+  inbound?: string | null;
   has_settings: boolean;
   key: { prefix: string | null; state: KeyState; owner: string | null; last_used_at: string | null };
   installed_by: string;
@@ -61,6 +68,9 @@ export type Preview = {
   site: string | null;
   webhook: string | null;
   page: ExtPage | null;
+  client_card?: ExtClientCard | null;
+  bot?: ExtBot | null;
+  inbound?: string | null;
   settings: string[];
   events: ExtEvent[];
   permissions: ExtPermission[];

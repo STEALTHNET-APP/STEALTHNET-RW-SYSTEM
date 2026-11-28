@@ -15,6 +15,7 @@ use sn_services::ext_modules::packages::{
     InstallInfo, LogsView, PackageInstall, PackageInstalled, PackagePreviewResult, Reissued,
     RemoveRequest, RuntimeView,
 };
+use sn_services::ext_modules::rewards::{RewardRequest, RewardResult, RewardState};
 use sn_services::ext_modules::{
     Card, ConfigSaved, ConfigUpdate, ConfigView, InstallRequest, InstallResult, Journal, PageToken,
     PingResult, PreviewResult, SelfView, Summary,
@@ -27,6 +28,8 @@ pub fn routes() -> Router<AppState> {
         .route("/ext-modules", get(list).post(install))
         .route("/ext-modules/preview", post(preview))
         .route("/ext-modules/me", get(me))
+        .route("/ext-modules/me/rewards", post(reward))
+        .route("/ext-modules/me/rewards/{reference}", get(reward_state))
         .route("/ext-modules/install-info", get(install_info))
         .route(
             "/ext-modules/packages",
@@ -307,6 +310,30 @@ async fn install_package(
 
 async fn me(admin: CurrentAdmin, State(state): State<AppState>) -> ApiResult<Json<SelfView>> {
     Ok(Json(state.services.ext_modules().me(&admin.0).await?))
+}
+
+async fn reward(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    ApiJson(body): ApiJson<RewardRequest>,
+) -> ApiResult<Json<RewardResult>> {
+    Ok(Json(
+        state.services.ext_modules().reward(&admin.0, &body).await?,
+    ))
+}
+
+async fn reward_state(
+    admin: CurrentAdmin,
+    State(state): State<AppState>,
+    Path(reference): Path<String>,
+) -> ApiResult<Json<RewardState>> {
+    Ok(Json(
+        state
+            .services
+            .ext_modules()
+            .reward_state(&admin.0, &reference)
+            .await?,
+    ))
 }
 
 async fn card(

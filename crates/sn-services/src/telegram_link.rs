@@ -11,6 +11,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde::Serialize;
 use sn_domain::access::{ClientChannel, ClientPrincipal};
 use sn_domain::client::{Client, Identity, IdentityKind, NewIdentity, TelegramProfile};
+use sn_domain::events::DomainEvent;
 use sn_domain::ids::ClientId;
 use sn_domain::jobs::JobPayload;
 use sn_domain::lang;
@@ -632,6 +633,12 @@ impl<'a> TelegramLinks<'a> {
             );
             entry.ip = row.ip.clone();
             tx.audit().record(&entry).await?;
+            tx.events()
+                .push(&DomainEvent::ClientTelegramLinked {
+                    client_id,
+                    telegram_id: profile.id,
+                })
+                .await?;
         }
         sqlx::query(
             "UPDATE client_login_requests SET status = 'confirmed', confirmed_at = $2 WHERE id = $1",

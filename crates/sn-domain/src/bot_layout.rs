@@ -35,7 +35,7 @@ const fn slot(key: &'static str, audience: Audience, when: &'static str) -> Slot
     }
 }
 
-pub static MENU: [Slot; 16] = [
+pub static MENU: [Slot; 17] = [
     slot(
         "menu.btn.app",
         Audience::All,
@@ -91,6 +91,11 @@ pub static MENU: [Slot; 16] = [
         "menu.btn.roulette",
         Audience::All,
         "Если включены модуль «Рулетка» и мини-приложение",
+    ),
+    slot(
+        "menu.btn.modules",
+        Audience::All,
+        "Если у включённого внешнего модуля есть своя кнопка в боте",
     ),
     slot(
         "menu.btn.documents",
@@ -204,6 +209,7 @@ pub struct MenuFacts {
     pub referral: bool,
     pub contests: bool,
     pub roulette: bool,
+    pub modules: bool,
     pub documents: bool,
     pub email: bool,
     pub language: bool,
@@ -223,6 +229,7 @@ impl MenuFacts {
             "menu.btn.referral" => self.referral,
             "menu.btn.contests" => self.contests,
             "menu.btn.roulette" => self.roulette && self.miniapp,
+            "menu.btn.modules" => self.modules,
             "menu.btn.documents" => self.documents,
             "menu.btn.support" => true,
             "menu.btn.email" => self.email,
@@ -320,11 +327,12 @@ pub fn arrange<'a, T>(rows: &[Vec<String>], present: Vec<(&'a str, T)>) -> Vec<V
     for row in rows {
         let mut line = Vec::new();
         for key in row {
-            let found = left
-                .iter_mut()
-                .find(|item| item.as_ref().is_some_and(|(k, _)| *k == key.as_str()));
-            if let Some((_, value)) = found.and_then(Option::take) {
-                line.push(value);
+            for item in left.iter_mut() {
+                if item.as_ref().is_some_and(|(k, _)| *k == key.as_str())
+                    && let Some((_, value)) = item.take()
+                {
+                    line.push(value);
+                }
             }
         }
         let mut line = line.into_iter().peekable();
@@ -441,6 +449,16 @@ mod tests {
             arrange(&layout, present),
             vec![vec![1], vec![3], vec![5, 6]]
         );
+    }
+
+    #[test]
+    fn кнопки_модулей_встают_на_место_своей_ячейки() {
+        let layout = rows(&[&["a", "mods"], &["b"]]);
+        let present = vec![("a", 1), ("mods", 2), ("mods", 3), ("b", 4)];
+        assert_eq!(arrange(&layout, present), vec![vec![1, 2, 3], vec![4]]);
+        let layout = rows(&[&["a", "b", "mods"]]);
+        let present = vec![("a", 1), ("b", 2), ("mods", 3), ("mods", 4)];
+        assert_eq!(arrange(&layout, present), vec![vec![1, 2, 3], vec![4]]);
     }
 
     #[test]
@@ -655,6 +673,7 @@ mod tests {
                 ("menu.btn.referral", Some("/profile")),
                 ("menu.btn.contests", None),
                 ("menu.btn.roulette", Some("/roulette")),
+                ("menu.btn.modules", None),
                 ("menu.btn.documents", None),
                 ("menu.btn.support", Some("/support")),
                 ("menu.btn.email", Some("/profile/email")),

@@ -21,7 +21,7 @@ const OPTIONS_MAX: usize = 50;
 pub const TEXT_MAX: usize = 300;
 pub const LARGE_TEXT_MAX: usize = 4000;
 const RESERVED_IDS: [&str; 5] = ["me", "install", "ext", "packages", "install-info"];
-const TOP_FIELDS: [&str; 13] = [
+const TOP_FIELDS: [&str; 15] = [
     "format",
     "id",
     "name",
@@ -33,14 +33,20 @@ const TOP_FIELDS: [&str; 13] = [
     "events",
     "permissions",
     "page",
+    "client_card",
+    "bot",
     "settings",
     "run",
 ];
 const PAGE_FIELDS: [&str; 4] = ["url", "path", "title", "permission"];
-const RUN_FIELDS: [&str; 8] = [
+const CARD_FIELDS: [&str; 3] = ["path", "title", "permission"];
+const BOT_FIELDS: [&str; 2] = ["button", "path"];
+pub const BUTTON_MAX: usize = 32;
+const RUN_FIELDS: [&str; 9] = [
     "port",
     "events_path",
     "health_path",
+    "inbound_path",
     "memory_mb",
     "cpus",
     "internet",
@@ -97,7 +103,7 @@ const fn event(
     }
 }
 
-pub const EVENTS: [EventInfo; 13] = [
+pub const EVENTS: [EventInfo; 14] = [
     event(
         "client_registered",
         "Клиент зарегистрировался",
@@ -117,6 +123,12 @@ pub const EVENTS: [EventInfo; 13] = [
         Permission::ClientsRead,
     ),
     event(
+        "client_telegram_linked",
+        "Клиент привязал Telegram",
+        "номер клиента и его Telegram ID",
+        Permission::ClientsRead,
+    ),
+    event(
         "payment_paid",
         "Оплата прошла",
         "номер оплаты и заказа, что куплено, сумма и платёжная система",
@@ -131,7 +143,7 @@ pub const EVENTS: [EventInfo; 13] = [
     event(
         "order_fulfilled",
         "Покупка выдана",
-        "номер заказа, что куплено и номер подписки",
+        "номер заказа, что куплено, срок в днях, докупленные устройства и номер подписки",
         Permission::ClientsRead,
     ),
     event(
@@ -246,6 +258,19 @@ pub struct Page {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientCard {
+    pub path: String,
+    pub title: String,
+    pub permission: Permission,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BotEntry {
+    pub button: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Volume {
     pub name: String,
     pub path: String,
@@ -265,6 +290,8 @@ pub struct Run {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub events_path: Option<String>,
     pub health_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inbound_path: Option<String>,
     pub memory_mb: u32,
     pub cpu_tenths: u32,
     pub internet: bool,
@@ -340,6 +367,10 @@ pub struct Manifest {
     pub events: Vec<String>,
     pub permissions: Vec<Permission>,
     pub page: Option<Page>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_card: Option<ClientCard>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bot: Option<BotEntry>,
     pub settings: Vec<Field>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<Run>,
@@ -709,6 +740,106 @@ fn page(map: &Map<String, Value>, name: &str, kind: Kind, problems: &mut Problem
     })
 }
 
+fn package_only(
+    map: &Map<String, Value>,
+    key: &str,
+    kind: Kind,
+    what: &str,
+    problems: &mut Problems,
+) -> Option<Map<String, Value>> {
+    let value = map.get(key)?;
+    if value.is_null() {
+        return None;
+    }
+    if kind == Kind::External {
+        problems.add(
+            key,
+            format!("{what} бывает только у модуля из архива: соберите zip командой stealthnet module pack"),
+        );
+        return None;
+    }
+    match value {
+        Value::Object(inner) => Some(inner.clone()),
+        _ => {
+            problems.add(key, "ожидается объект в фигурных скобках { … }");
+            None
+        }
+    }
+}
+
+fn client_card(
+    map: &Map<String, Value>,
+    name: &str,
+    kind: Kind,
+    problems: &mut Problems,
+) -> Option<ClientCard> {
+    let card = package_only(
+        map,
+        "client_card",
+        kind,
+        "Раздел в карточке клиента",
+        problems,
+    )?;
+    unknown(&card, &CARD_FIELDS, "client_card", problems);
+    let path = inner_path(&card, "path", "client_card.path", true, problems);
+    let title = text(
+        &card,
+        "title",
+        "client_card.title",
+        PAGE_TITLE_MAX,
+        false,
+        problems,
+    )
+    .unwrap_or_else(|| name.chars().take(PAGE_TITLE_MAX).collect());
+    let permission = match card.get("permission") {
+        None | Some(Value::Null) => Some(Permission::ClientsRead),
+        Some(Value::String(raw)) => match self::permission(raw.trim()) {
+            Ok(p) => Some(p),
+            Err(message) => {
+                problems.add("client_card.permission", message);
+                None
+            }
+        },
+        Some(_) => {
+            problems.add("client_card.permission", "ожидается строка в кавычках");
+            None
+        }
+    };
+    Some(ClientCard {
+        path: path?,
+        title,
+        permission: permission?,
+    })
+}
+
+fn bot_entry(
+    map: &Map<String, Value>,
+    kind: Kind,
+    granted: &[Permission],
+    problems: &mut Problems,
+) -> Option<BotEntry> {
+    let bot = package_only(map, "bot", kind, "Кнопка в боте", problems)?;
+    unknown(&bot, &BOT_FIELDS, "bot", problems);
+    let button = text(&bot, "button", "bot.button", BUTTON_MAX, true, problems).filter(|button| {
+        let ok = !button.contains('\n');
+        if !ok {
+            problems.add("bot.button", "надпись на кнопке — одна строка");
+        }
+        ok
+    });
+    let path = inner_path(&bot, "path", "bot.path", true, problems);
+    if !granted.contains(&Permission::ClientsRead) {
+        problems.add(
+            "bot",
+            "экран в боте получает номер клиента и его Telegram ID: добавьте \"clients_read\" в permissions",
+        );
+    }
+    Some(BotEntry {
+        button: button?,
+        path: path?,
+    })
+}
+
 fn whole(
     map: &Map<String, Value>,
     key: &str,
@@ -990,6 +1121,7 @@ fn run(map: &Map<String, Value>, kind: Kind, problems: &mut Problems) -> Option<
     }
     let events_path = inner_path(run, "events_path", "run.events_path", false, problems);
     let health_path = inner_path(run, "health_path", "run.health_path", true, problems);
+    let inbound_path = inner_path(run, "inbound_path", "run.inbound_path", false, problems);
     let memory_mb = whole(
         run,
         "memory_mb",
@@ -1007,6 +1139,7 @@ fn run(map: &Map<String, Value>, kind: Kind, problems: &mut Problems) -> Option<
         port: u16::try_from(port?).ok()?,
         events_path,
         health_path: health_path?,
+        inbound_path,
         memory_mb,
         cpu_tenths,
         internet,
@@ -1348,6 +1481,13 @@ pub fn parse_as(source: &str, kind: Kind) -> Result<Manifest, Vec<Problem>> {
         kind,
         &mut problems,
     );
+    let client_card = client_card(
+        &map,
+        name.as_deref().unwrap_or_default(),
+        kind,
+        &mut problems,
+    );
+    let bot = bot_entry(&map, kind, &permissions, &mut problems);
     let settings = settings(&map, &mut problems);
     let run = run(&map, kind, &mut problems);
     if kind == Kind::Package
@@ -1375,6 +1515,8 @@ pub fn parse_as(source: &str, kind: Kind) -> Result<Manifest, Vec<Problem>> {
             events,
             permissions,
             page,
+            client_card,
+            bot,
             settings,
             run,
         }),

@@ -362,10 +362,38 @@ function DetailRows({ preview }: { preview: PackagePreview }) {
       <div className="row">
         <span className="rl">Доступ снаружи</span>
         <span className="rc">
-          <span>Нет</span>
-          <span className="cap">{preview.page ? 'Портов модуль не открывает, страница работает через панель.' : 'Портов модуль не открывает.'}</span>
+          {preview.inbound ? (
+            <>
+              <span>Только через панель</span>
+              <span className="mono ext-url">{`${window.location.origin}${preview.inbound}`}</span>
+              <span className="cap">Портов модуль не открывает. Сторонние сервисы шлют ему запросы на этот адрес, панель пересылает их модулю, а подпись проверяет сам модуль.</span>
+            </>
+          ) : (
+            <>
+              <span>Нет</span>
+              <span className="cap">{preview.page ? 'Портов модуль не открывает, страница работает через панель.' : 'Портов модуль не открывает.'}</span>
+            </>
+          )}
         </span>
       </div>
+      {preview.client_card ? (
+        <div className="row">
+          <span className="rl">Карточка клиента</span>
+          <span className="rc">
+            <span>Раздел «{preview.client_card.title}»</span>
+            <span className="cap">Видят администраторы с правом «{preview.client_card.permission_title}».</span>
+          </span>
+        </div>
+      ) : null}
+      {preview.bot ? (
+        <div className="row">
+          <span className="rl">Кнопка в боте</span>
+          <span className="rc">
+            <span>«{preview.bot.button}»</span>
+            <span className="cap">В главном меню бота. Экран за кнопкой показывает модуль, ему уходят номер клиента и Telegram ID.</span>
+          </span>
+        </div>
+      ) : null}
       <div className="row">
         <span className="rl">События</span>
         <EventList events={preview.events} empty={noEventsNote(run)} />

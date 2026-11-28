@@ -101,6 +101,7 @@ pub enum HistoryRecord {
         actor_kind: String,
         actor_id: Option<i64>,
         actor_email: Option<String>,
+        module: Option<String>,
         entity_kind: Option<String>,
         entity_id: Option<i64>,
         details: serde_json::Value,
@@ -1170,6 +1171,26 @@ impl<'a> ClientOps<'a> {
         } else {
             HashMap::new()
         };
+        let module_ids: Vec<String> = feed
+            .items
+            .iter()
+            .filter_map(|item| match &item.entry {
+                ClientHistoryEntry::Audit(record) => record.ext_module.clone(),
+                _ => None,
+            })
+            .collect();
+        let modules: HashMap<String, String> = if module_ids.is_empty() {
+            HashMap::new()
+        } else {
+            sqlx::query_as::<_, (String, String)>(
+                "SELECT id, manifest ->> 'name' FROM ext_modules WHERE id = ANY($1)",
+            )
+            .bind(&module_ids)
+            .fetch_all(conn.conn())
+            .await?
+            .into_iter()
+            .collect()
+        };
         let mut tickets: HashMap<TicketId, TicketBrief> = HashMap::new();
         for item in &feed.items {
             if let ClientHistoryEntry::Event(stored) = &item.entry
@@ -1235,6 +1256,10 @@ impl<'a> ClientOps<'a> {
                         actor_email: (record.actor_kind == "admin")
                             .then(|| record.actor_id.and_then(|id| admins.get(&id).cloned()))
                             .flatten(),
+                        module: record
+                            .ext_module
+                            .as_ref()
+                            .map(|id| modules.get(id).cloned().unwrap_or_else(|| id.clone())),
                         action: record.action,
                         actor_kind: record.actor_kind,
                         actor_id: record.actor_id,

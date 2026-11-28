@@ -9,6 +9,7 @@ import { useSession } from '../session';
 import { BalanceDialog, BlockDialog, ConfirmDialog, GrantDialog, LimitsDialog, MessageDialog } from './dialogs';
 import { historyLine } from './history';
 import { ClientReferrals } from './Referrals';
+import { ModuleCards } from './ModuleCards';
 import { PasswordDialog } from './PasswordDialog';
 import { EmailDialog } from './EmailDialog';
 import { RefundDialog } from './RefundDialog';
@@ -781,6 +782,7 @@ export function ClientPhone() {
       ) : null}
 
       <ClientReferrals phone clientId={clientId} onChanged={() => void loadHistory()} />
+      <ModuleCards phone clientId={clientId} onChanged={() => void loadHistory()} />
 
       {lines.length ? (
         <section className="pc-group" aria-labelledby="pc-hist">

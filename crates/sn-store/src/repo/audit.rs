@@ -52,10 +52,12 @@ pub struct AuditRecord {
     pub entity_id: Option<i64>,
     pub details: serde_json::Value,
     pub created_at: DateTime<Utc>,
+    #[sqlx(default)]
+    pub ext_module: Option<String>,
 }
 
 const COLUMNS: &str =
-    "id, actor_kind, actor_id, action, entity_kind, entity_id, details, created_at";
+    "id, actor_kind, actor_id, action, entity_kind, entity_id, details, created_at, ext_module";
 
 tokio::task_local! {
     static VIA_API_KEY: i64;

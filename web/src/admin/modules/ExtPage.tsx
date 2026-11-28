@@ -4,6 +4,7 @@ import { api, ApiError } from '../../lib/api';
 import { pathPart } from '../../lib/apiPath';
 import { useSession } from '../session';
 import { extLink, type PageToken } from './ext';
+import { THEME_MESSAGE, withTheme } from './frame';
 import './modules.css';
 import './ext.css';
 
@@ -20,7 +21,7 @@ export function ExtPage() {
 }
 
 function ExtPageBody({ id }: { id: string }) {
-  const { can } = useSession();
+  const { can, theme } = useSession();
   const frame = useRef<HTMLIFrameElement>(null);
   const [page, setPage] = useState<PageToken | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -70,6 +71,20 @@ function ExtPageBody({ id }: { id: string }) {
     return () => window.removeEventListener('message', listener);
   }, [id, page]);
 
+  useEffect(() => {
+    if (!page) {
+      return;
+    }
+    frame.current?.contentWindow?.postMessage({ type: THEME_MESSAGE, theme }, page.proxied ? '*' : page.origin);
+  }, [page, theme]);
+
+  const [themed, setThemed] = useState<string | null>(null);
+  useEffect(() => {
+    if (page) {
+      setThemed((current) => current ?? withTheme(page.url, theme));
+    }
+  }, [page, theme]);
+
   const isolated = page !== null && (page.proxied || page.origin === window.location.origin);
   const title = page?.title ?? 'Страница модуля';
   const where = page?.proxied ? 'через панель' : (page?.origin ?? '');
@@ -94,12 +109,12 @@ function ExtPageBody({ id }: { id: string }) {
           {error}
         </p>
       ) : null}
-      {page ? (
+      {page && themed ? (
         <iframe
           ref={frame}
           className="card ext-frame"
           title={title}
-          src={page.url}
+          src={themed}
           sandbox={isolated ? SANDBOX : `${SANDBOX} allow-same-origin`}
           referrerPolicy="no-referrer"
         />

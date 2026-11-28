@@ -579,3 +579,104 @@ fn раздел_run_проверяется_по_полям() {
     assert_eq!(run.memory_mb, 256);
     assert!(!run.internet);
 }
+
+#[test]
+fn раздел_карточки_кнопка_бота_и_входящий_путь_разбираются() {
+    let image = fake_image();
+    let mut manifest: Value = serde_json::from_str(&module_json(&[(
+        "linux/amd64",
+        "image-linux-amd64.tar",
+        &image,
+    )]))
+    .unwrap();
+    manifest["permissions"] = serde_json::json!(["clients_read", "clients_write"]);
+    manifest["client_card"] = serde_json::json!({ "path": "/card", "title": "Бонус-игра" });
+    manifest["bot"] = serde_json::json!({ "button": "🎮 Игра", "path": "/bot/screen" });
+    manifest["run"]["inbound_path"] = serde_json::json!("/in");
+    let parsed = parse_package(&manifest.to_string()).unwrap();
+    let card = parsed.client_card.clone().unwrap();
+    assert_eq!(card.path, "/card");
+    assert_eq!(card.title, "Бонус-игра");
+    assert_eq!(card.permission, sn_domain::access::Permission::ClientsRead);
+    let bot = parsed.bot.clone().unwrap();
+    assert_eq!(bot.button, "🎮 Игра");
+    assert_eq!(bot.path, "/bot/screen");
+    assert_eq!(
+        parsed.run.as_ref().unwrap().inbound_path.as_deref(),
+        Some("/in")
+    );
+    let stored = serde_json::to_value(&parsed).unwrap();
+    let back: crate::ext_modules::manifest::Manifest = serde_json::from_value(stored).unwrap();
+    assert_eq!(back, parsed);
+    let mut old = serde_json::to_value(&parsed).unwrap();
+    old.as_object_mut().unwrap().remove("client_card");
+    old.as_object_mut().unwrap().remove("bot");
+    old["run"].as_object_mut().unwrap().remove("inbound_path");
+    let old: crate::ext_modules::manifest::Manifest = serde_json::from_value(old).unwrap();
+    assert!(old.client_card.is_none() && old.bot.is_none());
+    let cases: Vec<(&str, Value, &str)> = vec![
+        (
+            "client_card",
+            serde_json::json!({ "path": "card" }),
+            "client_card.path: путь внутри модуля начинается с /",
+        ),
+        (
+            "client_card",
+            serde_json::json!({ "path": "/card", "permission": "admins" }),
+            "client_card.permission: право «Администраторы» модулю дать нельзя",
+        ),
+        (
+            "client_card",
+            serde_json::json!({ "path": "/card", "extra": 1 }),
+            "client_card.extra: неизвестное поле",
+        ),
+        (
+            "bot",
+            serde_json::json!({ "path": "/bot" }),
+            "bot.button: поле обязательно",
+        ),
+        (
+            "bot",
+            serde_json::json!({ "button": "Очень длинная надпись на кнопке модуля в боте", "path": "/bot" }),
+            "bot.button: не длиннее 32 символов",
+        ),
+        (
+            "bot",
+            serde_json::json!({ "button": "Игра", "path": "/../bot" }),
+            "bot.path: в пути не бывает",
+        ),
+        ("bot", serde_json::json!("Игра"), "bot: ожидается объект"),
+    ];
+    for (field, value, expected) in cases {
+        let mut broken = manifest.clone();
+        broken[field] = value;
+        let err = parse_package(&broken.to_string()).unwrap_err();
+        let text = messages(&err);
+        assert!(text.contains(expected), "{field}: {text}");
+    }
+    let mut no_read = manifest.clone();
+    no_read["permissions"] = serde_json::json!(["marketing"]);
+    let err = parse_package(&no_read.to_string()).unwrap_err();
+    assert!(
+        messages(&err).contains("bot: экран в боте получает номер клиента"),
+        "{}",
+        messages(&err)
+    );
+    let mut inbound = manifest.clone();
+    inbound["run"]["inbound_path"] = serde_json::json!("in");
+    let err = parse_package(&inbound.to_string()).unwrap_err();
+    assert!(messages(&err).contains("run.inbound_path: путь внутри модуля начинается с /"));
+    let mut external = manifest;
+    external.as_object_mut().unwrap().remove("run");
+    external.as_object_mut().unwrap().remove("page");
+    let err = parse(&external.to_string()).unwrap_err();
+    let text = messages(&err);
+    assert!(
+        text.contains("client_card: Раздел в карточке клиента бывает только у модуля из архива"),
+        "{text}"
+    );
+    assert!(
+        text.contains("bot: Кнопка в боте бывает только у модуля из архива"),
+        "{text}"
+    );
+}

@@ -7,7 +7,7 @@ use sn_services::updates::{BuildInfo, UpdateConfig};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-struct Folder(PathBuf);
+pub(super) struct Folder(pub(super) PathBuf);
 
 impl Drop for Folder {
     fn drop(&mut self) {
@@ -15,13 +15,13 @@ impl Drop for Folder {
     }
 }
 
-fn temp(prefix: &str) -> Folder {
+pub(super) fn temp(prefix: &str) -> Folder {
     let dir = std::env::temp_dir().join(format!("{prefix}-{}", Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
     Folder(dir)
 }
 
-fn helper_dir(helper: Option<Value>) -> Folder {
+pub(super) fn helper_dir(helper: Option<Value>) -> Folder {
     let dir = temp("sn-modules-helper");
     std::fs::create_dir_all(dir.0.join("request")).unwrap();
     std::fs::create_dir_all(dir.0.join("status/modules")).unwrap();
@@ -31,11 +31,11 @@ fn helper_dir(helper: Option<Value>) -> Folder {
     dir
 }
 
-fn ready() -> Value {
+pub(super) fn ready() -> Value {
     json!({ "schema": 2, "panel_updates": true, "modules": true, "blocked": null })
 }
 
-fn configure(h: &Http, dir: Option<&Path>, why: Option<&str>, host: Option<&str>) {
+pub(super) fn configure(h: &Http, dir: Option<&Path>, why: Option<&str>, host: Option<&str>) {
     let mut config = UpdateConfig::new(BuildInfo::new(None, None));
     config.dir = dir.map(Path::to_path_buf);
     config.helper_why = why.map(str::to_string);
@@ -64,7 +64,7 @@ fn module(id: &str, version: &str, port: u16) -> Value {
     })
 }
 
-fn build(dir: &Path, manifest: &Value, image: &[u8]) -> Vec<u8> {
+pub(super) fn build(dir: &Path, manifest: &Value, image: &[u8]) -> Vec<u8> {
     let source = dir.join(format!("src-{}", Uuid::new_v4()));
     std::fs::create_dir_all(&source).unwrap();
     std::fs::write(source.join("module.json"), manifest.to_string()).unwrap();
@@ -99,7 +99,7 @@ async fn raw(
     (status, body_json(response).await)
 }
 
-async fn upload(h: &Http, token: &str, bytes: &[u8]) -> String {
+pub(super) async fn upload(h: &Http, token: &str, bytes: &[u8]) -> String {
     let half = bytes.len() / 2;
     let (status, first) = raw(
         h,
@@ -128,7 +128,7 @@ fn request_line(dir: &Path) -> String {
     std::fs::read_to_string(dir.join("request/request.json")).unwrap_or_default()
 }
 
-fn clear_request(dir: &Path) {
+pub(super) fn clear_request(dir: &Path) {
     let _ = std::fs::remove_file(dir.join("request/request.json"));
 }
 
@@ -600,7 +600,7 @@ async fn spawn_module() -> (u16, Seen) {
     (port, seen)
 }
 
-async fn page_get(
+pub(super) async fn page_get(
     h: &Http,
     method: Method,
     path: &str,

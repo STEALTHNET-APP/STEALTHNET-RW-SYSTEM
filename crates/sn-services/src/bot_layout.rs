@@ -40,6 +40,7 @@ pub struct Install {
     pub support: Option<String>,
     pub support_app: bool,
     pub friends_screen: bool,
+    pub module_buttons: Vec<crate::ext_modules::bot::ModuleButton>,
 }
 
 pub fn site_url(services: &Services) -> Option<String> {
@@ -78,6 +79,11 @@ impl Install {
         let contests_on = modules.is_enabled(ModuleId::Contests);
         let roulette_on = modules.is_enabled(ModuleId::Roulette);
         let contest_open = contests_on && contests::has_running(&ctx).await.unwrap_or(false);
+        let module_buttons = services
+            .ext_modules()
+            .bot_buttons()
+            .await
+            .unwrap_or_default();
         let roulette_ready =
             roulette_on && miniapp.is_some() && roulette::ready(&ctx).await.unwrap_or(false);
         Install {
@@ -105,6 +111,7 @@ impl Install {
             support_app: settings.support_tickets(),
             friends_screen: !settings.miniapp.friends_in_profile(),
             web: services.bot_content().content.menu_mode() == MenuMode::Web,
+            module_buttons,
             miniapp,
         }
     }
@@ -158,6 +165,7 @@ impl Install {
             referral: self.referral,
             contests: self.contest_open,
             roulette: self.roulette_ready,
+            modules: !self.module_buttons.is_empty(),
             documents: self.documents,
             email: self.email(),
             language: self.english,
@@ -198,6 +206,9 @@ impl Install {
                     })
                 })
                 .or_else(|| (!self.roulette_ready).then(|| "Рулетка ещё не настроена".to_string())),
+            "menu.btn.modules" => self.module_buttons.is_empty().then(|| {
+                "Нет включённого внешнего модуля со своей кнопкой в боте".to_string()
+            }),
             "menu.btn.documents" => (!self.documents).then(|| "Документы не добавлены в «Документы»".to_string()),
             "menu.btn.email" => (!self.mail)
                 .then(|| {
@@ -379,11 +390,23 @@ fn screen_view(
             .map(|slot| {
                 let own = config.buttons.get(slot.key);
                 let entry = catalog::entry(slot.key);
+                let from_modules = (slot.key == "menu.btn.modules"
+                    && !install.module_buttons.is_empty())
+                .then(|| {
+                    install
+                        .module_buttons
+                        .iter()
+                        .map(|b| b.button.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" · ")
+                });
                 SlotView {
                     key: slot.key,
                     label: entry.map(|e| e.label).unwrap_or(slot.key),
-                    text: plain.label(slot.key, &[]),
-                    text_en: plain_en.label(slot.key, &[]),
+                    text: from_modules
+                        .clone()
+                        .unwrap_or_else(|| plain.label(slot.key, &[])),
+                    text_en: from_modules.unwrap_or_else(|| plain_en.label(slot.key, &[])),
                     audience: slot.audience,
                     when: slot.when,
                     off: install.off(slot.key),

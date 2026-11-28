@@ -14,6 +14,7 @@ import { eventsCount, historyLine } from './history';
 import { PasswordDialog } from './PasswordDialog';
 import { RefundDialog } from './RefundDialog';
 import { ClientReferrals } from './Referrals';
+import { ModuleCards } from './ModuleCards';
 import { RemnaAddButton } from './RemnaLink';
 import { emailOf, liveSubscriptions, nextReset, oauthLogins, personName, seenText, sinceText, tariffOf, telegramOf, visitText } from './model';
 import { SubscriptionBlock } from './SubscriptionBlock';
@@ -435,6 +436,8 @@ function ClientDesktop() {
           {writable && !blocked && sub && card.multi_subscriptions ? <RemnaAddButton more clientId={clientId} onAdded={onRemnaAdded} /> : null}
 
           <ClientReferrals clientId={clientId} onChanged={refreshHistory} />
+
+          <ModuleCards clientId={clientId} onChanged={refreshHistory} />
 
           <section aria-labelledby="his-h" className="cc-sec cc-list">
             <h2 id="his-h" className="cc-h2" style={{ marginBottom: 8 }}>

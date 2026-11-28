@@ -247,6 +247,26 @@ pub struct Order {
     pub fulfilled_at: Option<DateTime<Utc>>,
 }
 
+pub const OPTIONS_DEVICES: &str = "devices";
+
+impl Order {
+    pub fn bought_devices(&self) -> u32 {
+        match &self.intent {
+            PurchaseIntent::Subscription { extra_devices, .. } => *extra_devices,
+            PurchaseIntent::Module {
+                module: ModuleId::Options,
+                kind,
+                payload,
+            } if kind == OPTIONS_DEVICES => payload
+                .get("count")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|count| u32::try_from(count).ok())
+                .unwrap_or(0),
+            _ => 0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NewOrder {
     pub client_id: ClientId,

@@ -1110,12 +1110,10 @@ impl<'a> Fulfillment<'a> {
             .await?;
         if changed {
             tx.events()
-                .push(&DomainEvent::OrderFulfilled {
-                    order_id: fulfilled.id,
-                    client_id: fulfilled.client_id,
-                    order_kind: fulfilled.kind,
-                    subscription_id: fulfilled.subscription_id,
-                })
+                .push(&DomainEvent::order_fulfilled(
+                    &fulfilled,
+                    fulfilled.subscription_id,
+                ))
                 .await?;
         }
         let mut notified = false;
@@ -1177,12 +1175,7 @@ impl<'a> Fulfillment<'a> {
             .await?;
         if changed {
             tx.events()
-                .push(&DomainEvent::OrderFulfilled {
-                    order_id: fulfilled.id,
-                    client_id: fulfilled.client_id,
-                    order_kind: fulfilled.kind,
-                    subscription_id: None,
-                })
+                .push(&DomainEvent::order_fulfilled(&fulfilled, None))
                 .await?;
         }
         tx.commit().await?;
@@ -1217,12 +1210,10 @@ impl<'a> Fulfillment<'a> {
             .await?;
         if changed {
             tx.events()
-                .push(&DomainEvent::OrderFulfilled {
-                    order_id: fulfilled.id,
-                    client_id: fulfilled.client_id,
-                    order_kind: fulfilled.kind,
-                    subscription_id: fulfilled.subscription_id,
-                })
+                .push(&DomainEvent::order_fulfilled(
+                    &fulfilled,
+                    fulfilled.subscription_id,
+                ))
                 .await?;
         }
         tx.commit().await?;
@@ -2371,12 +2362,10 @@ impl<'a> Fulfillment<'a> {
                     .await?;
             }
             tx.events()
-                .push(&DomainEvent::OrderFulfilled {
-                    order_id: fulfilled.id,
-                    client_id: fulfilled.client_id,
-                    order_kind: fulfilled.kind,
-                    subscription_id: Some(subscription.id),
-                })
+                .push(&DomainEvent::order_fulfilled(
+                    &fulfilled,
+                    Some(subscription.id),
+                ))
                 .await?;
             if blocked {
                 tx.audit()

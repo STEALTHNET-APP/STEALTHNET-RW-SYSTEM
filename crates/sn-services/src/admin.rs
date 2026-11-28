@@ -428,6 +428,7 @@ pub fn core_feed_title(event: &DomainEvent) -> String {
         DomainEvent::ClientRegistered { .. } => "Новый клиент".into(),
         DomainEvent::ClientBlocked { .. } => "Клиент заблокирован".into(),
         DomainEvent::ClientUnblocked { .. } => "Клиент разблокирован".into(),
+        DomainEvent::ClientTelegramLinked { .. } => "Клиент привязал Telegram".into(),
         DomainEvent::PaymentPaid { amount, .. } => format!("Оплата {amount}"),
         DomainEvent::PaymentRefunded { amount, .. } => format!("Возврат {amount}"),
         DomainEvent::OrderFulfilled { .. } => "Заказ выдан".into(),

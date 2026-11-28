@@ -972,6 +972,11 @@ pub const ACTIONS: &[ActionLabel] = &[
         Area::Keys,
     ),
     a(
+        "ext_module.reward",
+        "Внешний модуль выдал клиенту личный промокод",
+        Area::Marketing,
+    ),
+    a(
         "ext_module.credentials",
         "Внешнему модулю выпущены новые ключ и секрет",
         Area::Keys,
