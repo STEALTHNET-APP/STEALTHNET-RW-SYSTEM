@@ -349,6 +349,11 @@ function ClientDesktop() {
               Выдать подписку
             </button>
           ) : null}
+          {writable && sub && !blocked && card.multi_subscriptions ? (
+            <button type="button" className="b44 hov" onClick={() => setDialog('grant')}>
+              Выдать ещё подписку
+            </button>
+          ) : null}
           {writable ? (
             <button type="button" className="b44 hov" onClick={() => setDialog('message')}>
               Написать

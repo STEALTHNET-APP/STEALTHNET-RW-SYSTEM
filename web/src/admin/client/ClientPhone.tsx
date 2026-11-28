@@ -370,6 +370,9 @@ export function ClientPhone() {
   if (writable && linked) {
     sheetItems.push({ key: 'reissue', icon: 'refresh', label: 'Выпустить новую ссылку' });
   }
+  if (writable && !blocked && sub && card.multi_subscriptions) {
+    sheetItems.push({ key: 'grant', icon: 'plus', label: 'Выдать ещё подписку' });
+  }
   if (writable && !blocked && (!sub || card.multi_subscriptions)) {
     sheetItems.push({ key: 'remna-add', icon: 'plus', label: 'Добавить подписку из Remnawave' });
   }
