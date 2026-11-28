@@ -242,6 +242,11 @@ pub const ACTIONS: &[ActionLabel] = &[
         Area::Subscriptions,
     ),
     a(
+        "subscription.remove_days",
+        "Убраны дни подписки",
+        Area::Subscriptions,
+    ),
+    a(
         "subscription.change_limits",
         "Изменены лимиты подписки",
         Area::Subscriptions,

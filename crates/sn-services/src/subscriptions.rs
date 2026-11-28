@@ -38,6 +38,7 @@ const HOLDS_BATCH: i64 = 200;
 pub mod actions {
     pub const ADD_DAYS: &str = "subscription.add_days";
     pub const ADD_DAYS_UNDONE: &str = "subscription.add_days_undone";
+    pub const REMOVE_DAYS: &str = "subscription.remove_days";
     pub const RESET_TRAFFIC: &str = "subscription.reset_traffic";
     pub const REISSUE_LINK: &str = "subscription.reissue_link";
     pub const DISCONNECT_ALL_DEVICES: &str = "subscription.disconnect_all_devices";
@@ -1074,6 +1075,62 @@ impl<'a> SubscriptionOps<'a> {
             })
             .await?;
             Ok(after)
+        })
+        .await?;
+        self.cancel_added_notice(&subscription).await;
+        self.view_of(id, Some(&after), Vec::new()).await
+    }
+
+    pub async fn remove_days(
+        &self,
+        id: SubscriptionId,
+        days: u32,
+        actor: Actor,
+    ) -> ServiceResult<SubscriptionView> {
+        let subscription = self.owned(id, actor).await?;
+        staff_only(actor)?;
+        if days == 0 || days > MAX_ADD_DAYS {
+            return Err(ServiceError::rejected(
+                "subscription.days",
+                format!("убрать можно от 1 до {MAX_ADD_DAYS} дней"),
+            ));
+        }
+        ensure_live(&subscription)?;
+        let user_id = linked_user(&subscription)?;
+        let remna = self.services.remna()?;
+        let now = self.services.now();
+        let after = with_subscription_lock(self.services, id, async {
+            let before = self.fetch_user(&*remna, &subscription, user_id).await?;
+            if before.expire_at <= now {
+                return Err(ServiceError::rejected(
+                    "subscription.already_expired",
+                    "подписка уже закончилась, убирать нечего",
+                ));
+            }
+            let target = (before.expire_at - chrono::Duration::days(i64::from(days))).max(now);
+            let mut request = UpdateUserRequest::new(user_id);
+            request.expire_at = Some(target);
+            let after = match remna.update_user(&request).await {
+                Ok(user) => user,
+                Err(err) => confirm(&*remna, user_id, err, |u| u.expire_at == target).await?,
+            };
+            self.record(Change {
+                subscription: &subscription,
+                actor,
+                action: actions::REMOVE_DAYS,
+                details: json!({
+                    "days": days,
+                    "previous_expire_at": before.expire_at,
+                    "expire_at": after.expire_at,
+                    "previous_status": status_of(&before),
+                    "status": status_of(&after),
+                }),
+                user: Some(&after),
+                devices: None,
+                purchase: None,
+            })
+            .await?;
+            Ok::<RemnaUser, ServiceError>(after)
         })
         .await?;
         self.cancel_added_notice(&subscription).await;

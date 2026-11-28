@@ -23,6 +23,7 @@ import './phone.css';
 import { registrationText, useClientUtm, UtmValue } from '../utm/ClientSource';
 import { Avatar } from '../Avatar';
 import { ExtendDialog } from './ExtendDialog';
+import { RemoveDaysDialog } from './RemoveDaysDialog';
 
 type View = { subscription: Subscription; subscription_url?: string | null } & Partial<SubscriptionDetails>;
 type Toast = { id: number; kind: 'extend' | 'device' | 'info'; head: string; tail?: string; undo?: () => void };
@@ -42,6 +43,7 @@ type Dialogs =
   | 'delete'
   | 'password'
   | 'remna-add'
+  | 'remove-days'
   | 'email';
 type Drop = { device: Device; index: number; subId: number; timer: number };
 type Tone = 'ink2' | 'warn' | 'muted' | 'bad';
@@ -365,6 +367,7 @@ export function ClientPhone() {
     sheetItems.push({ key: 'balance', icon: 'wallet', label: 'Пополнить или списать баланс' });
   }
   if (writable && sub) {
+    sheetItems.push({ key: 'remove-days', icon: 'minus', label: 'Убрать дни' });
     sheetItems.push({ key: 'change', icon: 'tag', label: 'Сменить тариф' });
     sheetItems.push({ key: 'limits', icon: 'sliders', label: 'Изменить лимиты' });
   }
@@ -419,6 +422,20 @@ export function ClientPhone() {
       tail: notifies ? ' клиент получит уведомление в боте' : undefined,
       undo: () => void undoExtend(),
     });
+    void loadHistory();
+  };
+
+  const removeDays = async (n: number) => {
+    const done = await act('remove-days', { days: n }, 'Дни не убрались');
+    if (!done) {
+      return;
+    }
+    const next = done.result as View;
+    applyView(next);
+    added.current = 0;
+    steps.current = 0;
+    const until = next.subscription.mirror.expire_at;
+    show({ kind: 'info', head: until ? `Убрано ${days(n)}, подписка до ${dateLong(until)}` : `Убрано ${days(n)}` });
     void loadHistory();
   };
 
@@ -955,6 +972,9 @@ export function ClientPhone() {
       ) : null}
       {dialog === 'extend' && sub ? (
         <ExtendDialog until={sub.mirror.expire_at} onExtend={(n) => extend(n)} onClose={() => setDialog('')} />
+      ) : null}
+      {dialog === 'remove-days' && sub ? (
+        <RemoveDaysDialog until={sub.mirror.expire_at} onRemove={(n) => removeDays(n)} onClose={() => setDialog('')} />
       ) : null}
       {dialog === 'grant' || dialog === 'change' ? (
         <GrantDialog

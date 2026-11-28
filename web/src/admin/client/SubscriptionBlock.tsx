@@ -7,6 +7,7 @@ import { LimitsDialog, QrDialog } from './dialogs';
 import { historyWhen } from './history';
 import { devicesWord, nextReset, platformName, responseText } from './model';
 import { RemnaLinkNote } from './RemnaLink';
+import { RemoveDaysDialog } from './RemoveDaysDialog';
 import type { Connections, Device, SubRequest, SubscriptionDetails, TariffBrief } from './types';
 
 type View = { subscription: Subscription; subscription_url?: string | null } & Partial<SubscriptionDetails>;
@@ -98,6 +99,7 @@ export function SubscriptionBlock({ sub, details, tariff, clientBlocked, writabl
   const [copied, setCopied] = useState(false);
   const [qr, setQr] = useState(false);
   const [limits, setLimits] = useState(false);
+  const [removing, setRemoving] = useState(false);
   const [devicesKey, setDevicesKey] = useState(0);
 
   useEffect(() => {
@@ -146,6 +148,21 @@ export function SubscriptionBlock({ sub, details, tariff, clientBlocked, writabl
   useEffect(() => {
     onExtendHeader(extend);
   }, [extend, onExtendHeader]);
+
+  const removeDays = (n: number) =>
+    run(
+      'remove-days',
+      { days: n },
+      (view) => {
+        const next = view as View;
+        onView(next);
+        setAdded(0);
+        setSteps(0);
+        const until = next.subscription.mirror.expire_at;
+        setMessage(until ? `Убрано ${days(n)}, подписка до ${dateLong(until)}` : `Убрано ${days(n)}`);
+      },
+      'Дни не убрались',
+    );
 
   const undo = () =>
     void run(
@@ -421,6 +438,9 @@ export function SubscriptionBlock({ sub, details, tariff, clientBlocked, writabl
               <button type="button" className="b38 hov" onClick={() => void extend(30)} disabled={!canAct}>
                 +30 дней
               </button>
+              <button type="button" className="b38 hov" onClick={() => setRemoving(true)} disabled={!canAct}>
+                Убрать дни
+              </button>
               {limitBytes && !exhausted ? (
                 <button type="button" className="b38 hov" aria-expanded={ask === 'reset'} onClick={() => setAsk(ask === 'reset' ? '' : 'reset')} disabled={!canAct}>
                   Сбросить трафик
@@ -476,6 +496,7 @@ export function SubscriptionBlock({ sub, details, tariff, clientBlocked, writabl
       />
 
       {qr && url ? <QrDialog url={url} onClose={() => setQr(false)} /> : null}
+      {removing ? <RemoveDaysDialog until={sub.mirror.expire_at} onRemove={removeDays} onClose={() => setRemoving(false)} /> : null}
       {limits ? (
         <LimitsDialog
           subscription={sub}

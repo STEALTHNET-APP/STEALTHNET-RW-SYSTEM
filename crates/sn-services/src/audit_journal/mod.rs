@@ -550,7 +550,7 @@ pub fn title_for(action: &str, details: &Value) -> String {
             Some(count) => format!("Закрыто обращений в поддержку: {count}"),
             None => labels::title_of(action).into(),
         },
-        "subscription.add_days" | "subscription.add_days_undone" => {
+        "subscription.add_days" | "subscription.add_days_undone" | "subscription.remove_days" => {
             match details
                 .get("days")
                 .and_then(Value::as_u64)
@@ -558,6 +558,9 @@ pub fn title_for(action: &str, details: &Value) -> String {
             {
                 Some(days) if action == "subscription.add_days" => {
                     format!("Добавлено к подписке: {}", format::days(days))
+                }
+                Some(days) if action == "subscription.remove_days" => {
+                    format!("Убрано из подписки: {}", format::days(days))
                 }
                 Some(days) => format!("Отменено добавление: {}", format::days(days)),
                 None => labels::title_of(action).into(),

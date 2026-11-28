@@ -2555,6 +2555,24 @@ async fn карточка_подписки_подключения_запросы
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(h.remna.user(user.id).unwrap().expire_at, before);
 
+    let remove = format!("{base}/actions/remove-days");
+    let (status, _) = h
+        .write(Method::POST, &remove, &readonly, json!({ "days": 3 }))
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, body) = h
+        .write(Method::POST, &remove, &owner, json!({ "days": 0 }))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let (status, body) = h
+        .write(Method::POST, &remove, &owner, json!({ "days": 3 }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        h.remna.user(user.id).unwrap().expire_at,
+        before - chrono::Duration::days(3)
+    );
+
     let (status, body) = h
         .write(
             Method::POST,
@@ -2600,6 +2618,17 @@ async fn карточка_подписки_подключения_запросы
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 
+    let (status, body) = h
+        .write(Method::POST, &remove, &owner, json!({ "days": 3650 }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(h.remna.user(user.id).unwrap().expire_at <= chrono::Utc::now());
+    let (status, body) = h
+        .write(Method::POST, &remove, &owner, json!({ "days": 1 }))
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["error"]["code"], "subscription.already_expired");
+
     let (status, history) = h
         .get(
             &format!("/api/admin/clients/{}/history?limit=50", client.0),
@@ -2614,6 +2643,14 @@ async fn карточка_подписки_подключения_запросы
         .filter_map(|item| item["action"].as_str())
         .collect();
     assert!(actions.contains(&"subscription.add_days"), "{history}");
+    assert_eq!(
+        actions
+            .iter()
+            .filter(|action| **action == "subscription.remove_days")
+            .count(),
+        2,
+        "{history}"
+    );
     assert!(
         actions.contains(&"subscription.add_days_undone"),
         "{history}"

@@ -330,6 +330,10 @@ export function historyLine(item: HistoryItem, index: number, who: HistoryWho): 
           const what = code && percent ? `Личный промокод ${code} на скидку ${percent}%` : 'Награда от модуля';
           return { ...base, what, note: actor, sum: '' };
         }
+        case 'subscription.remove_days': {
+          const n = num(details.days);
+          return { ...base, what: n ? `Убрано ${days(n)}` : 'Убраны дни', note: actor, sum: '' };
+        }
         case 'subscription.add_days_undone': {
           const n = num(details.days);
           return { ...base, what: n ? `Отменено добавление ${days(n)}` : 'Отменено добавление дней', note: actor, sum: '' };

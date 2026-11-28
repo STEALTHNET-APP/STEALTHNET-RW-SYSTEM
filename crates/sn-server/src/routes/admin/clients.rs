@@ -497,6 +497,16 @@ async fn subscription_action(
             }
             json(&ops.add_days(id, days, actor).await?)
         }
+        "remove-days" => {
+            let days = body.days.unwrap_or(0);
+            if !(1..=3650).contains(&days) {
+                return Err(ApiError::bad_request(
+                    "validation.days",
+                    "убрать можно 1–3650 дней",
+                ));
+            }
+            json(&ops.remove_days(id, days, actor).await?)
+        }
         "undo-extend" => json(
             &ops.undo_add_days(id, body.count.unwrap_or(1), actor)
                 .await?,

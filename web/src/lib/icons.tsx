@@ -24,6 +24,7 @@ const PATHS = {
   dots: 'M5 12h.01 M12 12h.01 M19 12h.01',
   search: 'M3 11a8 8 0 1 0 16 0a8 8 0 1 0-16 0 M21 21l-4.3-4.3',
   plus: 'M12 5v14 M5 12h14',
+  minus: 'M5 12h14',
   close: 'M18 6 6 18 M6 6l12 12',
   menu: 'M4 7h16 M4 12h16 M4 17h16',
   'chevron-down': 'M6 9l6 6 6-6',
