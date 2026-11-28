@@ -321,12 +321,12 @@ async fn меню_с_двумя_подписками_короткими_стро
     let menu = last_text(&server).await;
     let offset = services.settings().remna_offset();
     let date = crate::text::date(expire_at, offset);
-    for tariff in ["Базовый", "Премиум"] {
-        let line = format!("🟢 {tariff}: активна, до {date}");
+    for (n, tariff) in [(1, "Базовый"), (2, "Премиум")] {
+        let line = format!("🟢 {n}. {tariff}: активна, до {date}");
         assert_eq!(menu.matches(line.as_str()).count(), 1, "{line:?}:\n{menu}");
     }
     let line = format!(
-        "🔴 Прошлый: истекла, до {}",
+        "🔴 3. Прошлый: истекла, до {}",
         crate::text::date(ended_at, offset)
     );
     assert_eq!(menu.matches(line.as_str()).count(), 1, "{line:?}:\n{menu}");

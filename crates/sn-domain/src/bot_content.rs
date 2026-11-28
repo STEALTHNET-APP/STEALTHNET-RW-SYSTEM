@@ -715,15 +715,15 @@ pub static CATALOG: &[Entry] = &[
         "menu.subscription",
         Menu,
         "Строка подписки, если их несколько",
-        "{mark} {tariff}: {status}, до {date}",
-        &[MARK, TARIFF, STATUS, DATE],
+        "{mark} {n}. {tariff}: {status}, до {date}",
+        &[MARK, NUMBER, TARIFF, STATUS, DATE],
     ),
     text(
         "menu.subscription_open",
         Menu,
         "Строка подписки без даты, если их несколько",
-        "{mark} {tariff}: {status}",
-        &[MARK, TARIFF, STATUS],
+        "{mark} {n}. {tariff}: {status}",
+        &[MARK, NUMBER, TARIFF, STATUS],
     ),
     hideable(
         "menu.btn.subscription",
@@ -4439,9 +4439,13 @@ mod tests {
         assert_eq!(
             content.text(
                 "menu.subscription_open",
-                &[("mark", Value::Text("🟢")), ("tariff", Value::Text("X"))]
+                &[
+                    ("mark", Value::Text("🟢")),
+                    ("n", Value::Text("1")),
+                    ("tariff", Value::Text("X"))
+                ]
             ),
-            "🟢 X: "
+            "🟢 1. X: "
         );
     }
 

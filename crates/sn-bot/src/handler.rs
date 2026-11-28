@@ -1081,16 +1081,18 @@ pub async fn main_menu(ctx: &BotCtx, client: &Client) -> Result<Screen, BotError
             }
         }
         many => {
-            for subscription in many {
+            for (index, subscription) in many.iter().enumerate() {
                 let tariff = tariff_name(services, subscription.tariff_id).await;
                 let status = status_text(c, subscription, now);
                 let mark = text::status_mark(subscription, now);
+                let number = (index + 1).to_string();
                 lines.add(match subscription.mirror.expire_at {
                     Some(at) => ui::text(
                         c,
                         "menu.subscription",
                         &[
                             ("mark", Text(mark)),
+                            ("n", Text(&number)),
                             ("tariff", Text(&tariff)),
                             ("status", Html(&status)),
                             ("date", Text(&text::date(at, offset))),
@@ -1101,6 +1103,7 @@ pub async fn main_menu(ctx: &BotCtx, client: &Client) -> Result<Screen, BotError
                         "menu.subscription_open",
                         &[
                             ("mark", Text(mark)),
+                            ("n", Text(&number)),
                             ("tariff", Text(&tariff)),
                             ("status", Html(&status)),
                         ],
