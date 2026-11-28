@@ -194,6 +194,8 @@ pub struct SweepReport {
     pub charges: usize,
     pub failed: usize,
     pub adopted: usize,
+    pub legacy_checked: usize,
+    pub legacy_skipped: Option<&'static str>,
 }
 
 pub(crate) use sn_domain::client::mask_email;
@@ -1202,7 +1204,11 @@ impl<'a> Renewals<'a> {
     pub async fn sweep(&self, now: DateTime<Utc>) -> ServiceResult<SweepReport> {
         let mut report = SweepReport::default();
         match self.adopt_legacy(now).await {
-            Ok(adopted) => report.adopted = adopted,
+            Ok(adoption) => {
+                report.adopted = adoption.adopted;
+                report.legacy_checked = adoption.checked;
+                report.legacy_skipped = adoption.skipped;
+            }
             Err(err) => {
                 tracing::warn!(error = %err, "договоры Lava.top старой панели не проверены");
             }

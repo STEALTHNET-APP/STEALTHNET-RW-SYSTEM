@@ -779,37 +779,26 @@ impl Worker {
     }
 
     async fn periodic_loop(&self, cancel: &CancellationToken) {
-        let mut housekeeping = interval(self.config.housekeeping_interval);
-        let mut autorenew = interval(self.config.autorenew_interval);
-        let mut reconcile = interval(self.config.reconcile_interval);
-        let mut module_tasks = interval(self.config.module_tasks_interval);
-        let mut redeliver = interval(self.config.redeliver_interval);
-        let mut end_expired = interval(self.config.end_expired_interval);
-        let mut chain_watch = interval(self.config.chain_watch_interval);
-        let mut node_watch = interval(self.config.node_watch_interval);
-        for timer in [
-            &mut housekeeping,
-            &mut autorenew,
-            &mut reconcile,
-            &mut module_tasks,
-            &mut redeliver,
-            &mut end_expired,
-            &mut chain_watch,
-            &mut node_watch,
-        ] {
-            timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
-        }
+        let mut timers: Vec<(Periodic, tokio::time::Interval)> = Periodic::ALL
+            .into_iter()
+            .map(|periodic| {
+                let mut timer = interval(self.interval_of(periodic));
+                timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
+                (periodic, timer)
+            })
+            .collect();
         loop {
+            let due =
+                futures_util::future::select_all(timers.iter_mut().map(|(periodic, timer)| {
+                    let periodic = *periodic;
+                    Box::pin(async move {
+                        timer.tick().await;
+                        periodic
+                    })
+                }));
             tokio::select! {
                 _ = cancel.cancelled() => break,
-                _ = housekeeping.tick() => self.periodic(Periodic::Housekeeping).await,
-                _ = autorenew.tick() => self.periodic(Periodic::AutoRenew).await,
-                _ = reconcile.tick() => self.periodic(Periodic::Reconcile).await,
-                _ = module_tasks.tick() => self.periodic(Periodic::ModuleTasks).await,
-                _ = redeliver.tick() => self.periodic(Periodic::Redeliver).await,
-                _ = end_expired.tick() => self.periodic(Periodic::EndExpired).await,
-                _ = chain_watch.tick() => self.periodic(Periodic::ChainWatch).await,
-                _ = node_watch.tick() => self.periodic(Periodic::NodeWatch).await,
+                (periodic, _, _) = due => self.periodic(periodic).await,
             }
         }
     }

@@ -1,4 +1,5 @@
 use super::*;
+use sn_domain::client::IdentityKind;
 use sn_domain::ids::{PeriodId, TariffId};
 use sn_domain::payment::providers::LAVA;
 use sn_payments::{ProviderConfig, RenewalPlan, RenewalState};
@@ -7,13 +8,19 @@ use uuid::Uuid;
 const ADOPT_BATCH: i64 = 200;
 const RECHECK_HOURS: i64 = 24;
 const RETRY_HOURS: i64 = 1;
+const MISSING_RECHECK_DAYS: i64 = 7;
 const AFTER_CHARGE_MINUTES: i64 = 5;
+const NEAR_DAYS: i64 = 3;
+pub(crate) const NO_PROVIDER: &str = "no_provider";
+pub(crate) const NO_API_KEY: &str = "no_api_key";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum State {
     Linked,
+    Known,
     Unbound,
     Conflict,
+    Ambiguous,
     Ended,
     Missing,
     Error,
@@ -22,9 +29,10 @@ enum State {
 impl State {
     const fn as_str(self) -> &'static str {
         match self {
-            State::Linked => "linked",
+            State::Linked | State::Known => "linked",
             State::Unbound => "unbound",
             State::Conflict => "conflict",
+            State::Ambiguous => "ambiguous",
             State::Ended => "ended",
             State::Missing => "missing",
             State::Error => "error",
@@ -33,9 +41,55 @@ impl State {
 
     fn next_check(self, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
         match self {
-            State::Unbound | State::Conflict => Some(now + Duration::hours(RECHECK_HOURS)),
+            State::Unbound | State::Conflict | State::Ambiguous => {
+                Some(now + Duration::hours(RECHECK_HOURS))
+            }
+            State::Missing => Some(now + Duration::days(MISSING_RECHECK_DAYS)),
             State::Error => Some(now + Duration::hours(RETRY_HOURS)),
-            State::Linked | State::Ended | State::Missing => None,
+            State::Linked | State::Known | State::Ended => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Adoption {
+    pub adopted: usize,
+    pub checked: usize,
+    pub skipped: Option<&'static str>,
+}
+
+enum Pick {
+    Found(String, Box<RenewalState>),
+    Mine(String),
+    Ambiguous,
+    None,
+}
+
+enum Taken {
+    Free,
+    Mine,
+    Other,
+}
+
+enum Buyer {
+    Prefix(String),
+    Exact(String),
+}
+
+impl Buyer {
+    fn query(&self) -> &str {
+        match self {
+            Buyer::Prefix(text) | Buyer::Exact(text) => text,
+        }
+    }
+
+    fn matches(&self, email: Option<&str>) -> bool {
+        let Some(email) = email.map(|e| e.trim().to_lowercase()) else {
+            return false;
+        };
+        match self {
+            Buyer::Prefix(prefix) => email.starts_with(&prefix.to_lowercase()),
+            Buyer::Exact(exact) => email == exact.to_lowercase(),
         }
     }
 }
@@ -51,6 +105,8 @@ struct Contract {
     contract_id: Option<String>,
     amount_minor: i64,
     currency: String,
+    source: String,
+    created_at: DateTime<Utc>,
 }
 
 impl Contract {
@@ -192,19 +248,48 @@ async fn usable(
 }
 
 impl Renewals<'_> {
-    pub(super) async fn adopt_legacy(&self, now: DateTime<Utc>) -> ServiceResult<usize> {
+    async fn waiting(&self, now: DateTime<Utc>) -> ServiceResult<i64> {
+        let mut conn = self.services.store().conn().await?;
+        Ok(sqlx::query_scalar(
+            "SELECT count(*) FROM legacy_invoices WHERE recurring AND provider = $1 \
+             AND (contract_check_at <= $2 OR (contract_check_at IS NULL AND contract_state IS NULL))",
+        )
+        .bind(LAVA)
+        .bind(now)
+        .fetch_one(conn.conn())
+        .await?)
+    }
+
+    async fn skipped(&self, now: DateTime<Utc>, reason: &'static str) -> ServiceResult<Adoption> {
+        let waiting = self.waiting(now).await?;
+        if waiting == 0 {
+            return Ok(Adoption::default());
+        }
+        let text = if reason == NO_PROVIDER {
+            "договоры Lava.top старой панели ждут проверки, но платёжной системы Lava.top в панели нет"
+        } else {
+            "договоры Lava.top старой панели ждут проверки, но у Lava.top нет API-ключа в «Настройки → Оплата»"
+        };
+        tracing::warn!(waiting, reason, "{text}");
+        Ok(Adoption {
+            skipped: Some(reason),
+            ..Adoption::default()
+        })
+    }
+
+    pub(super) async fn adopt_legacy(&self, now: DateTime<Utc>) -> ServiceResult<Adoption> {
         let Some(provider) = self.provider(LAVA) else {
-            return Ok(0);
+            return self.skipped(now, NO_PROVIDER).await;
         };
         let config = self.services.payments().config(LAVA);
         if config.get("api_key").is_none() {
-            return Ok(0);
+            return self.skipped(now, NO_API_KEY).await;
         }
         let due: Vec<Contract> = {
             let mut conn = self.services.store().conn().await?;
             sqlx::query_as(
                 "SELECT id, client_id, intent, external_id, order_ref, order_id, contract_id, \
-                 amount_minor, currency FROM legacy_invoices \
+                 amount_minor, currency, source, created_at FROM legacy_invoices \
                  WHERE recurring AND provider = $1 \
                  AND (contract_check_at <= $2 OR (contract_check_at IS NULL AND contract_state IS NULL)) \
                  ORDER BY contract_check_at NULLS FIRST, id LIMIT $3",
@@ -215,24 +300,41 @@ impl Renewals<'_> {
             .fetch_all(conn.conn())
             .await?
         };
+        if due.is_empty() {
+            return Ok(Adoption::default());
+        }
         let plans = provider.renewal_plans(&config);
-        let mut adopted = 0usize;
+        let mut report = Adoption::default();
+        let mut counts: std::collections::BTreeMap<&'static str, usize> =
+            std::collections::BTreeMap::new();
         for contract in due {
+            report.checked += 1;
             match self
                 .adopt(provider.as_ref(), &config, &plans, &contract, now)
                 .await
             {
-                Ok(State::Linked) => adopted += 1,
-                Ok(_) => {}
+                Ok(state) => {
+                    if state == State::Linked {
+                        report.adopted += 1;
+                    }
+                    *counts.entry(state.as_str()).or_default() += 1;
+                }
                 Err(err) => {
                     let mut conn = self.services.store().conn().await?;
                     mark(&mut conn, contract.id, State::Error, None, now).await?;
+                    *counts.entry(State::Error.as_str()).or_default() += 1;
                     tracing::warn!(legacy_invoice = contract.id, error = %err, "договор Lava.top старой панели не проверен, повторим");
                     break;
                 }
             }
         }
-        Ok(adopted)
+        tracing::info!(
+            checked = report.checked,
+            adopted = report.adopted,
+            states = ?counts,
+            "договоры Lava.top старой панели проверены"
+        );
+        Ok(report)
     }
 
     async fn adopt(
@@ -243,17 +345,33 @@ impl Renewals<'_> {
         contract: &Contract,
         now: DateTime<Utc>,
     ) -> ServiceResult<State> {
-        let mut found: Option<(String, RenewalState)> = None;
+        let mut pick = Pick::None;
         for candidate in contract.candidates() {
             if let Some(state) = provider.find_renewal(config, &candidate).await? {
-                found = Some((candidate, state));
+                pick = Pick::Found(candidate, Box::new(state));
                 break;
             }
         }
-        let Some((series, state)) = found else {
-            let mut conn = self.services.store().conn().await?;
-            mark(&mut conn, contract.id, State::Missing, None, now).await?;
-            return Ok(State::Missing);
+        if matches!(pick, Pick::None) {
+            pick = self.by_email(provider, config, contract).await?;
+        }
+        let (series, state) = match pick {
+            Pick::Found(series, state) => (series, state),
+            Pick::Mine(series) => {
+                let mut conn = self.services.store().conn().await?;
+                mark(&mut conn, contract.id, State::Known, Some(&series), now).await?;
+                return Ok(State::Known);
+            }
+            Pick::Ambiguous => {
+                let mut conn = self.services.store().conn().await?;
+                mark(&mut conn, contract.id, State::Ambiguous, None, now).await?;
+                return Ok(State::Ambiguous);
+            }
+            Pick::None => {
+                let mut conn = self.services.store().conn().await?;
+                mark(&mut conn, contract.id, State::Missing, None, now).await?;
+                return Ok(State::Missing);
+            }
         };
         let term = term(plans, &state, contract);
         let mut tx = self.services.store().begin().await?;
@@ -261,7 +379,7 @@ impl Renewals<'_> {
             RenewalStatus::Cancelled | RenewalStatus::Failed => State::Ended,
             RenewalStatus::Active | RenewalStatus::Unknown => {
                 if lock_series(&mut tx, LAVA, &series).await?.is_some() {
-                    State::Linked
+                    State::Known
                 } else {
                     match self.bound(&mut tx, contract, term.tariff).await? {
                         None => State::Unbound,
@@ -277,6 +395,162 @@ impl Renewals<'_> {
         mark(&mut tx, contract.id, outcome, Some(&series), now).await?;
         tx.commit().await?;
         Ok(outcome)
+    }
+
+    async fn buyers(&self, contract: &Contract) -> ServiceResult<Vec<Buyer>> {
+        let mut conn = self.services.store().conn().await?;
+        let old: Vec<String> =
+            sqlx::query_scalar("SELECT old_id FROM legacy_ids WHERE entity = $1 AND new_id = $2")
+                .bind(format!("{}:client", contract.source))
+                .bind(contract.client_id)
+                .fetch_all(conn.conn())
+                .await?;
+        let client = ClientId(contract.client_id);
+        let identities = conn.clients().identities(client).await?;
+        let receipt = conn.clients().receipt_email(client).await?;
+        let mut out: Vec<Buyer> = old
+            .iter()
+            .map(|id| id.trim())
+            .filter(|id| !id.is_empty())
+            .map(|id| Buyer::Prefix(format!("client-{id}@")))
+            .collect();
+        for identity in &identities {
+            match identity.kind {
+                IdentityKind::Email => out.push(Buyer::Exact(identity.value.trim().to_string())),
+                IdentityKind::Telegram => out.push(Buyer::Exact(format!(
+                    "tg_{}@telegram.local",
+                    identity.value.trim()
+                ))),
+                IdentityKind::Google | IdentityKind::Apple => {}
+            }
+        }
+        if let Some(receipt) = receipt {
+            out.push(Buyer::Exact(receipt.trim().to_string()));
+        }
+        let mut seen: Vec<String> = Vec::new();
+        out.retain(|buyer| {
+            let key = buyer.query().to_lowercase();
+            if key.is_empty() || seen.contains(&key) {
+                return false;
+            }
+            seen.push(key);
+            true
+        });
+        Ok(out)
+    }
+
+    async fn by_email(
+        &self,
+        provider: &dyn PaymentProvider,
+        config: &ProviderConfig,
+        contract: &Contract,
+    ) -> ServiceResult<Pick> {
+        let mut found: Vec<(String, RenewalState)> = Vec::new();
+        for buyer in self.buyers(contract).await? {
+            for (series, state) in provider.search_renewals(config, buyer.query()).await? {
+                if buyer.matches(state.buyer_email.as_deref())
+                    && !found
+                        .iter()
+                        .any(|(known, _)| known.eq_ignore_ascii_case(&series))
+                {
+                    found.push((series, state));
+                }
+            }
+        }
+        self.choose(contract, found).await
+    }
+
+    async fn taken(&self, contract: &Contract, series: &str) -> ServiceResult<Taken> {
+        let mut conn = self.services.store().conn().await?;
+        let owner: Option<i64> = sqlx::query_scalar(
+            "SELECT client_id FROM provider_subscriptions WHERE provider = $1 AND lower(external_id) = lower($2)",
+        )
+        .bind(LAVA)
+        .bind(series)
+        .fetch_optional(conn.conn())
+        .await?;
+        if let Some(owner) = owner {
+            return Ok(if owner == contract.client_id {
+                Taken::Mine
+            } else {
+                Taken::Other
+            });
+        }
+        let claimed: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM legacy_invoices WHERE id <> $1 AND lower(contract_id) = lower($2) \
+             AND contract_state IS NOT NULL AND contract_state NOT IN ('missing', 'error'))",
+        )
+        .bind(contract.id)
+        .bind(series)
+        .fetch_one(conn.conn())
+        .await?;
+        Ok(if claimed { Taken::Other } else { Taken::Free })
+    }
+
+    async fn choose(
+        &self,
+        contract: &Contract,
+        found: Vec<(String, RenewalState)>,
+    ) -> ServiceResult<Pick> {
+        let mut free: Vec<(String, RenewalState)> = Vec::new();
+        let mut mine: Vec<String> = Vec::new();
+        for (series, state) in found {
+            if state
+                .amount
+                .is_some_and(|a| !a.currency.code().eq_ignore_ascii_case(&contract.currency))
+            {
+                continue;
+            }
+            match self.taken(contract, &series).await? {
+                Taken::Free => free.push((series, state)),
+                Taken::Mine => mine.push(series),
+                Taken::Other => {}
+            }
+        }
+        if free.is_empty() {
+            return Ok(match mine.as_slice() {
+                [only] => Pick::Mine(only.clone()),
+                [] => Pick::None,
+                _ => Pick::Ambiguous,
+            });
+        }
+        let live: Vec<&(String, RenewalState)> = free
+            .iter()
+            .filter(|(_, s)| matches!(s.status, RenewalStatus::Active | RenewalStatus::Unknown))
+            .collect();
+        let pool: Vec<&(String, RenewalState)> = if live.is_empty() {
+            free.iter().collect()
+        } else {
+            live
+        };
+        let same: Vec<&(String, RenewalState)> = pool
+            .iter()
+            .copied()
+            .filter(|(_, s)| s.amount.is_some_and(|a| a.minor == contract.amount_minor))
+            .collect();
+        let pool = if same.is_empty() { pool } else { same };
+        let chosen = match pool.as_slice() {
+            [only] => Some(*only),
+            _ => {
+                let near: Vec<&(String, RenewalState)> = pool
+                    .iter()
+                    .copied()
+                    .filter(|(_, s)| {
+                        s.started_at.is_some_and(|at| {
+                            (at - contract.created_at).abs() <= Duration::days(NEAR_DAYS)
+                        })
+                    })
+                    .collect();
+                match near.as_slice() {
+                    [only] => Some(*only),
+                    _ => None,
+                }
+            }
+        };
+        Ok(match chosen {
+            Some((series, state)) => Pick::Found(series.clone(), Box::new(state.clone())),
+            None => Pick::Ambiguous,
+        })
     }
 
     async fn bound(
@@ -392,7 +666,7 @@ impl Renewals<'_> {
         .fetch_optional(tx.conn())
         .await?;
         let Some(id) = id else {
-            return Ok(State::Linked);
+            return Ok(State::Known);
         };
         mark_autorenew(tx, sub.id, true).await?;
         if let Some(link) = link_by_id(tx, id).await? {

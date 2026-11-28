@@ -743,6 +743,14 @@ pub trait PaymentProvider: Send + Sync + 'static {
         Err(PaymentError::Unsupported("поиск подписки"))
     }
 
+    async fn search_renewals(
+        &self,
+        _config: &ProviderConfig,
+        _buyer: &str,
+    ) -> PaymentResult<Vec<(String, RenewalState)>> {
+        Err(PaymentError::Unsupported("поиск подписок по почте"))
+    }
+
     async fn confirm_renewal(
         &self,
         _config: &ProviderConfig,

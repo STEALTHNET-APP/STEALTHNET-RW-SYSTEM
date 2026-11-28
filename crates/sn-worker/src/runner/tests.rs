@@ -1852,3 +1852,36 @@ async fn паника_задачи_не_останавливает_воркер(
     assert_eq!(counts.iter().map(|(_, n)| *n).sum::<i64>(), 2, "{counts:?}");
     setup.db.cleanup().await;
 }
+
+#[tokio::test]
+async fn воркер_запускает_каждую_периодическую_работу() {
+    let Some(setup) = setup(Vec::new()).await else {
+        return;
+    };
+    let cancel = CancellationToken::new();
+    let running = tokio::spawn(
+        Worker::new(setup.services.clone(), WorkerConfig::default()).run(cancel.clone()),
+    );
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let mut missing: Vec<&str> = Vec::new();
+    loop {
+        missing.clear();
+        for periodic in Periodic::ALL {
+            let state = periodic_state(&setup.services, periodic).await.unwrap();
+            if state.last_started_at.is_none() {
+                missing.push(periodic.name());
+            }
+        }
+        if missing.is_empty() || tokio::time::Instant::now() > deadline {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    cancel.cancel();
+    running.await.unwrap();
+    assert!(
+        missing.is_empty(),
+        "периодические работы не запускались: {missing:?}"
+    );
+    setup.db.cleanup().await;
+}

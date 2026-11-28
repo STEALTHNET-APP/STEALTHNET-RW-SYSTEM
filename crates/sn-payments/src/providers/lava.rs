@@ -583,46 +583,95 @@ impl Lava {
         if !reply.is_success() {
             return Err(reply.failure(message(&parsed)));
         }
-        let charges = parsed
-            .get("recurrentPayments")
-            .and_then(Json::as_array)
-            .unwrap_or_default()
-            .iter()
-            .filter_map(|charge| {
-                let id = text_of(charge, "id").filter(|id| util::safe_id(id).is_ok())?;
-                Some(RenewalCharge {
-                    id: id.to_string(),
-                    at: time_of(charge, "datetime"),
-                    paid: charge
-                        .get("status")
-                        .and_then(Json::as_str)
-                        .is_some_and(|s| s.trim().eq_ignore_ascii_case("COMPLETED")),
-                })
-            })
-            .collect();
-        let periodicity = text_of(&parsed, "periodicity").map(str::to_string);
-        Ok(Some(RenewalState {
-            status: renewal_status(parsed.get("subscriptionStatus").and_then(Json::as_str)),
-            paid_until: time_of(&parsed, "expiredAt"),
-            cancelled_at: time_of(&parsed, "cancelledAt"),
-            charges,
-            buyer_email: parsed
-                .at(&["buyer", "email"])
-                .and_then(Json::as_str)
-                .map(str::trim)
-                .filter(|email| email.len() <= 254 && email.contains('@'))
-                .map(str::to_string),
-            every: periodicity
-                .as_deref()
-                .and_then(every)
-                .map(|e| e.text.to_string()),
-            periodicity,
-            name: product_title(&parsed).map(|name| util::clip(&name, 120)),
-            amount: invoice_total(&parsed).and_then(|total| total_amount(total).ok()),
-            started_at: time_of(&parsed, "datetime"),
-        }))
+        Ok(Some(renewal_state(&parsed)))
     }
 
+    async fn subscriptions_of(
+        &self,
+        config: &ProviderConfig,
+        buyer: &str,
+    ) -> PaymentResult<Vec<(String, RenewalState)>> {
+        let mut found = Vec::new();
+        let mut seen = 0usize;
+        for page in 1..=SALE_PAGES {
+            let reply = self
+                .get(
+                    config,
+                    "/api/v1/subscriptions",
+                    &[
+                        ("buyerEmail", buyer.trim().to_string()),
+                        ("page", page.to_string()),
+                        ("size", PAGE_SIZE.to_string()),
+                    ],
+                )
+                .await?;
+            let items = reply
+                .get("items")
+                .and_then(Json::as_array)
+                .ok_or_else(|| util::bad("Lava.top не вернула список подписок"))?;
+            seen += items.len();
+            found.extend(items.iter().filter_map(|item| {
+                let id = text_of(item, "id").filter(|id| Uuid::parse_str(id).is_ok())?;
+                Some((id.to_string(), renewal_state(item)))
+            }));
+            let complete = match reply
+                .get("total")
+                .and_then(Json::scalar_text)
+                .and_then(|t| t.parse::<usize>().ok())
+            {
+                Some(total) => seen >= total,
+                None => items.len() < PAGE_SIZE,
+            };
+            if complete || items.is_empty() {
+                break;
+            }
+        }
+        Ok(found)
+    }
+}
+
+fn renewal_state(parsed: &Json) -> RenewalState {
+    let charges = parsed
+        .get("recurrentPayments")
+        .and_then(Json::as_array)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|charge| {
+            let id = text_of(charge, "id").filter(|id| util::safe_id(id).is_ok())?;
+            Some(RenewalCharge {
+                id: id.to_string(),
+                at: time_of(charge, "datetime"),
+                paid: charge
+                    .get("status")
+                    .and_then(Json::as_str)
+                    .is_some_and(|s| s.trim().eq_ignore_ascii_case("COMPLETED")),
+            })
+        })
+        .collect();
+    let periodicity = text_of(parsed, "periodicity").map(str::to_string);
+    RenewalState {
+        status: renewal_status(parsed.get("subscriptionStatus").and_then(Json::as_str)),
+        paid_until: time_of(parsed, "expiredAt"),
+        cancelled_at: time_of(parsed, "cancelledAt"),
+        charges,
+        buyer_email: parsed
+            .at(&["buyer", "email"])
+            .and_then(Json::as_str)
+            .map(str::trim)
+            .filter(|email| email.len() <= 254 && email.contains('@'))
+            .map(str::to_string),
+        every: periodicity
+            .as_deref()
+            .and_then(every)
+            .map(|e| e.text.to_string()),
+        periodicity,
+        name: product_title(parsed).map(|name| util::clip(&name, 120)),
+        amount: invoice_total(parsed).and_then(|total| total_amount(total).ok()),
+        started_at: time_of(parsed, "datetime"),
+    }
+}
+
+impl Lava {
     async fn renewal(
         &self,
         config: &ProviderConfig,
@@ -1371,6 +1420,14 @@ impl PaymentProvider for Lava {
         series: &str,
     ) -> PaymentResult<Option<RenewalState>> {
         self.subscription(config, series).await
+    }
+
+    async fn search_renewals(
+        &self,
+        config: &ProviderConfig,
+        buyer: &str,
+    ) -> PaymentResult<Vec<(String, RenewalState)>> {
+        self.subscriptions_of(config, buyer).await
     }
 
     fn enabled_by_default(&self) -> bool {
